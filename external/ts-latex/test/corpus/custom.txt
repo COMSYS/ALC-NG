@@ -1,0 +1,559 @@
+================================================================================
+Itemize with parantheses in square brackets of item
+================================================================================
+
+\begin{itemize}
+	\item[(i)] bar
+\end{itemize}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (generic_environment
+    (begin
+      (curly_group_text
+        (text
+          (word))))
+    (enum_item
+      (brack_group_text
+        (text
+          (word)))
+      (text
+        (word)))
+    (end
+      (curly_group_text
+        (text
+          (word))))))
+
+================================================================================
+Author block with square brackets
+================================================================================
+
+\author{A\footnotemark[1] \and B}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (author_declaration
+    (curly_group_author_list
+      (author
+        (text
+          (word)
+          (generic_command
+            (command_name)))
+        (text
+          (word)))
+      (command_name)
+      (author
+        (text
+          (word))))))
+
+================================================================================
+input with no curly braces
+================================================================================
+
+\input abc
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (latex_include
+    (path)))
+
+================================================================================
+newcommand with body inside
+================================================================================
+
+\newcommand{\ben}{\begin{enumerate}}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (new_command_definition
+    (curly_group_command_name
+      (command_name))
+    (curly_group_impl
+      (begin
+        (curly_group_text
+          (text
+            (word)))))))
+
+================================================================================
+caption without body
+================================================================================
+
+\newcommand{\tabcaption}{\caption}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (new_command_definition
+    (curly_group_command_name
+      (command_name))
+    (curly_group_impl
+      (caption))))
+
+================================================================================
+item with inline math
+================================================================================
+
+\begin{enumerate}
+    \item [$B_1:$]
+    \item [$$B_1:$$]
+\end{enumerate}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (generic_environment
+    (begin
+      (curly_group_text
+        (text
+          (word))))
+    (enum_item
+      (brack_group_text
+        (inline_formula
+          (text
+            (word)
+            (subscript
+              (letter))
+            (operator)))))
+    (enum_item
+      (brack_group_text
+        (displayed_equation
+          (text
+            (word)
+            (subscript
+              (letter))
+            (operator)))))
+    (end
+      (curly_group_text
+        (text
+          (word))))))
+
+================================================================================
+curly braces in item square brackets
+================================================================================
+
+\begin{enumerate}
+    \item [{$B_1:$}]
+    \item [{{$$B_1:$$}}]
+\end{enumerate}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (generic_environment
+    (begin
+      (curly_group_text
+        (text
+          (word))))
+    (enum_item
+      (brack_group_text
+        (curly_group
+          (inline_formula
+            (text
+              (word)
+              (subscript
+                (letter))
+              (operator))))))
+    (enum_item
+      (brack_group_text
+        (curly_group
+          (curly_group
+            (displayed_equation
+              (text
+                (word)
+                (subscript
+                  (letter))
+                (operator)))))))
+    (end
+      (curly_group_text
+        (text
+          (word))))))
+
+================================================================================
+curly braces in item square brackets
+================================================================================
+
+\begin{enumerate}
+    \item [{$B_1:$}]
+    \item [{{$$B_1:$$}}]
+\end{enumerate}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (generic_environment
+    (begin
+      (curly_group_text
+        (text
+          (word))))
+    (enum_item
+      (brack_group_text
+        (curly_group
+          (inline_formula
+            (text
+              (word)
+              (subscript
+                (letter))
+              (operator))))))
+    (enum_item
+      (brack_group_text
+        (curly_group
+          (curly_group
+            (displayed_equation
+              (text
+                (word)
+                (subscript
+                  (letter))
+                (operator)))))))
+    (end
+      (curly_group_text
+        (text
+          (word))))))
+
+================================================================================
+label/ref with parantheses
+================================================================================
+
+\label{f(opt)-table}
+\ref{f(opt)-table}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label))))
+
+================================================================================
+\iff in math envs
+================================================================================
+
+$$\begin{array}{rc}
+\iff
+\end{array}$$
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (displayed_equation
+    (math_environment
+      (begin
+        (curly_group_text
+          (text
+            (word))))
+      (curly_group
+        (text
+          (word)))
+      (iff_command)
+      (end
+        (curly_group_text
+          (text
+            (word)))))))
+
+================================================================================
+Rewrite ~ as new command
+================================================================================
+
+\gdef~{abc}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (old_command_definition
+    (command_name)
+    (curly_group_impl
+      (text
+        (word)))))
+
+================================================================================
+Negative counter values
+================================================================================
+
+\setcounter{section}{-1}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (counter_definition
+    (curly_group_word
+      (word))
+    (curly_group_value
+      (value_literal))))
+
+================================================================================
+Allow various characters in label/ref
+================================================================================
+
+\label{,}
+\ref{,}
+\label{$}
+\ref{$}
+\label{$$$$}
+\ref{$$$$}
+\label{[]}
+\ref{[]}
+\label{=}
+\ref{=}
+\label{^}
+\ref{^}
+\label{~}
+\ref{~}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label)))
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label)))
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label)))
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label)))
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label)))
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label)))
+  (label_definition
+    (curly_group_label
+      (label)))
+  (label_reference
+    (curly_group_label_list
+      (label))))
+
+================================================================================
+Better parsing of old command definition
+================================================================================
+
+\def\cmdA#1{#1}
+\gdef\cmdB#1{#1}
+\edef\cmdC#1{#1}
+\xdef\cmdD#1{#1}
+
+\def\cmdA#1#2{#1#2}
+\gdef\cmdB#1#2{#1#2}
+\edef\cmdC#1#2{#1#2}
+\xdef\cmdD#1#2{#1#2}
+
+\def\cmdA{}
+\gdef\cmdB{}
+\edef\cmdC{}
+\xdef\cmdD{}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder)
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder)
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder)
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (placeholder)
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (curly_group_impl))
+  (old_command_definition
+    (command_name)
+    (curly_group_impl))
+  (old_command_definition
+    (command_name)
+    (curly_group_impl))
+  (old_command_definition
+    (command_name)
+    (curly_group_impl)))
+
+================================================================================
+Allow placeholders in ref/label
+================================================================================
+
+\def\figref#1{figure~\ref{#1}}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (curly_group_impl
+      (text
+        (word)
+        (label_reference
+          (curly_group_label_list
+            (label
+              (placeholder))))))))
+
+================================================================================
+Commands are allowed to contain numbers if it is not the first letter
+================================================================================
+
+\def\CRIKEY3{CRIKEY3}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (old_command_definition
+    (command_name)
+    (curly_group_impl
+      (text
+        (word)))))
+
+================================================================================
+Optional arguments for newenvironment definitions
+================================================================================
+
+\newenvironment{envname}[3][default_value]{Argument1: #1\\Argument2: #2\\Argument3: #3}{\textbf{END}}
+\newenvironment{envname}[1]{}{\textbf{END}}
+\newenvironment{envname}{}{\textbf{END}}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (environment_definition
+    (curly_group_text
+      (text
+        (word)))
+    (brack_group_argc
+      (argc))
+    (brack_group
+      (text
+        (word)
+        (subscript
+          (letter))
+        (word)))
+    (curly_group_impl
+      (text
+        (word)
+        (placeholder)
+        (generic_command
+          (command_name))
+        (word)
+        (placeholder)
+        (generic_command
+          (command_name))
+        (word)
+        (placeholder)))
+    (curly_group_impl
+      (generic_command
+        (command_name)
+        (curly_group
+          (text
+            (word))))))
+  (environment_definition
+    (curly_group_text
+      (text
+        (word)))
+    (brack_group_argc
+      (argc))
+    (curly_group_impl)
+    (curly_group_impl
+      (generic_command
+        (command_name)
+        (curly_group
+          (text
+            (word))))))
+  (environment_definition
+    (curly_group_text
+      (text
+        (word)))
+    (curly_group_impl)
+    (curly_group_impl
+      (generic_command
+        (command_name)
+        (curly_group
+          (text
+            (word)))))))
+
+================================================================================
+Parse \long in front of command definitions
+================================================================================
+
+\long\def\Ignore#1{}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (long_command_definition
+    (old_command_definition
+      (command_name)
+      (placeholder)
+      (curly_group_impl))))

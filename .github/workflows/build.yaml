@@ -1,0 +1,135 @@
+name: CI & Release
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup TeX Live
+        uses: TeX-Live/setup-texlive-action@eb78d21f41941476d9121e3a0abcab73265c876f # v4.1.1
+        with:
+          version: 2023
+          packages: scheme-full
+      - run: rustup update stable && rustup default stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: "v2026.03-rust"
+
+      # Run tests
+      - name: Run tests
+        run: cargo test
+
+      # Build project
+      - name: Build project in release mode
+        run: cargo build -r
+
+      # Install dependencies
+      - name: Install packaging dependencies
+        run: cargo install cargo-aur cargo-deb
+
+      - name: Compile debian package
+        run: cargo deb
+
+      - name: Compile AUR package
+        run: cargo aur
+
+      - name: Upload binary
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: Binary (linux-amd64)
+          path: target/release/alc-ng
+
+      - name: Upload deb package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: Deb package (linux-amd64)
+          path: target/debian/*.deb
+
+      - name: Upload aur package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: AUR package (linux-amd64)
+          path: target/cargo-aur/*.tar.gz
+
+
+  build-release:
+    name: Build (${{ matrix.artifact }})
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: alc-ng-linux-amd64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: alc-ng-linux-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: alc-ng-windows-x64.exe
+          - os: macos-latest
+            target: universal-apple-darwin
+            artifact: alc-ng-macos-unsigned
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Add Rust targets
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "universal-apple-darwin" ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          else
+            rustup target add ${{ matrix.target }}
+          fi
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: "v2026.03-rust-${{ matrix.target }}"
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "universal-apple-darwin" ]; then
+            cargo build -r --target aarch64-apple-darwin
+            cargo build -r --target x86_64-apple-darwin
+            lipo -create -output ${{ matrix.artifact }} \
+              target/aarch64-apple-darwin/release/alc-ng \
+              target/x86_64-apple-darwin/release/alc-ng
+          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cargo build -r --target ${{ matrix.target }}
+            cp target/${{ matrix.target }}/release/alc-ng.exe ${{ matrix.artifact }}
+          else
+            cargo build -r --target ${{ matrix.target }}
+            cp target/${{ matrix.target }}/release/alc-ng ${{ matrix.artifact }}
+          fi
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: build-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          files: artifacts/*
+          generate_release_notes: true

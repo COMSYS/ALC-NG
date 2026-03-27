@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Pennekamp"
+  given-names: "Jan"
+  orcid: "https://orcid.org/0000-0003-0398-6904"
+- family-names: "Lohmüller"
+  given-names: "Johannes"
+  orcid: "https://orcid.org/0000-0003-2101-5562"
+- family-names: "Schütte"
+  given-names: "David"
+  orcid: "https://orcid.org/0009-0000-0261-5277"
+- family-names: "Loos"
+  given-names: "Joscha"
+  orcid: "https://orcid.org/0000-0002-6191-5023"
+- family-names: "Henze"
+  given-names: "Martin"
+  orcid: "https://orcid.org/0000-0001-8717-2523"
+title: "Hidden Secrets in the arXiv. Discovering, Analyzing, and Preventing Unintentional Information Disclosure in Source Files of Scientific Preprints"
+date-released: 2026-05-01
+preferred-citation:
+  type: conference-paper
+  authors:
+  - family-names: "Pennekamp"
+    given-names: "Jan"
+    orcid: "https://orcid.org/0000-0003-0398-6904"
+  - family-names: "Lohmüller"
+    given-names: "Johannes"
+    orcid: "https://orcid.org/0000-0003-2101-5562"
+  - family-names: "Schütte"
+    given-names: "David"
+    orcid: "https://orcid.org/0009-0000-0261-5277"
+  - family-names: "Loos"
+    given-names: "Joscha"
+    orcid: "https://orcid.org/0000-0002-6191-5023"
+  - family-names: "Henze"
+    given-names: "Martin"
+    orcid: "https://orcid.org/0000-0001-8717-2523"
+  title: "Hidden Secrets in the arXiv. Discovering, Analyzing, and Preventing Unintentional Information Disclosure in Source Files of Scientific Preprints"
+  collection-title: "Proceedings of the 47th IEEE Symposium on Security and Privacy (S&P '26)"
+  month: 5
+  year: 2026
+  conference:
+    name: "47th IEEE Symposium on Security and Privacy"
+    location: "San Francisco, CA, USA"

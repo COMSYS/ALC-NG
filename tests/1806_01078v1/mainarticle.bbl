@@ -1,0 +1,255 @@
+\begin{thebibliography}{10}
+\providecommand{\url}[1]{{#1}}
+\providecommand{\urlprefix}{URL }
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{DOI~\discretionary{}{}{}#1}\else
+  \providecommand{\doi}{DOI~\discretionary{}{}{}\begingroup
+  \urlstyle{rm}\Url}\fi
+
+\bibitem{baker2016}
+Baker, M.: 1,500 scientists lift the lid on reproducibility.
+\newblock Nature \textbf{533}(7604), 452--454 (2016).
+\newblock \doi{10.1038/533452a}
+
+\bibitem{chance1960}
+Chance, B., Garfinkel, D., Higgins, J., Hess, B.: Metabolic control mechanisms.
+  {V}. {A} solution for the equations representing interaction between
+  glycolysis and respiration in ascites tumor cells.
+\newblock Journal of Biological Chemistry \textbf{235}(8), 2426--2439 (1960)
+
+\bibitem{chelliah2015}
+Chelliah, V., Juty, N., Ajmera, I., Ali, R., Dumousseau, M., Glont, M., Hucka,
+  M., Jalowicki, G., Keating, S., Knight-Schrijver, V., Lloret-Villas, A.,
+  Natarajan, K.N., Pettit, J.B., Rodriguez, N., Schubert, M., Wimalaratne,
+  S.M., Zhao, Y., Hermjakob, H., Le~Nov{\`e}re, N., Laibe, C.: {BioModels}:
+  ten-year anniversary.
+\newblock Nucleic Acids Research \textbf{43}, D542--548 (2015).
+\newblock \doi{10.1093/nar/gku1181}
+
+\bibitem{claerbout1992}
+Claerbout, J.F., Karrenbach, M.: Electronic documents give reproducible
+  research a new meaning.
+\newblock pp. 601--604. Society of Exploration Geophysicists (1992).
+\newblock \doi{10.1190/1.1822162}
+
+\bibitem{dada2010}
+Dada, J.O., Spasi{\'c}, I., Paton, N.W., Mendes, P.: {SBRML}: a markup language
+  for associating systems biology data with models.
+\newblock Bioinformatics \textbf{26}(7), 932--938 (2010).
+\newblock \doi{10.1093/bioinformatics/btq069}
+
+\bibitem{gillespie1976}
+Gillespie, D.T.: A general method for numerically simulating the stochastic
+  time evolution of coupled chemical reactions.
+\newblock Journal of Computational Physics \textbf{22}, 403--434 (1976)
+
+\bibitem{gleeson2010}
+Gleeson, P., Crook, S., Cannon, R.C., Hines, M.L., Billings, G.O., Farinella,
+  M., Morse, T.M., Davison, A.P., Ray, S., Bhalla, U.S., Barnes, S.R.,
+  Dimitrova, Y.D., Silver, R.A.: {NeuroML}: {A} {Language} for {Describing}
+  {Data} {Driven} {Models} of {Neurons} and {Networks} with a {High} {Degree}
+  of {Biological} {Detail}.
+\newblock PLoS Computational Biology \textbf{6}(6), e1000815 (2010).
+\newblock \doi{10.1371/journal.pcbi.1000815}
+
+\bibitem{goodman2016}
+Goodman, S.N., Fanelli, D., Ioannidis, J.P.A.: What does research
+  reproducibility mean?
+\newblock Science Translational Medicine \textbf{8}(341), 341ps12 (2016).
+\newblock \doi{10.1126/scitranslmed.aaf5027}
+
+\bibitem{greenbaum2017}
+Greenbaum, D., Rozowsky, J., Stodden, V., Gerstein, M.: Structuring
+  supplemental materials in support of reproducibility.
+\newblock Genome Biology \textbf{18}(1) (2017).
+\newblock \doi{10.1186/s13059-017-1205-3}
+
+\bibitem{guerreiro2017}
+Guerreiro, M.: Forking software used in {eLife} papers to {GitHub} (2017).
+\newblock
+  \urlprefix\url{https://elifesciences.org/inside-elife/dbcb6949/forking-software-used-in-elife-papers-to-github}
+
+\bibitem{hoops2006}
+Hoops, S., Sahle, S., Gauges, R., Lee, C., Pahle, J., Simus, N., Singhal, M.,
+  Xu, L., Mendes, P., Kummer, U.: {COPASI} --- a {COmplex} {PAthway}
+  {SImulator}.
+\newblock Bioinformatics \textbf{22}(24), 3067--3074 (2006).
+\newblock \doi{10.1093/bioinformatics/btl485}
+
+\bibitem{hothorn2009}
+Hothorn, T., Held, L., Friede, T.: Biometrical {Journal} and {Reproducible}
+  {Research}.
+\newblock Biometrical Journal \textbf{51}(4), 553--555 (2009).
+\newblock \doi{10.1002/bimj.200900154}
+
+\bibitem{hothorn2011}
+Hothorn, T., Leisch, F.: Case studies in reproducibility.
+\newblock Briefings in Bioinformatics \textbf{12}(3), 288--300 (2011).
+\newblock \doi{10.1093/bib/bbq084}
+
+\bibitem{hubner2011}
+H{\"u}bner, K., Sahle, S., Kummer, U.: Applications and trends in systems
+  biology in biochemistry: {Systems} biology in biochemical research.
+\newblock FEBS Journal \textbf{278}(16), 2767--2857 (2011).
+\newblock \doi{10.1111/j.1742-4658.2011.08217.x}
+
+\bibitem{hucka2003}
+Hucka, M., Finney, A., Sauro, H.M., Bolouri, H., Doyle, J.C., Kitano, H.,
+  Arkin, A.P., Bornstein, B.J., Bray, D., Cornish-Bowden, A., Cuellar, A.A.,
+  Dronov, S., Gilles, E.D., Ginkel, M., Gor, V., Goryanin, I.I., Hedley, W.J.,
+  Hodgman, T.C., Hofmeyr, J.H., Hunter, P.J., Juty, N.S., Kasberger, J.L.,
+  Kremling, A., Kummer, U., Le~Nov{\`e}re, N., Loew, L.M., Lucio, D., Mendes,
+  P., Minch, E., Mjolsness, E.D., Nakayama, Y., Nelson, M.R., Nielsen, P.F.,
+  Sakurada, T., Schaff, J.C., Shapiro, B.E., Shimizu, T.S., Spence, H.D.,
+  Stelling, J., Takahashi, K., Tomita, M., Wagner, J., Wang, J.: The systems
+  biology markup language ({SBML}): a medium for representation and exchange of
+  biochemical network models.
+\newblock Bioinformatics \textbf{19}(4), 524--531 (2003).
+\newblock \doi{10.1093/bioinformatics/btg015}
+
+\bibitem{le_novere2006}
+Le~Nov{\`e}re, N., Bornstein, B., Broicher, A., Courtot, M., Donizelli, M.,
+  Dharuri, H., Li, L., Sauro, H., Schilstra, M., Shapiro, B., Snoep, J.L.,
+  Hucka, M.: {BioModels} {Database}: a free, centralized database of curated,
+  published, quantitative kinetic models of biochemical and cellular systems.
+\newblock Nucleic Acids Research \textbf{34}(Database issue), D689--91 (2006).
+\newblock \doi{10.1093/nar/gkj092}
+
+\bibitem{miriam2005}
+Le~Nov{\`e}re, N., Finney, A., Hucka, M., Bhalla, U.S., Campagne, F.,
+  Collado-Vides, J., Crampin, E.J., Halstead, M., Klipp, E., Mendes, P.,
+  Nielsen, P., Sauro, H., Shapiro, B., Snoep, J.L., Spence, H.D., Wanner, B.L.:
+  Minimum information requested in the annotation of biochemical models
+  ({MIRIAM}).
+\newblock Natute Biotechnology \textbf{23}(12), 1509--15 (2005).
+\newblock \doi{10.1038/nbt1156}
+
+\bibitem{le_novere2009}
+Le~Nov{\`e}re, N., Hucka, M., Mi, H., Moodie, S., Schreiber, F., Sorokin, A.,
+  Demir, E., Wegner, K., Aladjem, M.I., Wimalaratne, S.M., Bergman, F.T.,
+  Gauges, R., Ghazal, P., Kawaji, H., Li, L., Matsuoka, Y., Vill{\'e}ger, A.,
+  Boyd, S.E., Calzone, L., Courtot, M., Dogrusoz, U., Freeman, T.C., Funahashi,
+  A., Ghosh, S., Jouraku, A., Kim, S., Kolpakov, F., Luna, A., Sahle, S.,
+  Schmidt, E., Watterson, S., Wu, G., Goryanin, I., Kell, D.B., Sander, C.,
+  Sauro, H., Snoep, J.L., Kohn, K., Kitano, H.: The {Systems} {Biology}
+  {Graphical} {Notation}.
+\newblock Nature Biotechnology \textbf{27}(8), 735--741 (2009).
+\newblock \doi{10.1038/nbt.1558}
+
+\bibitem{lloyd2004}
+Lloyd, C.M., Halstead, M.D., Nielsen, P.F.: {CellML}: its future, present and
+  past.
+\newblock Progress in Biophysics and Molecular Biology \textbf{85}(2-3),
+  433--450 (2004).
+\newblock \doi{10.1016/j.pbiomolbio.2004.01.004}
+
+\bibitem{loew2015}
+Loew, L., Beckett, D., Egelman, E.H., Scarlata, S.: Reproducibility of
+  {Research} in {Biophysics}.
+\newblock Biophysical Journal \textbf{108}(7), E1 (2015).
+\newblock \doi{10.1016/j.bpj.2015.03.002}
+
+\bibitem{maddox88}
+Maddox, J., Randi, J., Stewart, W.W.: "{High}-dilution" experiments a delusion.
+\newblock Nature \textbf{334}(6180), 287--290 (1988).
+\newblock \doi{10.1038/334287a0}
+
+\bibitem{mesirov2010}
+Mesirov, J.P.: Accessible {Reproducible} {Research}.
+\newblock Science \textbf{327}(5964), 415--416 (2010).
+\newblock \doi{10.1126/science.1179653}
+
+\bibitem{moraru2008}
+Moraru, I., Morgan, F., Li, Y., Loew, L., Schaff, J., Lakshminarayana, A.,
+  Slepchenko, B., Gao, F., Blinov, M.: Virtual {Cell} modelling and simulation
+  software environment.
+\newblock IET Systems Biology \textbf{2}(5), 352--362 (2008).
+\newblock \doi{10.1049/iet-syb:20080102}
+
+\bibitem{pahle2012}
+Pahle, J., Challenger, J.D., Mendes, P., McKane, A.J.: Biochemical
+  fluctuations, optimisation and the linear noise approximation.
+\newblock BMC Systems Biology \textbf{6}(1), 86 (2012).
+\newblock \doi{10.1186/1752-0509-6-86}
+
+\bibitem{peng2009}
+Peng, R.D.: Reproducible research and {Biostatistics}.
+\newblock Biostatistics \textbf{10}(3), 405--408 (2009).
+\newblock \doi{10.1093/biostatistics/kxp014}
+
+\bibitem{peng2011}
+Peng, R.D.: Reproducible {Research} in {Computational} {Science}.
+\newblock Science \textbf{334}(6060), 1226--1227 (2011).
+\newblock \doi{10.1126/science.1213847}
+
+\bibitem{piccolo2016}
+Piccolo, S.R., Frampton, M.B.: Tools and techniques for computational
+  reproducibility.
+\newblock GigaScience \textbf{5}(1) (2016).
+\newblock \doi{10.1186/s13742-016-0135-4}
+
+\bibitem{plesser2018}
+Plesser, H.E.: Reproducibility vs. replicability: a brief history of a confused
+  terminology.
+\newblock Frontiers in Neuroinformatics \textbf{11}, 76 (2018).
+\newblock \doi{10.3389/fninf.2017.00076}
+
+\bibitem{popper1959}
+Popper, K.: The logic of scientific discovery.
+\newblock Hutchinson, London (1959)
+
+\bibitem{sandve2013}
+Sandve, G.K., Nekrutenko, A., Taylor, J., Hovig, E.: Ten simple rules for
+  reproducible computational research.
+\newblock PLoS Computational Biology \textbf{9}(10), e1003285 (2013).
+\newblock \doi{10.1371/journal.pcbi.1003285}
+
+\bibitem{stodden2016}
+Stodden, V., McNutt, M., Bailey, D.H., Deelman, E., Gil, Y., Hanson, B.,
+  Heroux, M.A., Ioannidis, J.P.A., Taufer, M.: Enhancing reproducibility for
+  computational methods.
+\newblock Science \textbf{354}(6317), 1240--1241 (2016).
+\newblock \doi{10.1126/science.aah6168}
+
+\bibitem{stodden2018}
+Stodden, V., Seiler, J., Ma, Z.: An empirical analysis of journal policy
+  effectiveness for computational reproducibility.
+\newblock Proceedings of the National Academy of Sciences \textbf{115}(11),
+  2584--2589 (2018).
+\newblock \doi{10.1073/pnas.1708290115}
+
+\bibitem{swat2015}
+Swat, M., Moodie, S., Wimalaratne, S., Kristensen, N., Lavielle, M., Mari, A.,
+  Magni, P., Smith, M., Bizzotto, R., Pasotti, L., Mezzalana, E., Comets, E.,
+  Sarr, C., Terranova, N., Blaudez, E., Chan, P., Chard, J., Chatel, K.,
+  Chenel, M., Edwards, D., Franklin, C., Giorgino, T., Glont, M., Girard, P.,
+  Grenon, P., Harling, K., Hooker, A., Kaye, R., Keizer, R., Kloft, C., Kok,
+  J., Kokash, N., Laibe, C., Laveille, C., Lestini, G., Mentr{\'e}, F., Munafo,
+  A., Nordgren, R., Nyberg, H., Parra-Guillen, Z., Plan, E., Ribba, B., Smith,
+  G., Troc{\'o}niz, I., Yvon, F., Milligan, P., Harnisch, L., Karlsson, M.,
+  Hermjakob, H., Le~Nov{\`e}re, N.: Pharmacometrics {Markup} {Language}
+  ({PharmML}): {Opening} {New} {Perspectives} for {Model} {Exchange} in {Drug}
+  {Development}: {PharmML} - {Pharmacometrics} {Markup} {Language}.
+\newblock CPT: Pharmacometrics \& Systems Pharmacology \textbf{4}(6), 316--319
+  (2015).
+\newblock \doi{10.1002/psp4.57}
+
+\bibitem{miase2011}
+Waltemath, D., Adams, R., Beard, D.A., Bergmann, F.T., Bhalla, U.S., Britten,
+  R., Chelliah, V., Cooling, M.T., Cooper, J., Crampin, E.J., Garny, A., Hoops,
+  S., Hucka, M., Hunter, P., Klipp, E., Laibe, C., Miller, A.K., Moraru, I.,
+  Nickerson, D., Nielsen, P., Nikolski, M., Sahle, S., Sauro, H.M., Schmidt,
+  H., Snoep, J.L., Tolle, D., Wolkenhauer, O., Le~Nov{\`e}re, N.: Minimum
+  information about a simulation experiment ({MIASE}).
+\newblock PLoS Computational Biology \textbf{7}(4), e1001122 (2011).
+\newblock \doi{10.1371/journal.pcbi.1001122}
+
+\bibitem{waltemath2011}
+Waltemath, D., Adams, R., Bergmann, F.T., Hucka, M., Kolpakov, F., Miller,
+  A.K., Moraru, I.I., Nickerson, D., Sahle, S., Snoep, J.L., Le~Nov{\`e}re, N.:
+  Reproducible computational biology experiments with {SED}-{ML} - {The}
+  {Simulation} {Experiment} {Description} {Markup} {Language}.
+\newblock BMC Systems Biology \textbf{5}(1), 198 (2011).
+\newblock \doi{10.1186/1752-0509-5-198}
+
+\end{thebibliography}

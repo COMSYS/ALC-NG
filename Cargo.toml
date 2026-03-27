@@ -1,0 +1,55 @@
+[package]
+name = "alc-ng"
+description = "A modern LaTeX sanitization tool for arXiv submissions. Strips unused files, comments, conditionals, and metadata while preserving the same output pdf."
+version = "0.1.0"
+edition = "2024"
+authors = ["David Schütte <david.schuette@rwth-aachen.de>"]
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/COMSYS/ALC-NG"
+include = ["/external/pdfium/**/*.dll", "/external/pdfium/**/*.dylib", "/external/pdfium/**/*.so"]
+
+[[bin]]
+name = "alc-ng"
+path = "src/cleaner/main.rs"
+
+[lib]
+name = "alc_ng"
+path = "src/lib/lib.rs"
+crate-type = ["lib","cdylib"]
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+dialoguer = { version = "0.12.0", default-features = false }
+env_logger = "0.11.10"
+fastrand = "2.4.1"
+flate2 = "1.1.9"
+glob = "0.3.3"
+image = "0.25.10"
+itertools = "0.14.0"
+log = { version = "0.4.29", features = ["std"] }
+pdfium-render = {version = "0.9.0", features = ["image_025"]}
+regex = "1.12.3"
+serde = { version = "1.0.228", features = ["derive"] }
+sha3 = "0.11"
+serde_json = "1.0.149"
+serde_repr = "0.1.20"
+serde_yaml_ng = "0.10.0"
+tar = "0.4.45"
+temp-dir = "0.2.0"
+toml = "1.1.2"
+tree-sitter = "0.26.8"
+tree-sitter-latex = { version = "0.6.0", path = "external/ts-latex" }
+walkdir = "2.5.0"
+
+[build-dependencies]
+flate2 = "1.1.9"
+sha3 = "0.11"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = "z"
+strip = true

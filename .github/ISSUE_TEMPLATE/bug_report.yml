@@ -1,0 +1,107 @@
+name: Bug report
+description: Report a problem with the ALC-NG cleaner.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report for ALC-NG!
+        Please fill in the sections below so we can reproduce the issue quickly.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Issue category
+      description: Pick the category that best describes your issue.
+      options:
+        - Normal (crash, wrong output, unexpected behavior)
+        - Grammar error (cleaner mis-parses valid LaTeX)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ALC-NG version
+      description: Output of `alc-ng --version` (or the commit hash you built from).
+      placeholder: "0.1.0 / commit 0203193"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.3 / Ubuntu 24.04 / ..."
+    validations:
+      required: true
+
+  - type: input
+    id: tex
+    attributes:
+      label: TeX distribution
+      description: Your local TeX distribution and version (e.g. `latexmk --version`).
+      placeholder: "TeX Live 2024 / MacTeX 2024 / ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command used
+      description: The exact `alc-ng` invocation that triggered the issue.
+      render: bash
+      placeholder: "alc-ng ./my-project -c"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead. Include error messages / stack traces if available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: minimal_example
+    attributes:
+      label: Minimal LaTeX reproducer
+      description: |
+        **Required for "Grammar error" reports.**
+        Please provide a minimal, self-contained LaTeX document that reproduces the problem.
+        The smaller, the better. Paste the source inline and/or attach a `.zip`.
+      render: latex
+      placeholder: |
+        \documentclass{article}
+        \begin{document}
+        % minimal example that triggers the grammar error
+        Hello, world.
+        \end{document}
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output from `alc-ng -v` (verbose mode) if available.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I am running a supported TeX distribution locally.
+          required: true
+        - label: For grammar errors, I have included a minimal reproducer above.
+          required: false
