@@ -18,12 +18,36 @@ jobs:
           # - beta
           # - nightly
     steps:
+      # Install texlive-full
       - name: Setup TeX Live
         uses: TeX-Live/setup-texlive-action@v4
         with:
           version: 2023
           packages: scheme-full
-      - uses: actions/checkout@v4
+
+      # Configure toolchain
       - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+
+      # Show environment
+      - name: "Show environment"
+        run: |
+          rustc -vV
+          cargo -vV
+
+      # Enable Rust Caching
+      - name: Rust Caching
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Use a custom prefix-key to force a fresh start. This is sometimes needed with bigger changes.
+          # Like changing the build host from Ubuntu 20.04 to 22.04 for example.
+          # Only update when really needed! Use a <year>.<month>[.<inc>] format.
+          prefix-key: "v2026.03-rust"
+
+      # Checkout repository
+      - uses: actions/checkout@v4
+
+      # Build project
       - run: cargo build --verbose
+
+      # Run tests
       - run: cargo test --verbose
