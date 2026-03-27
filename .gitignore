@@ -1,0 +1,15 @@
+/target
+/datasets
+/caches
+.DS_Store
+/input
+/output*
+/external/google-alc/.venv
+/extraction_cache
+/tmp
+/compile_cache
+/inspection
+/_inputs
+/cleaned
+/evaluation_results
+/_f

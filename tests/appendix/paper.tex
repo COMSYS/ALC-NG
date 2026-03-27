@@ -1,0 +1,56 @@
+\documentclass[12pt]{article}
+\usepackage{comment}
+\usepackage{listings}
+
+\newcommand{\customcmd}[1]{custom:~#1}
+\renewcommand{\customcmd}[1]{} % ignore the argument (8)
+
+\newif\iffoo
+\foofalse % set iffoo to false
+
+% (5) out of document removal: Should be gone
+
+\begin{document}
+% (1) inline comment removal (1/2): Should be gone
+Hello World! \cite{latex2e}% (1) inline comment removal (2/2): Part after percent should be gone
+
+% comment after % Should be gone
+20\textbackslash\% just a percent: Should remain
+new line \\%still a comment (2) doublebackslash percent detection: Should be gone
+
+\begin{comment}
+comment without percent (3) comment env.: Should be gone
+\end{comment}
+
+\begin{verbatim}
+\% not a comment (4) special env.: Should remain
+\end{verbatim}
+
+\begin{lstlisting}
+int a = 2 \% 1 \# ---"--- (4) special env.: Should remain
+\end{lstlisting}
+
+% (6) iffalse removal test cases
+\iffalse a. should be gone \fi
+\if0 -. should be gone \fi
+\iftrue 1. should remain \fi
+\iffalse b. should be gone
+\else 2. should remain \fi
+\if0 -. should be gone
+\else +. should remain \fi
+\iftrue 3. should remain
+\else c. should be gone \fi
+
+% (7) custom if clause removal test cases
+\iffoo should be gone too \fi
+\iffoo should be gone too
+\else should remain too \fi
+
+% the next line requires (8) no argument command cleaning
+\customcmd{just a comment: Should be gone}
+
+\bibliographystyle{plain} % Relevant for (9)
+\bibliography{example} % Relevant for (9)
+
+\end{document}
+(5) out of document removal: Should be gone

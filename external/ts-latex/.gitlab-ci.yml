@@ -1,0 +1,12 @@
+image: rust:latest
+
+stages:
+    - test
+
+test:
+    stage: test
+    script:
+        - apt update && apt install -y nodejs clang
+        - cargo install tree-sitter-cli
+        - tree-sitter generate && make
+        - tree-sitter test

@@ -1,0 +1,56 @@
+[package]
+name = "alc-ng"
+version = "0.1.0"
+edition = "2024"
+authors = ["David Schütte <david.schuette@rwth-aachen.de>"]
+readme = "README.md"
+include = ["/external/pdfium"]
+
+[[bin]]
+name = "alc-ng"
+path = "src/cleaner/main.rs"
+
+[lib]
+name = "alc_ng"
+path = "src/lib/lib.rs"
+crate-type = ["lib","cdylib"]
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.5.60", features = ["derive"] }
+fastrand = "2.3.0"
+flate2 = "1.1.9"
+glob = "0.3.3"
+image = "0.25.9"
+itertools = "0.14.0"
+log = { version = "0.4.29", features = ["std"] }
+pdfium-render = {version = "0.8.37", features = ["image_025", "thread_safe", "sync"]}
+rayon = "1.11.0"
+regex = "1.12.3"
+reqwest = {version = "0.13.2", features = ["blocking", "native-tls-vendored"]}
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde_repr = "0.1.20"
+serde_yaml_ng = "0.10.0"
+simple_logger = {version = "5.2.0", features = ["stderr"]}
+tabled = "0.20.0"
+tar = "0.4.44"
+temp-dir = "0.2.0"
+toml = "1.0.3"
+tree-sitter = "0.26.6"
+tree-sitter-latex = { version = "0.6.0", path = "external/ts-latex" }
+walkdir = "2.5.0"
+
+# This crate does not support macos
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+child_wait_timeout = "0.1.0"
+
+[build-dependencies]
+cc = "1.2.56"
+tree-sitter-generate = "0.26.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = 3
