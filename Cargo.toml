@@ -17,11 +17,11 @@ crate-type = ["lib","cdylib"]
 
 [dependencies]
 anyhow = "1.0.102"
-clap = { version = "4.5.60", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive"] }
 fastrand = "2.3.0"
 flate2 = "1.1.9"
 glob = "0.3.3"
-image = "0.25.9"
+image = "0.25.10"
 itertools = "0.14.0"
 log = { version = "0.4.29", features = ["std"] }
 pdfium-render = {version = "0.8.37", features = ["image_025", "thread_safe", "sync"]}
@@ -34,10 +34,10 @@ serde_repr = "0.1.20"
 serde_yaml_ng = "0.10.0"
 simple_logger = {version = "5.2.0", features = ["stderr"]}
 tabled = "0.20.0"
-tar = "0.4.44"
+tar = "0.4.45"
 temp-dir = "0.2.0"
-toml = "1.0.3"
-tree-sitter = "0.26.6"
+toml = "1.1.0"
+tree-sitter = "0.26.7"
 tree-sitter-latex = { version = "0.6.0", path = "external/ts-latex" }
 walkdir = "2.5.0"
 
@@ -46,8 +46,8 @@ walkdir = "2.5.0"
 child_wait_timeout = "0.1.0"
 
 [build-dependencies]
-cc = "1.2.56"
-tree-sitter-generate = "0.26.6"
+cc = "1.2.58"
+tree-sitter-generate = "0.26.7"
 
 [profile.release]
 lto = true
