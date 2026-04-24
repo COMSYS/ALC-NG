@@ -3,7 +3,7 @@
 A modern LaTeX sanitization tool for arXiv submissions. Strips unused files, comments, conditionals, and metadata while preserving the same output PDF.
 Inspired by [`arxiv_latex_cleaner`](https://github.com/google-research/arxiv-latex-cleaner) from Google.
 
-[![Paper](https://img.shields.io/badge/arXiv-2604.XXX-b31b1b.svg)](https://arxiv.org/2604.XXX)
+[![Paper](https://img.shields.io/badge/arXiv-2604.20927-b31b1b.svg)](https://arxiv.org/abs/2604.20927)
 [![Zenodo](https://img.shields.io/badge/Zenodo-Artifact-1682d4.svg)](https://zenodo.org/record/19366799)
 [![Website](https://img.shields.io/badge/Project-Website-0a7d00.svg)](https://arxiv.comsys.rwth-aachen.de)
 
@@ -232,11 +232,13 @@ int a = 2 \% 1 \# ---"--- (4) special env.: Should remain
 
 ### No metadata cleaning with default settings
 
-Due to the way that removing metadata can affect the rendering of images (e.g. rotation and color), it is disabled by default. The comapre feature will almost always report differences if the `--strip-exif` flag is used. Please verify manually that the resulting pdf still looks acceptable to you. Removing metadata is an important part to remove privacy and security sensitve information (see our paper for more information).
+Due to the way that removing metadata can affect the rendering of images (e.g. rotation and color), it is disabled by default. The compare feature will likely report differences if the `--strip-exif` flag is used. Please verify manually that the resulting PDF file still looks acceptable to you. Removing metadata is an important part to remove privacy and security sensitive information.
 
 ### No cleaning of class and style files
 
-We currently only clean `.tex` files by default. You can turn on cleaning of other latex-like files (like `.sty` and `.cls`) with the `--clean-classes` flag. Class files usually do not contain any sensitve information and are made up of complex latex code which often result in grammar parsing errors. Depending on the result error, the cleaned file can be broken. This is for example the case for the IEEE class file.
+We currently only clean `.tex` files by default. You can turn on cleaning of other latex-like files (like `.sty` and `.cls`) with the `--clean-classes` flag.
+We found class files regularly not containing sensitive information, but carrying complex latex code causing grammar parsing errors.
+Depending on the result error, the cleaned file can be broken. This is for example the case for the IEEE class file.
 
 ### Supported new-command definitions
 
@@ -295,7 +297,7 @@ If you use any portion of this work, please cite our paper:
 
 Related resources:
 
-- [![arXiv](https://img.shields.io/badge/arXiv-2604.XXX-b31b1b.svg)](https://arxiv.org/2604.XXX) Paper preprint
+- [![arXiv](https://img.shields.io/badge/arXiv-2604.20927-b31b1b.svg)](https://arxiv.org/abs/2604.20927) Paper preprint
 - [![Zenodo](https://img.shields.io/badge/Zenodo-Artifact-1682d4.svg)](https://zenodo.org/record/19366799) Reproducibility artifact
 - [![Website](https://img.shields.io/badge/Project-Website-0a7d00.svg)](https://arxiv.comsys.rwth-aachen.de) Project website
 
