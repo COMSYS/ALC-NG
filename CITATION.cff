@@ -18,6 +18,17 @@ authors:
   orcid: "https://orcid.org/0000-0001-8717-2523"
 title: "Hidden Secrets in the arXiv. Discovering, Analyzing, and Preventing Unintentional Information Disclosure in Source Files of Scientific Preprints"
 date-released: 2026-05-01
+license: MIT
+identifiers:
+  - type: doi
+    value: 10.1109/SP63933.2026.00217
+    description: Research Paper
+  - type: url
+    value: 'https://arxiv.comsys.rwth-aachen.de/'
+    description: Executive Summary
+  - type: url
+    value: 'https://zenodo.org/records/19366799'
+    description: Reproducibility Artifact
 preferred-citation:
   type: conference-paper
   authors:
@@ -37,7 +48,7 @@ preferred-citation:
     given-names: "Martin"
     orcid: "https://orcid.org/0000-0001-8717-2523"
   title: "Hidden Secrets in the arXiv. Discovering, Analyzing, and Preventing Unintentional Information Disclosure in Source Files of Scientific Preprints"
-  collection-title: "Proceedings of the 47th IEEE Symposium on Security and Privacy (S&P '26)"
+  collection-title: "Proceedings of the 2026 IEEE Symposium on Security and Privacy (SP '26)"
   month: 5
   year: 2026
   conference:

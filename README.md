@@ -1,5 +1,7 @@
 # ALC-NG
 
+![ALC-NG Logo](logo.svg)
+
 A modern LaTeX sanitization tool for arXiv submissions. Strips unused files, comments, conditionals, and metadata while preserving the same output PDF.
 Inspired by [`arxiv_latex_cleaner`](https://github.com/google-research/arxiv-latex-cleaner) from Google.
 
@@ -282,16 +284,17 @@ If you use any portion of this work, please cite our paper:
 
 > Jan Pennekamp, Johannes Lohmöller, David Schütte, Joscha Loos, Martin Henze.
 > **Hidden Secrets in the arXiv. Discovering, Analyzing, and Preventing Unintentional Information Disclosure in Source Files of Scientific Preprints.**
-> In *Proceedings of IEEE S&P 2026*, San Francisco, CA, May 18-21, 2026.
+> In *Proceedings of 2026 IEEE Symposium on Security and Privacy (SP '26)*, San Francisco, CA, May 18-21, 2026.
 
 ```bibtex
 @inproceedings{pennekamp2026arxiv,
   author    = {Pennekamp, Jan and Lohm{\"o}ller, Johannes and Sch{\"u}tte, David and Loos, Joscha and Henze, Martin},
   title     = {Hidden Secrets in the arXiv. Discovering, Analyzing, and Preventing Unintentional Information Disclosure in Source Files of Scientific Preprints},
-  booktitle = {Proceedings of the 47th IEEE Symposium on Security and Privacy (S\&P '26)},
+  booktitle = {Proceedings of the 2026 IEEE Symposium on Security and Privacy (SP '26)},
   year      = {2026},
-  address   = {San Francisco, CA, USA},
-  month     = may,
+  month     = {05},
+  publisher = {IEEE},
+  doi       = {10.1109/SP63933.2026.00217}
 }
 ```
 
