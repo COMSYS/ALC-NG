@@ -38,9 +38,7 @@ fn set_library() -> anyhow::Result<()> {
 
         verify_checksum(&lib_path)?;
 
-        let _ = BINDINGS.set(Pdfium::new(
-            Pdfium::bind_to_system_library().or_else(|_| Pdfium::bind_to_library(lib_path))?,
-        ));
+        let _ = BINDINGS.set(Pdfium::new(Pdfium::bind_to_library(lib_path)?));
     }
 
     Ok(())
