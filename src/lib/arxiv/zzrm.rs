@@ -128,7 +128,10 @@ pub struct ZeroZeroReadMe {
     stamp: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     nohyperref: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_u32_flexible"
+    )]
     texlive_version: Option<u32>,
 }
 
@@ -373,5 +376,154 @@ impl ZeroZeroReadMe {
                 SourceFile::from_path(parent_dir.as_ref().join(p), &parent_dir).ok_with_warning()
             })
             .collect()
+    }
+}
+
+fn deserialize_optional_u32_flexible<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNum {
+        Num(u32),
+        Str(String),
+        Null,
+    }
+
+    match Option::<StringOrNum>::deserialize(deserializer)? {
+        Some(StringOrNum::Num(n)) => Ok(Some(n)),
+        Some(StringOrNum::Str(s)) => s.parse::<u32>().map(Some).map_err(serde::de::Error::custom),
+        Some(StringOrNum::Null) | None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize, Debug)]
+    struct TestWrapper {
+        #[serde(default, deserialize_with = "deserialize_optional_u32_flexible")]
+        value: Option<u32>,
+    }
+
+    #[test]
+    fn test_numeric_value() {
+        let json = r#"{"value": 2023}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, Some(2023));
+    }
+
+    #[test]
+    fn test_string_numeric_value() {
+        let json = r#"{"value": "2023"}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, Some(2023));
+    }
+
+    #[test]
+    fn test_null_value() {
+        let json = r#"{"value": null}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, None);
+    }
+
+    #[test]
+    fn test_missing_field() {
+        let json = r#"{}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, None);
+    }
+
+    #[test]
+    fn test_zero_numeric() {
+        let json = r#"{"value": 0}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, Some(0));
+    }
+
+    #[test]
+    fn test_zero_string() {
+        let json = r#"{"value": "0"}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, Some(0));
+    }
+
+    #[test]
+    fn test_max_u32_numeric() {
+        let json = r#"{"value": 4294967295}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, Some(u32::MAX));
+    }
+
+    #[test]
+    fn test_max_u32_string() {
+        let json = r#"{"value": "4294967295"}"#;
+        let result: TestWrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(result.value, Some(u32::MAX));
+    }
+
+    #[test]
+    fn test_invalid_string_returns_error() {
+        let json = r#"{"value": "not_a_number"}"#;
+        let result = serde_json::from_str::<TestWrapper>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_string_returns_error() {
+        let json = r#"{"value": ""}"#;
+        let result = serde_json::from_str::<TestWrapper>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_negative_string_returns_error() {
+        let json = r#"{"value": "-1"}"#;
+        let result = serde_json::from_str::<TestWrapper>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_overflows_u32_string_returns_error() {
+        let json = r#"{"value": "4294967296"}"#;
+        let result = serde_json::from_str::<TestWrapper>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_numeric_value() {
+        let yaml = "value: 2023\n";
+        let result: TestWrapper = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(result.value, Some(2023));
+    }
+
+    #[test]
+    fn test_yaml_string_value() {
+        let yaml = "value: \"2023\"\n";
+        let result: TestWrapper = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(result.value, Some(2023));
+    }
+
+    #[test]
+    fn test_yaml_null_value() {
+        let yaml = "value: null\n";
+        let result: TestWrapper = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(result.value, None);
+    }
+
+    #[test]
+    fn test_toml_numeric_value() {
+        let toml_str = "value = 2023\n";
+        let result: TestWrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(result.value, Some(2023));
+    }
+
+    #[test]
+    fn test_toml_string_value() {
+        let toml_str = "value = \"2023\"\n";
+        let result: TestWrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(result.value, Some(2023));
     }
 }
