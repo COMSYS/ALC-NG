@@ -24,6 +24,27 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
     "pnm", "pbm", "pgm", "ppm", "qoi", "tga", "targa", "tif", "tiff", "webp",
 ];
 
+/// Conditionals defined by the iftex package
+/// List derived from https://github.com/latex3/iftex/blob/main/iftex.tex
+pub const IF_TEX_CONDITIONALS: [&[u8]; 16] = [
+    b"etex",
+    b"pdftex",
+    b"xetex",
+    b"luatex",
+    b"luahbtex",
+    b"luametatex",
+    b"ptex",
+    b"uptex",
+    b"ptexng",
+    b"vtex",
+    b"alephtex",
+    b"tutex",
+    b"texpadtex",
+    b"hint",
+    b"prote",
+    b"pdf",
+];
+
 /// Grammar names that are preserved as‑is during stripping.
 /// These tokens are simply copied to the output without modification.
 pub const GRAMMAR_PRESERVE: [&str; 38] = [
@@ -1415,9 +1436,9 @@ impl<'a> ContentStripper<'a> {
     fn handle_if_block(
         &mut self,
         node: Node<'a>,
-        previous_node: NodeHandling,
+        mut previous_node: NodeHandling,
         node_content: &'a [u8],
-        mut whitespaces: Vec<u8>,
+        mut new_content: Vec<u8>,
     ) -> Result<NodeHandling> {
         assert!(node.grammar_name() == "general_if");
 
@@ -1426,10 +1447,10 @@ impl<'a> ContentStripper<'a> {
             None => match node.next_sibling() {
                 Some(c) => c.start_byte(),
                 None => {
-                    whitespaces.extend_from_slice(node_content);
+                    new_content.extend_from_slice(node_content);
                     return exception(
                         anyhow!("Custom if does not have any child or subsequent nodes."),
-                        Kept(whitespaces),
+                        Kept(new_content),
                         "tex-cleaner",
                         self.cleaner_config.force,
                     );
@@ -1445,14 +1466,39 @@ impl<'a> ContentStripper<'a> {
 
         let is_true = match self.if_values.get(name) {
             Some(b) => b,
+            None if IF_TEX_CONDITIONALS.contains(&name) => {
+                warn!(
+                    "If '{}' not defined. Assuming it is from the package 'iftex'. Preserving if but cleaning both branches.",
+                    String::from_utf8_lossy(name)
+                );
+                new_content.extend_from_slice(&name_with_prefix);
+
+                let mut i = 0;
+
+                while let Some(child) = node.child(i) {
+                    let result = match child.grammar_name() {
+                        r"\else" | r"\fi" => NodeHandling::Kept(
+                            self.content[child.start_byte()..child.end_byte()].to_vec(),
+                        ),
+                        _ => self.handle_node(child, previous_node.clone())?,
+                    };
+
+                    result.append_to(&mut new_content, &previous_node);
+
+                    previous_node = result;
+                    i += 1;
+                }
+
+                return Ok(Kept(new_content));
+            }
             None => {
-                whitespaces.extend_from_slice(node_content);
+                new_content.extend_from_slice(node_content);
                 return exception(
                     anyhow!(
                         "Custom if with name '{}' not defined",
                         String::from_utf8_lossy(name)
                     ),
-                    Kept(whitespaces),
+                    Kept(new_content),
                     "tex-cleaner",
                     self.cleaner_config.force,
                 );
@@ -1504,7 +1550,7 @@ impl<'a> ContentStripper<'a> {
         self.deletion_stats
             .if_evaluated_empty
             .push(node_content.to_owned());
-        Ok(IfEvaluatedEmpty(whitespaces, fullline))
+        Ok(IfEvaluatedEmpty(new_content, fullline))
     }
 
     fn handle_source_file(
