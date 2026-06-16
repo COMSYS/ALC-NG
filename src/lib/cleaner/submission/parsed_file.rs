@@ -89,7 +89,7 @@ pub const GRAMMAR_PRESERVE: [&str; 38] = [
 ];
 
 /// Grammar names that may contain nested sub‑nodes that need to be processed recursively.
-pub const GRAMMAR_NESTING: [&str; 74] = [
+pub const GRAMMAR_NESTING: [&str; 75] = [
     "acronym_definition",
     "acronym_reference",
     "asy_enviroment",
@@ -131,6 +131,7 @@ pub const GRAMMAR_NESTING: [&str; 74] = [
     "end",
     "enum_item",
     "environment_definition",
+    "expand_after",
     "glossary_entry_definition",
     "glossary_entry_reference",
     "graphics_include",
@@ -1466,6 +1467,35 @@ impl<'a> ContentStripper<'a> {
 
         let is_true = match self.if_values.get(name) {
             Some(b) => b,
+            None if name == b"csname" => {
+                warn!(
+                    "If '{}' not defined. Assuming it is a LaTeX2e primitive conditional. Preserving if but cleaning both branches.",
+                    String::from_utf8_lossy(name)
+                );
+                new_content.extend_from_slice(&name_with_prefix);
+
+                let mut i = 0;
+
+                while let Some(child) = node.child(i) {
+                    let result = match child.grammar_name() {
+                        r"\else" | r"\fi" => {
+                            let mut c = self.whitespace_to_previous_node(&child);
+                            c.extend_from_slice(
+                                &self.content[child.start_byte()..child.end_byte()],
+                            );
+                            NodeHandling::Kept(c)
+                        }
+                        _ => self.handle_node(child, previous_node.clone())?,
+                    };
+
+                    result.append_to(&mut new_content, &previous_node);
+
+                    previous_node = result;
+                    i += 1;
+                }
+
+                return Ok(Kept(new_content));
+            }
             None if IF_TEX_CONDITIONALS.contains(&name) => {
                 warn!(
                     "If '{}' not defined. Assuming it is from the package 'iftex'. Preserving if but cleaning both branches.",
