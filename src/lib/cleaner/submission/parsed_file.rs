@@ -894,9 +894,9 @@ impl<'a> ContentStripper<'a> {
 
                 match nested_command_handled {
                     Kept(mut s) => {
-                        let mut prefix = "\\long{}".as_bytes().to_owned();
+                        let mut prefix = Vec::from(b"\\long");
                         prefix.append(&mut s);
-                        Ok(Kept(s))
+                        Ok(Kept(prefix))
                     }
                     CommandDefinitionDeleted(s, _) => {
                         // The byte in front of and after the current node is a newline, thus, we are fullline.
