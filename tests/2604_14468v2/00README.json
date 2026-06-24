@@ -1,0 +1,25 @@
+{
+   "sources" : [
+      {
+         "usage" : "toplevel",
+         "filename" : "sgp-convex-hull-simplification.tex"
+      },
+      {
+         "usage" : "ignore",
+         "filename" : "dfT1pcr.fd"
+      },
+      {
+         "usage" : "ignore",
+         "filename" : "dfT1phv.fd"
+      },
+      {
+         "usage" : "ignore",
+         "filename" : "dfT1ptm.fd"
+      }
+   ],
+   "spec_version" : 1,
+   "texlive_version" : "2025",
+   "process" : {
+      "compiler" : "pdflatex"
+   }
+}

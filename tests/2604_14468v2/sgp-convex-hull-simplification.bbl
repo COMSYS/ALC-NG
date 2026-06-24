@@ -1,0 +1,218 @@
+\newcommand{\etalchar}[1]{$^{#1}$}
+\begin{thebibliography}{\uppercase{GGM{\etalchar{*}}05}}
+
+\bibitem[ah15]{achilleMSE}
+\textsc{achille hui}:
+\newblock What is the average width of a given tetrahedron?
+\newblock Mathematics Stack Exchange, 2015.
+\newblock URL:https://math.stackexchange.com/q/1286452 (version: 2015-05-18).
+
+\bibitem[Ale22]{Alexa22}
+\textsc{Alexa M.}:
+\newblock Super-fibonacci spirals: Fast, low-discrepancy sampling of {SO(3)}.
+\newblock In \emph{{IEEE/CVF} Conference on Computer Vision and Pattern
+  Recognition, {CVPR} 2022, New Orleans, LA, USA, June 18-24, 2022} (2022),
+  {IEEE}, pp.~8281--8290.
+
+\bibitem[BDH96]{BarberDH96}
+\textsc{Barber C.~B., Dobkin D.~P., Huhdanpaa H.}:
+\newblock The quickhull algorithm for convex hulls.
+\newblock \emph{{ACM} Trans. Math. Softw. 22}, 4 (1996), 469--483.
+
+\bibitem[BHR19]{BlumHR19}
+\textsc{Blum A., Har{-}Peled S., Raichel B.}:
+\newblock Sparse approximation via generating point sets.
+\newblock \emph{{ACM} Trans. Algorithms 15}, 3 (2019), 32:1--32:16.
+
+\bibitem[Blo11]{bloom2011convexhull}
+\textsc{Bloom C.}:
+\newblock Note on convex hull, Aug. 2011.
+\newblock Blog post.
+
+\bibitem[CGM11]{ChangGM11}
+\textsc{Chang C., Gorissen B., Melchior S.}:
+\newblock Fast oriented bounding box optimization on the rotation group
+  \emph{SO}(3, {\(\mathbb{r}\)}).
+\newblock \emph{{ACM} Trans. Graph. 30}, 5 (2011), 122:1--122:16.
+
+\bibitem[CS89]{ClarksonS89}
+\textsc{Clarkson K.~L., Shor P.~W.}:
+\newblock Application of random sampling in computational geometry, {II}.
+\newblock \emph{Discret. Comput. Geom. 4} (1989), 387--421.
+
+\bibitem[GGM{\etalchar{*}}05]{CignoniGGMPS05}
+\textsc{Ganovelli P. C.~F., Gobbetti E., Marton F., Ponchio F., Scopigno R.}:
+\newblock Batched multi triangulation.
+\newblock In \emph{16th {IEEE} Visualization Conference, {IEEE} Vis 2005,
+  Minneapolis, MN, USA, October 23-28, 2005, Proceedings} (2005), {IEEE}
+  Computer Society, pp.~207--214.
+
+\bibitem[GH97]{GarlandH97}
+\textsc{Garland M., Heckbert P.~S.}:
+\newblock Surface simplification using quadric error metrics.
+\newblock In \emph{Proceedings of the 24th Annual Conference on Computer
+  Graphics and Interactive Techniques, {SIGGRAPH} 1997, Los Angeles, CA, USA,
+  August 3-8, 1997} (1997), {ACM}, pp.~209--216.
+
+\bibitem[GJ{\etalchar{*}}10]{eigenweb}
+\textsc{Guennebaud G., Jacob B., et~al.}:
+\newblock Eigen, 2010.
+\newblock https://libeigen.gitlab.io.
+
+\bibitem[Gru67]{Gruenbaum1967}
+\textsc{Gruenbaum B.}:
+\newblock \emph{Convex Polytopes}.
+\newblock 1967.
+
+\bibitem[GS85]{GuibasS85}
+\textsc{Guibas L.~J., Stolfi J.}:
+\newblock Primitives for the manipulation of general subdivisions and
+  computation of voronoi diagrams.
+\newblock \emph{{ACM} Trans. Graph. 4}, 2 (1985), 74--123.
+
+\bibitem[GS87]{GoldsmithS87}
+\textsc{Goldsmith J., Salmon J.}:
+\newblock Automatic creation of object hierarchies for ray tracing.
+\newblock \emph{{IEEE} Computer Graphics and Applications 7}, 5 (1987), 14--20.
+
+\bibitem[Hop96]{Hoppe96}
+\textsc{Hoppe H.}:
+\newblock Progressive meshes.
+\newblock In \emph{Proceedings of the 23rd Annual Conference on Computer
+  Graphics and Interactive Techniques, {SIGGRAPH} 1996, New Orleans, LA, USA,
+  August 4-9, 1996} (1996), Fujii J., (Ed.), {ACM}, pp.~99--108.
+
+\bibitem[JLSW02]{JuLSW02}
+\textsc{Ju T., Losasso F., Schaefer S., Warren J.~D.}:
+\newblock Dual contouring of hermite data.
+\newblock \emph{{ACM} Trans. Graph. 21}, 3 (2002), 339--346.
+
+\bibitem[JP{\etalchar{*}}18]{libigl}
+\textsc{Jacobson A., Panozzo D., et~al.}:
+\newblock {libigl}: A simple {C++} geometry processing library, 2018.
+\newblock https://libigl.github.io/.
+
+\bibitem[Kli23]{Klimenko23}
+\textsc{Klimenko G.}:
+\newblock \emph{Convex Hull Simplification and Geometric Hardness}.
+\newblock PhD thesis, The University of Texas at Dallas, 2023.
+
+\bibitem[KRB21]{KlimenkoRB21}
+\textsc{Klimenko G., Raichel B., Buskirk G.~V.}:
+\newblock Sparse convex hull coverage.
+\newblock \emph{Comput. Geom. 98} (2021), 101787.
+
+\bibitem[LMSJ25]{LingMSJ25}
+\textsc{Ling S., Madan A., Sharp N., Jacobson A.}:
+\newblock Uniform sampling of surfaces by casting rays.
+\newblock \emph{Comput. Graph. Forum 44}, 5 (2025).
+
+\bibitem[LR00]{LopezR00}
+\textsc{L{\'{o}}pez M.~A., Reisner S.}:
+\newblock Efficient approximation of convex polygons.
+\newblock \emph{Int. J. Comput. Geom. Appl. 10}, 5 (2000), 445--452.
+
+\bibitem[LR02]{LopezR02}
+\textsc{L{\'{o}}pez M.~A., Reisner S.}:
+\newblock Linear time approximation of 3d convex polytopes.
+\newblock \emph{Comput. Geom. 23}, 3 (2002), 291--301.
+
+\bibitem[Mam16]{Mamou2016}
+\textsc{Mamou K.}:
+\newblock Volumetric hierarchical approximate convex decomposition.
+\newblock \emph{Game Engine Gems 3} (2016).
+
+\bibitem[MB90]{MacDonaldB90}
+\textsc{MacDonald J.~D., Booth K.~S.}:
+\newblock Heuristics for ray tracing using space subdivision.
+\newblock \emph{Vis. Comput. 6}, 3 (1990), 153--166.
+
+\bibitem[MCK13]{MuellerCK13}
+\textsc{M{\"{u}}ller M., Chentanez N., Kim T.}:
+\newblock Real time dynamic fracture with volumetric approximate convex
+  decompositions.
+\newblock \emph{{ACM} Trans. Graph. 32}, 4 (2013), 115:1--115:10.
+
+\bibitem[MDSB02]{MeyerDSB02}
+\textsc{Meyer M., Desbrun M., Schr{\"{o}}der P., Barr A.~H.}:
+\newblock Discrete differential-geometry operators for triangulated
+  2-manifolds.
+\newblock In \emph{Third International Workshop "Visualization and
+  Mathematics", VisMath 2002, Berlin, Germany, May 22-25, 2002} (2002), Hege
+  H., Polthier K., (Eds.), Mathematics and Visualization, Springer, pp.~35--57.
+
+\bibitem[Mil69]{Miles1969}
+\textsc{Miles R.~E.}:
+\newblock Poisson flats in euclidean spaces part i: A finite number of random
+  uniform flats.
+\newblock \emph{Advances in Applied Probability 1}, 2 (1969), 211–237.
+
+\bibitem[Mos06]{moszynska2006selected}
+\textsc{Moszy{\'n}ska M.}:
+\newblock \emph{Selected Topics in Convex Geometry}.
+\newblock 2006.
+
+\bibitem[PJH16]{PBRT3e}
+\textsc{Pharr M., Jakob W., Humphreys G.}:
+\newblock \emph{Physically Based Rendering: From Theory to Implementation (3rd
+  ed.)}, 3rd~ed.
+\newblock Morgan Kaufmann Publishers Inc., San Francisco, CA, USA, Oct. 2016.
+
+\bibitem[RSW01]{Reisner2001}
+\textsc{Reisner S., Schuett C., Werner E.}:
+\newblock Dropping a vertex or a facet from a convex polytope.
+\newblock \emph{Forum Mathematicum 13} (01 2001), 359--378.
+
+\bibitem[S{\etalchar{*}}19]{polyscope}
+\textsc{Sharp N., et~al.}:
+\newblock Polyscope, 2019.
+\newblock www.polyscope.run.
+
+\bibitem[Sei91]{Seidel91}
+\textsc{Seidel R.}:
+\newblock Small-dimensional linear programming and convex hulls made easy.
+\newblock \emph{Discret. Comput. Geom. 6} (1991), 423--434.
+
+\bibitem[SGG{\etalchar{*}}00]{SanderGGHS00}
+\textsc{Sander P.~V., Gu X., Gortler S.~J., Hoppe H., Snyder J.~M.}:
+\newblock Silhouette clipping.
+\newblock In \emph{Proceedings of the 27th Annual Conference on Computer
+  Graphics and Interactive Techniques, {SIGGRAPH} 2000, New Orleans, LA, USA,
+  July 23-28, 2000} (2000), Brown J.~R., Akeley K., (Eds.), {ACM},
+  pp.~327--334.
+
+\bibitem[She97]{shewchuk97a}
+\textsc{Shewchuk J.~R.}:
+\newblock Adaptive {P}recision {F}loating-{P}oint {A}rithmetic and {F}ast
+  {R}obust {G}eometric {P}redicates.
+\newblock \emph{Discrete \& Computational Geometry 18}, 3 (Oct. 1997),
+  305--363.
+
+\bibitem[STL{\etalchar{*}}25]{Schott25}
+\textsc{Schott H., Thonat T., Lambert T., Gu{\'e}rin E., Galin E., Paris A.}:
+\newblock Sphere carving: Bounding volumes for signed distance fields.
+\newblock \emph{ACM Transactions on Graphics 44}, 4 (2025).
+\newblock Proceedings of SIGGRAPH 2025.
+
+\bibitem[TLG17]{TanLG17}
+\textsc{Tan J., Lien J., Gingold Y.~I.}:
+\newblock Decomposing images into layers via rgb-space geometry.
+\newblock \emph{{ACM} Trans. Graph. 36}, 1 (2017), 7:1--7:14.
+
+\bibitem[Wan22]{sdlp}
+\textsc{Wang Z.}:
+\newblock Sdlp, 2022.
+\newblock https://github.com/ZJU-FAST-Lab/SDLP.
+
+\bibitem[WLLS22]{wei2022coacd}
+\textsc{Wei X., Liu M., Ling Z., Su H.}:
+\newblock Approximate convex decomposition for 3d meshes with collision-aware
+  concavity and tree search.
+\newblock \emph{ACM Transactions on Graphics (TOG) 41}, 4 (2022), 1--18.
+
+\bibitem[ZGZJ16]{Zhou:2016:MASG}
+\textsc{Zhou Q., Grinspun E., Zorin D., Jacobson A.}:
+\newblock Mesh arrangements for solid geometry.
+\newblock \emph{ACM Transactions on Graphics (TOG) 35}, 4 (2016).
+
+\end{thebibliography}

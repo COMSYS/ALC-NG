@@ -59,4 +59,24 @@ Text  \Ignore{(Comment)}  Besides
         assert!(stripped.contains_slice(b"Text  {}  Besides"));
         assert!(_deletion_stats.grammar_errors.len() == 0);
     }
+
+    #[test]
+    fn long_newcommand() {
+        let input = br#"\long\def\Ignore{1}"#;
+
+        let tree = parse(input).unwrap();
+        let (stripped, _deletion_stats) = ContentStripper::clean(
+            input,
+            tree.root_node(),
+            "test.tex",
+            Arc::new(CleanerConfig::default()),
+        )
+        .unwrap();
+
+        let stripped = stripped.unwrap();
+        println!("{:?}", String::from_utf8_lossy(&stripped));
+
+        assert!(stripped.contains_slice(br"\long\def\Ignore{1}"));
+        assert!(_deletion_stats.grammar_errors.len() == 0);
+    }
 }
