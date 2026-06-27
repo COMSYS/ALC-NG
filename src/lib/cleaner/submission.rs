@@ -23,6 +23,7 @@ use crate::{
     compare::{Comparer, PixelPerfect},
     exif_tool,
     helper::{ResultOkWithWarning as _, SourceFile, find_mains},
+    progress::CompilationSpinner,
 };
 
 pub mod deletion_stats;
@@ -364,17 +365,18 @@ impl Submission {
         // If no commands were created, log a warning to indicate a missing main file.
         if commands.is_empty() {
             warn!("No LaTeX commands to run. Either no main files found or 00readme is empty.");
+            return;
         }
 
-        // Execute each command, collecting the resulting Output into the `latex_output` map.
-        // The map key is the main file; the value is the Result of the command execution.
+        // Execute each command with a spinner, collecting the resulting Output
+        // into the `latex_output` map. The map key is the main file; the value
+        // is the Result of the command execution.
+        let mut spinner = CompilationSpinner::new(commands.len());
+
         self.latex_output = commands
             .into_iter()
             .map(|(main_file, mut cmd)| {
-                info!(
-                    "Compiling main file (this may take a while): {}",
-                    main_file.relative().display()
-                );
+                spinner.update(&main_file.relative().display().to_string());
                 let result = cmd.output();
                 match &result {
                     Ok(output) => {
@@ -400,6 +402,7 @@ impl Submission {
             })
             .collect();
 
+        spinner.finish();
         self.print_compile_failures();
     }
 
@@ -811,7 +814,9 @@ impl Submission {
     }
 
     pub fn compare(&self) -> CompareResult {
+        use std::process::{Command, Stdio};
         use walkdir::WalkDir;
+
         let compile_folder = TempDir::with_prefix("alc-ng_")?;
 
         let walker = WalkDir::new(self.target_path());
@@ -830,46 +835,52 @@ impl Submission {
             }
         }
 
-        let compile_results = self.get_mains().into_iter().map(|main_file| {
-            use std::process::{Command, Stdio};
+        let main_files: Vec<_> = self.get_mains().into_iter().collect();
 
-            info!(
-                "Compiling cleaned main file for comparison: {}",
-                main_file.relative().display()
-            );
+        // Compile each cleaned main file with a spinner
+        let mut spinner = CompilationSpinner::new(main_files.len());
+        let compile_results: Vec<_> = main_files
+            .into_iter()
+            .map(|main_file| {
+                spinner.update(&main_file.relative().display().to_string());
 
-            let mut cmd = Command::new(&self.latex_cmd);
+                let mut cmd = Command::new(&self.latex_cmd);
 
-            // Run in batch mode, record used files, and output PDF.
-            cmd.args([
-                "-cd",
-                "-f",
-                "-pdf",
-                "-interaction=nonstopmode",
-                "-synctex=1",
-                "-recorder",
-                "-bibtex-",
-            ]);
+                // Run in batch mode, record used files, and output PDF.
+                cmd.args([
+                    "-cd",
+                    "-f",
+                    "-pdf",
+                    "-interaction=nonstopmode",
+                    "-synctex=1",
+                    "-recorder",
+                    "-bibtex-",
+                ]);
 
-            // Append any additional LaTeX compiler arguments.
-            cmd.args(&self.latex_parameters);
+                // Append any additional LaTeX compiler arguments.
+                cmd.args(&self.latex_parameters);
 
-            // Target the main TeX file.
-            cmd.arg(main_file.relative());
+                // Target the main TeX file.
+                cmd.arg(main_file.relative());
 
-            // Execute the command in the cache directory.
-            cmd.current_dir(&compile_folder);
+                // Execute the command in the cache directory.
+                cmd.current_dir(&compile_folder);
 
-            cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::null());
+                cmd.stdout(Stdio::null());
+                cmd.stderr(Stdio::null());
 
-            (
-                main_file,
-                cmd.status().map(|s| s.success()).unwrap_or(false),
-            )
-        });
+                (
+                    main_file,
+                    cmd.status().map(|s| s.success()).unwrap_or(false),
+                )
+            })
+            .collect();
 
+        spinner.finish();
+
+        // Compare the compiled results
         compile_results
+            .into_iter()
             .map(|(f, success)| {
                 if !success {
                     warn!(
@@ -919,14 +930,17 @@ impl Submission {
                 .collect::<Result<HashSet<_>, _>>()?,
             None => find_mains(self.cache_path.path())?,
         };
-        info!(
-            "Found the following main TeX file(s):\n{}",
-            self.possible_main_files
-                .iter()
-                .map(|f| format!(" - {}", f.relative().to_string_lossy()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+
+        if !std::io::stderr().is_terminal() {
+            info!(
+                "Found the following main TeX file(s):\n{}",
+                self.possible_main_files
+                    .iter()
+                    .map(|f| format!(" - {}", f.relative().to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
 
         // Compile the identified main files using LaTeX.
         self.compile();

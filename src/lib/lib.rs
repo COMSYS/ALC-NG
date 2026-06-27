@@ -4,3 +4,4 @@ pub mod compare;
 pub mod exif_tool;
 pub mod helper;
 pub mod parsing;
+pub mod progress;
