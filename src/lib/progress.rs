@@ -13,6 +13,12 @@ pub struct CompilationSpinner {
     total: usize,
 }
 
+impl Drop for CompilationSpinner {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 impl CompilationSpinner {
     /// Creates a new spinner for `total` files.
     ///
