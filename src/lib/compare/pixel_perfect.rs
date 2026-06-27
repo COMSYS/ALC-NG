@@ -100,7 +100,7 @@ impl Comparer for PixelPerfect {
     fn diff<S: AsRef<Path>, T: AsRef<Path>>(
         left: S,
         right: T,
-    ) -> anyhow::Result<HashMap<usize, (DynamicImage, DynamicImage)>> {
+    ) -> anyhow::Result<HashMap<usize, (Option<DynamicImage>, Option<DynamicImage>)>> {
         let left_images = Self::pdfimages(left).context("Failed to handle left images")?;
         let right_images = Self::pdfimages(right).context("Failed to handle right images")?;
 
@@ -111,11 +111,12 @@ impl Comparer for PixelPerfect {
             .filter_map(|(i, v)| match v {
                 itertools::EitherOrBoth::Both(l, r) => {
                     if l != r {
-                        return Some((i, (l, r)));
+                        return Some((i, (Some(l), Some(r))));
                     }
                     None
                 }
-                _ => None,
+                itertools::EitherOrBoth::Left(l) => Some((i, (Some(l), None))),
+                itertools::EitherOrBoth::Right(r) => Some((i, (None, Some(r)))),
             })
             .collect())
     }

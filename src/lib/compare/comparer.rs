@@ -8,7 +8,7 @@ pub trait Comparer {
     fn diff<S: AsRef<Path>, T: AsRef<Path>>(
         left: S,
         right: T,
-    ) -> anyhow::Result<HashMap<usize, (DynamicImage, DynamicImage)>>;
+    ) -> anyhow::Result<HashMap<usize, (Option<DynamicImage>, Option<DynamicImage>)>>;
 
     fn are_equal<S: AsRef<Path>, T: AsRef<Path>>(left: S, right: T) -> bool;
 }

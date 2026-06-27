@@ -35,7 +35,7 @@ mod tests {
                 .compare()
                 .unwrap()
                 .into_iter()
-                .all(|(_, res)| res.is_empty())
+                .all(|(_, res)| res.is_some_and(|r| r.is_empty()))
         );
     }
 }
