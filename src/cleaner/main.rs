@@ -223,8 +223,6 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
     )?;
     submission.run()?;
 
-    submission.stats().pretty_print(CONFIG.verbose);
-
     if CONFIG.compare {
         let compile_folder = TempDir::with_prefix("alc-ng_")?;
 
@@ -322,6 +320,8 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
             anyhow::bail!("At least one main file has problems.");
         }
     }
+
+    submission.stats().pretty_print(CONFIG.verbose);
 
     Ok(())
 }
