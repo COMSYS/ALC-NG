@@ -27,6 +27,8 @@ pub struct CleanerConfig {
     pub skip_watermark: bool,
     /// Main files override
     pub user_provided_main_files: Option<Vec<PathBuf>>,
+    /// Print full LaTeX compiler output on failure.
+    pub verbose: bool,
 }
 
 impl Default for CleanerConfig {
@@ -44,6 +46,7 @@ impl Default for CleanerConfig {
             exiftool_args: Vec::new(),
             skip_watermark: false,
             user_provided_main_files: None,
+            verbose: false,
         }
     }
 }

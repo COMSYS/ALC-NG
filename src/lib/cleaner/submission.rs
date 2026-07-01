@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
     fs::{File, FileTimes},
-    io::Write,
+    io::{IsTerminal as _, Write},
     ops::Not,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -28,7 +28,8 @@ use crate::{
 pub mod deletion_stats;
 pub mod parsed_file;
 
-type CompareResult = Result<HashMap<String, HashMap<usize, (DynamicImage, DynamicImage)>>>;
+type CompareResult =
+    Result<HashMap<String, Option<HashMap<usize, (Option<DynamicImage>, Option<DynamicImage>)>>>>;
 
 /// This struct contains all information needed to clean a LaTeX project.
 pub struct Submission {
@@ -381,10 +382,9 @@ impl Submission {
                             trace!("Compilation successful for {:?}", main_file.relative());
                         } else {
                             warn!(
-                                "Compilation failed for {:?} with status: {}:{:?}",
+                                "Compilation failed for {:?} with status: {}",
                                 main_file.relative(),
-                                output.status,
-                                String::from_utf8_lossy(&output.stderr)
+                                output.status
                             );
                         }
                     }
@@ -399,6 +399,85 @@ impl Submission {
                 (main_file, result)
             })
             .collect();
+
+        self.print_compile_failures();
+    }
+
+    /// Print stdout/stderr of failed compilations.
+    ///
+    /// If `verbose` is enabled, prints full output to stdout unconditionally.
+    /// Otherwise, asks the user via a y/n prompt whether to show the output.
+    fn print_compile_failures(&self) {
+        let has_failures = self
+            .latex_output
+            .values()
+            .any(|r| r.as_ref().is_ok_and(|o| o.status.code() != Some(0)));
+
+        if !has_failures {
+            return;
+        }
+
+        if self.cleaner_config.verbose {
+            self.print_failed_output();
+        } else {
+            use dialoguer::Confirm;
+            let should_show = if std::io::stdin().is_terminal() {
+                Confirm::new()
+                    .with_prompt("LaTeX compilation failed. Show full compiler output?")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false)
+            } else {
+                // Not a TTY (CI, piped input) — show output directly
+                true
+            };
+
+            if should_show {
+                self.print_failed_output();
+            }
+        }
+    }
+
+    /// Print the stdout/stderr of all failed compilations to stdout.
+    fn print_failed_output(&self) {
+        for (main_file, result) in &self.latex_output {
+            if let Ok(output) = result {
+                if !output.status.success() {
+                    let _ = writeln!(
+                        std::io::stdout(),
+                        "\n=== Compilation failed: {} ===",
+                        main_file.relative().display()
+                    );
+                    let _ = std::io::stdout().flush();
+
+                    if !output.stdout.is_empty() {
+                        let _ = writeln!(
+                            std::io::stdout(),
+                            "--- stdout ---\n{}\n---",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
+                        let _ = std::io::stdout().flush();
+                    }
+
+                    if !output.stderr.is_empty() {
+                        let _ = writeln!(
+                            std::io::stdout(),
+                            "--- stderr ---\n{}\n---",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+            } else if let Err(e) = result {
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "\n=== Failed to execute compilation for {}: {} ===",
+                    main_file.relative().display(),
+                    e
+                );
+                let _ = std::io::stdout().flush();
+            }
+        }
     }
 
     /// Detects BibTeX references that were not captured by the LaTeX recorder.
@@ -751,7 +830,7 @@ impl Submission {
             }
         }
 
-        for main_file in self.get_mains() {
+        let compile_results = self.get_mains().into_iter().map(|main_file| {
             use std::process::{Command, Stdio};
 
             info!(
@@ -784,39 +863,34 @@ impl Submission {
             cmd.stdout(Stdio::null());
             cmd.stderr(Stdio::null());
 
-            // Return a clone of the file reference along with its command.
-            if !cmd.status()?.success() {
-                warn!(
-                    "Failed to compile cleaned main file {}",
-                    main_file.relative().display()
-                );
-            };
-        }
+            (
+                main_file,
+                cmd.status().map(|s| s.success()).unwrap_or(false),
+            )
+        });
 
-        self
-            .get_mains()
-            .iter()
-            .map(|f| {
+        compile_results
+            .map(|(f, success)| {
+                if !success {
+                    warn!(
+                        "Failed to compile cleaned main file: {}",
+                        f.relative().display()
+                    );
+                    return Ok((f.relative().display().to_string(), None));
+                }
+
                 let original = f.full().with_extension("pdf");
                 let new_version = compile_folder
                     .path()
                     .join(f.relative().with_extension("pdf"));
 
                 if !original.exists() || !new_version.exists() {
-                    return Ok((f.relative().display().to_string(), HashMap::new()));
+                    return Ok((f.relative().display().to_string(), None));
                 }
+
                 let r = PixelPerfect::diff(&original, &new_version)?;
 
-                if !original.exists() {
-                    warn!("Original version did not compile successfully. Expected file {:?} to exist.", original)
-                }
-
-                if !new_version.exists() {
-                    warn!("Cleaned version did not compile successfully. Expected file {:?} to exist.", new_version)
-                }
-
-
-                Ok((f.relative().display().to_string(), r))
+                Ok((f.relative().display().to_string(), Some(r)))
             })
             .collect()
     }

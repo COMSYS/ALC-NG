@@ -98,6 +98,7 @@ impl Config {
             strip_exif: self.strip_exif,
             skip_watermark: self.skip_watermark,
             user_provided_main_files: self.main_files.clone(),
+            verbose: self.verbose,
         }
     }
 
@@ -196,7 +197,10 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
     if CONFIG.target_path.exists() {
         use dialoguer::Confirm;
         if Confirm::new()
-            .with_prompt("The target path already exists, do you want to override it?")
+            .with_prompt(format!(
+                "The target path ({}) already exists, do you want to override its contents?",
+                CONFIG.target_path.display()
+            ))
             .interact()?
             || !std::io::stdin().is_terminal()
         {
@@ -241,8 +245,19 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
         }
 
         let mut same = true;
+        let mut has_fail = false;
 
-        for (f, res) in submission.compare()?.into_iter() {
+        let comparison = submission.compare()?;
+
+        for (f, res) in comparison.into_iter() {
+            let res = match res {
+                Some(res) => res,
+                None => {
+                    has_fail = true;
+                    continue;
+                }
+            };
+
             if res.is_empty() {
                 continue;
             }
@@ -260,23 +275,51 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
             );
 
             let color = parse_hex_color(&CONFIG.diff_color)?;
-            for (page, (l, r)) in res {
+            for (page, imgs) in res.into_iter().sorted_by(|l, r| l.0.cmp(&r.0)) {
                 let path = CONFIG.target_path.join(format!("{}_{}.jpg", f, page));
-                image_diff(&l, &r, color)?.save_with_format(&path, image::ImageFormat::Jpeg)?;
 
-                info!(
-                    "Saved image diff for page {} of file {}: {}",
-                    page,
-                    f,
-                    path.display()
-                );
+                match imgs {
+                    (Some(l), Some(r)) => {
+                        image_diff(&l, &r, color)?
+                            .save_with_format(&path, image::ImageFormat::Jpeg)?;
+                        info!(
+                            "Saved image diff for page {} of file {}: {}",
+                            page,
+                            f,
+                            path.display()
+                        );
+                    }
+                    (Some(l), None) => {
+                        l.save_with_format(&path, image::ImageFormat::Jpeg)?;
+                        info!(
+                            "Saved image of original version for page {} of file {} (cleaned did not have this page): {}",
+                            page,
+                            f,
+                            path.display()
+                        );
+                    }
+                    (None, Some(r)) => {
+                        r.save_with_format(&path, image::ImageFormat::Jpeg)?;
+                        info!(
+                            "Saved image of cleaned version for page {} of file {} (original did not have this page): {}",
+                            page,
+                            f,
+                            path.display()
+                        );
+                    }
+                    _ => {}
+                }
             }
         }
 
-        if same {
+        if same && !has_fail {
             info!(
                 "The cleaned submission has no differences from the source. They are pixel-identical."
             );
+        }
+
+        if has_fail {
+            anyhow::bail!("At least one main file has problems.");
         }
     }
 
