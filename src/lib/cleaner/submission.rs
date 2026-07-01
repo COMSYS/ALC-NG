@@ -142,6 +142,16 @@ impl Submission {
             }
         };
 
+        if let Some(zzrm) = &zzrm {
+            info!(
+                "00Readme found at: {}",
+                zzrm.path
+                    .strip_prefix(&input_path)
+                    .unwrap_or(&zzrm.path)
+                    .display()
+            );
+        }
+
         // Ensure the output directory exists; create it if it does not.
         create_dir_all(&target_path).context("Failed to create output directory")?;
         trace!("Created/verified target directory: {:?}", target_path);
@@ -150,8 +160,6 @@ impl Submission {
         create_dir_all(&cache_dir).context("Faild to create cache directory")?;
         trace!("Created/verified cache directory: {:?}", cache_dir.path());
 
-        // Construct the `Submission` struct with all fields initialized.
-        trace!("Submission instance created successfully");
         Ok(Self {
             cleaner_config,
             input_path,
