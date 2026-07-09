@@ -4,7 +4,7 @@ use alc_ng::{
     helper::{ResultOkWithWarning, image_diff, parse_hex_color},
 };
 
-use clap::{Parser, ValueHint};
+use clap::{ArgAction, Parser, ValueHint};
 use itertools::Itertools;
 use log::{LevelFilter, info, trace};
 use std::{
@@ -33,10 +33,8 @@ pub struct Config {
     #[arg(long)]
     pub latex_args: Vec<String>,
     /// If set, enable debug‑level logging.
-    #[arg(long, short, default_value_t = false)]
-    pub verbose: bool,
-    #[arg(long = "vv", default_value_t = false)]
-    pub debug: bool,
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
     /// Also compile the cleaned folder and compare the cleaned pdf output with the original pdfs.
     #[arg(long, short, default_value_t = false)]
     pub compare: bool,
@@ -98,7 +96,7 @@ impl Config {
             strip_exif: self.strip_exif,
             skip_watermark: self.skip_watermark,
             user_provided_main_files: self.main_files.clone(),
-            verbose: self.verbose,
+            verbose: self.verbose != 0,
         }
     }
 
@@ -154,10 +152,10 @@ pub fn ensure_requirements() {
 }
 
 fn main() -> anyhow::Result<(), anyhow::Error> {
-    let log_level = match (CONFIG.debug, CONFIG.verbose) {
-        (true, _) => log::LevelFilter::Trace,
-        (false, true) => log::LevelFilter::Debug,
-        (false, false) => log::LevelFilter::Info,
+    let log_level = match CONFIG.verbose {
+        0 => log::LevelFilter::Info,
+        1 => log::LevelFilter::Debug,
+        _ => log::LevelFilter::Trace,
     };
 
     env_logger::builder()
@@ -321,7 +319,7 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
         }
     }
 
-    submission.stats().pretty_print(CONFIG.verbose);
+    submission.stats().pretty_print(CONFIG.verbose != 0);
 
     Ok(())
 }

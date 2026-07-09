@@ -17,7 +17,7 @@ pub use find_mains::find_mains;
 pub use fls_parser::parse_fls;
 pub use image_diff::{image_diff, parse_hex_color};
 pub use is_newline::is_newline;
-pub use latexmk_bib_parser::find_referenced_bibs;
+pub use latexmk_bib_parser::{find_referenced_bibs, find_referenced_bsts};
 pub use log_ok::ResultOkWithWarning;
 pub use node_empty::is_empty;
 pub use source_file::GroupSourceFiles;

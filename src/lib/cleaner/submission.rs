@@ -22,7 +22,7 @@ use crate::{
     },
     compare::{Comparer, PixelPerfect},
     exif_tool,
-    helper::{ResultOkWithWarning as _, SourceFile, find_mains},
+    helper::{ResultOkWithWarning as _, SourceFile, find_mains, find_referenced_bsts},
     progress::CompilationSpinner,
 };
 
@@ -54,6 +54,8 @@ pub struct Submission {
     latex_output: HashMap<SourceFile, std::io::Result<Output>>,
     /// List of bib files that were referenced in the log output during the compilation process of latexmk. A .bib file that is compiled by bibtex during latexmk is not listed in the recorder option of pdflatex.
     latexmk_referenced_bibs: HashSet<SourceFile>,
+    /// List of bst style files that were referenced in the log output during the compilation process of latexmk. A .bst file that is used by bibtex during latexmk is not listed in the recorder option of pdflatex.
+    latexmk_referenced_bsts: HashSet<SourceFile>,
     /// A set of possible latex files that contain text hinting at them being a main tex file.
     possible_main_files: HashSet<SourceFile>,
     /// The command used to compile the LaTeX document.
@@ -171,6 +173,7 @@ impl Submission {
             recorder_outputs: HashSet::new(),
             latex_output: HashMap::new(),
             latexmk_referenced_bibs: HashSet::new(),
+            latexmk_referenced_bsts: HashSet::new(),
             possible_main_files: HashSet::new(),
             latex_cmd: latex_cmd.to_string(),
             latex_parameters: latex_parameters.clone(),
@@ -509,9 +512,22 @@ impl Submission {
             .flat_map(|content| find_referenced_bibs(content.as_ref(), &self.cache_path)) // find bib files in the output
             .collect(); // gather into a HashSet
 
+        self.latexmk_referenced_bsts = self
+            .latex_output
+            .values()
+            .map(|o| o.as_ref()) // keep only successful outputs
+            .filter_map(Result::ok_with_warning)
+            .map(|o| String::from_utf8_lossy(&o.stdout[..])) // decode stdout as UTF-8 lossily
+            .flat_map(|content| find_referenced_bsts(content.as_ref(), &self.cache_path)) // find bib files in the output
+            .collect(); // gather into a HashSet
+
         trace!(
             "Found {} BibTeX file(s) referenced in latexmk output",
             self.latexmk_referenced_bibs.len()
+        );
+        trace!(
+            "Found {} BibTeX style file(s) referenced in latexmk output",
+            self.latexmk_referenced_bsts.len()
         );
     }
 
@@ -574,6 +590,7 @@ impl Submission {
         let all_used: HashSet<_> = self
             .recorder_inputs
             .union(&self.latexmk_referenced_bibs)
+            .chain(&self.latexmk_referenced_bsts)
             .collect();
         trace!("Total files marked as used: {}", all_used.len());
 

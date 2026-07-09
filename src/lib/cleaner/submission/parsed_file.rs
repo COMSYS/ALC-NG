@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsStr,
     fmt::Debug,
     fs::read,
     hash::Hash,
@@ -482,7 +483,16 @@ impl ParsedFile {
                     stats: Default::default(),
                 })
             }
-            Some(ext) if ext == "bib" => {
+            Some(ext)
+                if [
+                    OsStr::new("bib"),
+                    OsStr::new("bst"),
+                    OsStr::new("bbx"),
+                    OsStr::new("dbx"),
+                    OsStr::new("cbx"),
+                ]
+                .contains(&ext) =>
+            {
                 trace!("Detected BibTeX file: {}", path.display());
                 Self::Bib(BibFile {
                     cleaner_config,
