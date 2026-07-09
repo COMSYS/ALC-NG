@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsStr,
     fmt::Debug,
     fs::read,
     hash::Hash,
@@ -482,7 +483,16 @@ impl ParsedFile {
                     stats: Default::default(),
                 })
             }
-            Some(ext) if ext == "bib" => {
+            Some(ext)
+                if [
+                    OsStr::new("bib"),
+                    OsStr::new("bst"),
+                    OsStr::new("bbx"),
+                    OsStr::new("dbx"),
+                    OsStr::new("cbx"),
+                ]
+                .contains(&ext) =>
+            {
                 trace!("Detected BibTeX file: {}", path.display());
                 Self::Bib(BibFile {
                     cleaner_config,
@@ -1469,8 +1479,11 @@ impl<'a> ContentStripper<'a> {
             Some(b) => b,
             None if name == b"csname" => {
                 warn!(
-                    "If '{}' not defined. Assuming it is a LaTeX2e primitive conditional. Preserving if but cleaning both branches.",
-                    String::from_utf8_lossy(name)
+                    "If '{}' not defined at {}:{}:{}. Assuming it is a LaTeX2e primitive conditional. Preserving if but cleaning both branches.",
+                    String::from_utf8_lossy(name),
+                    self.filename,
+                    node.start_position().row + 1,
+                    node.start_position().column
                 );
                 new_content.extend_from_slice(&name_with_prefix);
 
@@ -1498,8 +1511,11 @@ impl<'a> ContentStripper<'a> {
             }
             None if IF_TEX_CONDITIONALS.contains(&name) => {
                 warn!(
-                    "If '{}' not defined. Assuming it is from the package 'iftex'. Preserving if but cleaning both branches.",
-                    String::from_utf8_lossy(name)
+                    "If '{}' not defined at {}:{}:{}. Assuming it is from the package 'iftex'. Preserving if but cleaning both branches.",
+                    String::from_utf8_lossy(name),
+                    self.filename,
+                    node.start_position().row + 1,
+                    node.start_position().column
                 );
                 new_content.extend_from_slice(&name_with_prefix);
 
@@ -1525,8 +1541,11 @@ impl<'a> ContentStripper<'a> {
                 new_content.extend_from_slice(node_content);
                 return exception(
                     anyhow!(
-                        "Custom if with name '{}' not defined",
-                        String::from_utf8_lossy(name)
+                        "Custom if with name '{}' not defined at {}:{}:{}",
+                        String::from_utf8_lossy(name),
+                        self.filename,
+                        node.start_position().row + 1,
+                        node.start_position().column
                     ),
                     Kept(new_content),
                     "tex-cleaner",

@@ -121,18 +121,24 @@ impl Version {
 pub struct ZeroZeroReadMe {
     #[serde(default = "Version::get_v2")]
     version: Version,
-    pub process: MainProcessSpec,
-    #[serde(deserialize_with = "ZeroZeroReadMe::sources_array_to_map")]
+    pub process: Option<MainProcessSpec>,
+    #[serde(
+        deserialize_with = "ZeroZeroReadMe::sources_array_to_map",
+        default = "BTreeMap::new"
+    )]
     pub sources: BTreeMap<String, UserFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stamp: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     nohyperref: Option<bool>,
     #[serde(
+        default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_optional_u32_flexible"
     )]
     texlive_version: Option<u32>,
+    #[serde(default)]
+    pub path: PathBuf,
 }
 
 impl ZeroZeroReadMe {
@@ -150,18 +156,26 @@ impl ZeroZeroReadMe {
         )
         .map_err(|err| ZZRMException::UnsupportedFile(err.to_string()))?
         .filter_map(Result::ok)
-        .filter_map(|p| ZeroZeroReadMe::new_from_file(p).ok_with_warning())
         .collect();
 
         if candidates.len() > 1 {
-            return Err(ZZRMException::MultipleFiles(
-                "Multiple 00readme files found".into(),
-            ));
+            let candidate_paths = candidates
+                .iter()
+                .map(|p| p.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            return Err(ZZRMException::MultipleFiles(format!(
+                "Multiple 00readme files found: {}",
+                candidate_paths
+            )));
         }
 
-        candidates
-            .pop()
-            .ok_or(ZZRMException::FileNotFound("No 00readme file found".into()))
+        if let Some(candidate) = candidates.pop() {
+            ZeroZeroReadMe::new_from_file(candidate)
+        } else {
+            return Err(ZZRMException::FileNotFound("No 00readme file found".into()));
+        }
     }
 
     pub fn new_from_file<P>(file: P) -> Result<Self, ZZRMException>
@@ -182,7 +196,7 @@ impl ZeroZeroReadMe {
             ));
         }
 
-        Ok(match ext.as_str() {
+        let mut result = match ext.as_str() {
             // v1 extensions
             "txt" | "rst" | "readme" => Self::fetch_00readme_v1(file)?,
             // v2 extensions
@@ -193,7 +207,11 @@ impl ZeroZeroReadMe {
                     ext
                 )));
             }
-        })
+        };
+
+        result.path = file.to_path_buf();
+
+        Ok(result)
     }
 
     fn fetch_00readme_v1<P>(path: P) -> Result<Self, ZZRMException>
@@ -237,9 +255,16 @@ impl ZeroZeroReadMe {
                         "append" => userfile.usage = Some(FileUsage::Append),
                         "fontmap" => {
                             // global option – add to process.fontmaps
-                            zzrm.process
-                                .fontmaps
-                                .get_or_insert_with(|| vec![filename.to_string()]);
+                            if let Some(process) = &mut zzrm.process {
+                                process
+                                    .fontmaps
+                                    .get_or_insert_with(|| vec![filename.to_string()]);
+                            } else {
+                                zzrm.process = Some(MainProcessSpec {
+                                    fontmaps: Some(vec![filename.to_string()]),
+                                    ..Default::default()
+                                });
+                            }
                         }
                         _ => {
                             // unknown keyword
@@ -337,6 +362,8 @@ impl ZeroZeroReadMe {
     ) -> Result<Vec<(SourceFile, Command)>, ZZRMException> {
         let compiler = self
             .process
+            .clone()
+            .ok_or(ZZRMException::Parse("Missing process spec".into()))?
             .compiler
             .as_ref()
             .ok_or(ZZRMException::Parse("Missing compiler spec".into()))?

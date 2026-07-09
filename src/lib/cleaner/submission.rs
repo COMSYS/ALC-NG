@@ -22,7 +22,8 @@ use crate::{
     },
     compare::{Comparer, PixelPerfect},
     exif_tool,
-    helper::{ResultOkWithWarning as _, SourceFile, find_mains},
+    helper::{ResultOkWithWarning as _, SourceFile, find_mains, find_referenced_bsts},
+    progress::CompilationSpinner,
 };
 
 pub mod deletion_stats;
@@ -53,6 +54,8 @@ pub struct Submission {
     latex_output: HashMap<SourceFile, std::io::Result<Output>>,
     /// List of bib files that were referenced in the log output during the compilation process of latexmk. A .bib file that is compiled by bibtex during latexmk is not listed in the recorder option of pdflatex.
     latexmk_referenced_bibs: HashSet<SourceFile>,
+    /// List of bst style files that were referenced in the log output during the compilation process of latexmk. A .bst file that is used by bibtex during latexmk is not listed in the recorder option of pdflatex.
+    latexmk_referenced_bsts: HashSet<SourceFile>,
     /// A set of possible latex files that contain text hinting at them being a main tex file.
     possible_main_files: HashSet<SourceFile>,
     /// The command used to compile the LaTeX document.
@@ -141,6 +144,16 @@ impl Submission {
             }
         };
 
+        if let Some(zzrm) = &zzrm {
+            info!(
+                "00Readme found at: {}",
+                zzrm.path
+                    .strip_prefix(&input_path)
+                    .unwrap_or(&zzrm.path)
+                    .display()
+            );
+        }
+
         // Ensure the output directory exists; create it if it does not.
         create_dir_all(&target_path).context("Failed to create output directory")?;
         trace!("Created/verified target directory: {:?}", target_path);
@@ -149,8 +162,6 @@ impl Submission {
         create_dir_all(&cache_dir).context("Faild to create cache directory")?;
         trace!("Created/verified cache directory: {:?}", cache_dir.path());
 
-        // Construct the `Submission` struct with all fields initialized.
-        trace!("Submission instance created successfully");
         Ok(Self {
             cleaner_config,
             input_path,
@@ -162,6 +173,7 @@ impl Submission {
             recorder_outputs: HashSet::new(),
             latex_output: HashMap::new(),
             latexmk_referenced_bibs: HashSet::new(),
+            latexmk_referenced_bsts: HashSet::new(),
             possible_main_files: HashSet::new(),
             latex_cmd: latex_cmd.to_string(),
             latex_parameters: latex_parameters.clone(),
@@ -364,17 +376,18 @@ impl Submission {
         // If no commands were created, log a warning to indicate a missing main file.
         if commands.is_empty() {
             warn!("No LaTeX commands to run. Either no main files found or 00readme is empty.");
+            return;
         }
 
-        // Execute each command, collecting the resulting Output into the `latex_output` map.
-        // The map key is the main file; the value is the Result of the command execution.
+        // Execute each command with a spinner, collecting the resulting Output
+        // into the `latex_output` map. The map key is the main file; the value
+        // is the Result of the command execution.
+        let mut spinner = CompilationSpinner::new(commands.len());
+
         self.latex_output = commands
             .into_iter()
             .map(|(main_file, mut cmd)| {
-                info!(
-                    "Compiling main file (this may take a while): {}",
-                    main_file.relative().display()
-                );
+                spinner.update(&main_file.relative().display().to_string());
                 let result = cmd.output();
                 match &result {
                     Ok(output) => {
@@ -400,6 +413,7 @@ impl Submission {
             })
             .collect();
 
+        spinner.finish();
         self.print_compile_failures();
     }
 
@@ -498,9 +512,22 @@ impl Submission {
             .flat_map(|content| find_referenced_bibs(content.as_ref(), &self.cache_path)) // find bib files in the output
             .collect(); // gather into a HashSet
 
+        self.latexmk_referenced_bsts = self
+            .latex_output
+            .values()
+            .map(|o| o.as_ref()) // keep only successful outputs
+            .filter_map(Result::ok_with_warning)
+            .map(|o| String::from_utf8_lossy(&o.stdout[..])) // decode stdout as UTF-8 lossily
+            .flat_map(|content| find_referenced_bsts(content.as_ref(), &self.cache_path)) // find bib files in the output
+            .collect(); // gather into a HashSet
+
         trace!(
             "Found {} BibTeX file(s) referenced in latexmk output",
             self.latexmk_referenced_bibs.len()
+        );
+        trace!(
+            "Found {} BibTeX style file(s) referenced in latexmk output",
+            self.latexmk_referenced_bsts.len()
         );
     }
 
@@ -563,6 +590,7 @@ impl Submission {
         let all_used: HashSet<_> = self
             .recorder_inputs
             .union(&self.latexmk_referenced_bibs)
+            .chain(&self.latexmk_referenced_bsts)
             .collect();
         trace!("Total files marked as used: {}", all_used.len());
 
@@ -811,7 +839,9 @@ impl Submission {
     }
 
     pub fn compare(&self) -> CompareResult {
+        use std::process::{Command, Stdio};
         use walkdir::WalkDir;
+
         let compile_folder = TempDir::with_prefix("alc-ng_")?;
 
         let walker = WalkDir::new(self.target_path());
@@ -830,46 +860,52 @@ impl Submission {
             }
         }
 
-        let compile_results = self.get_mains().into_iter().map(|main_file| {
-            use std::process::{Command, Stdio};
+        let main_files: Vec<_> = self.get_mains().into_iter().collect();
 
-            info!(
-                "Compiling cleaned main file for comparison: {}",
-                main_file.relative().display()
-            );
+        // Compile each cleaned main file with a spinner
+        let mut spinner = CompilationSpinner::new(main_files.len());
+        let compile_results: Vec<_> = main_files
+            .into_iter()
+            .map(|main_file| {
+                spinner.update(&main_file.relative().display().to_string());
 
-            let mut cmd = Command::new(&self.latex_cmd);
+                let mut cmd = Command::new(&self.latex_cmd);
 
-            // Run in batch mode, record used files, and output PDF.
-            cmd.args([
-                "-cd",
-                "-f",
-                "-pdf",
-                "-interaction=nonstopmode",
-                "-synctex=1",
-                "-recorder",
-                "-bibtex-",
-            ]);
+                // Run in batch mode, record used files, and output PDF.
+                cmd.args([
+                    "-cd",
+                    "-f",
+                    "-pdf",
+                    "-interaction=nonstopmode",
+                    "-synctex=1",
+                    "-recorder",
+                    "-bibtex-",
+                ]);
 
-            // Append any additional LaTeX compiler arguments.
-            cmd.args(&self.latex_parameters);
+                // Append any additional LaTeX compiler arguments.
+                cmd.args(&self.latex_parameters);
 
-            // Target the main TeX file.
-            cmd.arg(main_file.relative());
+                // Target the main TeX file.
+                cmd.arg(main_file.relative());
 
-            // Execute the command in the cache directory.
-            cmd.current_dir(&compile_folder);
+                // Execute the command in the cache directory.
+                cmd.current_dir(&compile_folder);
 
-            cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::null());
+                cmd.stdout(Stdio::null());
+                cmd.stderr(Stdio::null());
 
-            (
-                main_file,
-                cmd.status().map(|s| s.success()).unwrap_or(false),
-            )
-        });
+                (
+                    main_file,
+                    cmd.status().map(|s| s.success()).unwrap_or(false),
+                )
+            })
+            .collect();
 
+        spinner.finish();
+
+        // Compare the compiled results
         compile_results
+            .into_iter()
             .map(|(f, success)| {
                 if !success {
                     warn!(
@@ -919,14 +955,17 @@ impl Submission {
                 .collect::<Result<HashSet<_>, _>>()?,
             None => find_mains(self.cache_path.path())?,
         };
-        info!(
-            "Found the following main TeX file(s):\n{}",
-            self.possible_main_files
-                .iter()
-                .map(|f| format!(" - {}", f.relative().to_string_lossy()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+
+        if !std::io::stderr().is_terminal() {
+            info!(
+                "Found the following main TeX file(s):\n{}",
+                self.possible_main_files
+                    .iter()
+                    .map(|f| format!(" - {}", f.relative().to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
 
         // Compile the identified main files using LaTeX.
         self.compile();

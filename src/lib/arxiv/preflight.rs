@@ -58,7 +58,7 @@ impl TexFileIssue {
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct MainProcessSpec {
     pub compiler: Option<CompilerSpec>,
     pub bibiliography: Option<BibProcessSpec>,
@@ -66,7 +66,7 @@ pub struct MainProcessSpec {
     pub fontmaps: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BibProcessSpec {
     pub processor: BibCompiler,
     pub pre_generator: bool,
@@ -81,7 +81,7 @@ impl BibProcessSpec {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IndexProcessSpec {
     processor: IndexCompiler,
     pre_generated: bool,
@@ -96,7 +96,7 @@ impl IndexProcessSpec {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompilerSpec {
     pub engine: EngineType,
     pub lang: LanguageType,
@@ -393,7 +393,7 @@ pub enum PostProcessType {
     DvipsPs2pdf,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexCompiler {
     Unknown,
@@ -401,7 +401,7 @@ pub enum IndexCompiler {
     Mendex,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum BibCompiler {
     Unknown,

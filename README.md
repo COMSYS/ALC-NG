@@ -107,7 +107,7 @@ alc-ng ./my-latex-project --keep-bib --clean-classes --latex-cmd pdflatex -f
 | `--verbose` | `-v` | `false` | Enable debug logging |
 | `--force` | `-f` | `false` | Continue on recoverable errors |
 | `--main-files` | `-m` | | Manually provide a list of main tex files as compile entrypoints.<br>The cleaner can usually infer main tex files automatically. |
-| `--keep-bib` | | `false` | Keep `.bib` files (by default only the generated `.bbl` is kept) |
+| `--keep-bib` | | `false` | Keep `.bib`, `.bst`, `.bbx`, `.dbx`, and `.cbx` files (by default only the generated `.bbl` is kept) |
 | `--clean-classes` | | `false` | Also clean `.sty` and `.cls` files |
 | `--latex-cmd` | | `latexmk` | LaTeX compiler to invoke (e.g. `latexmk`, `pdflatex`) |
 | `--latex-args` | | | Extra arguments passed to the LaTeX compiler |
@@ -162,7 +162,7 @@ ALC-NG combines several techniques to sanitize LaTeX projects while preserving t
 
 ### Bib file cleaning
 
-We currently do not support stripping unused entries from bibliographies. The default action is to only preserve the `.bbl` file that suffices to compile the document. You can use the `--keep-bib` flag to also preserve the original `.bib` file when cleaning.
+We currently do not support stripping unused entries from bibliographies. The default action is to only preserve the `.bbl` file that suffices to compile the document. You can use the `--keep-bib` flag to also preserve the original `.bib`, `.bst`, `.bbx`, `.dbx`, and `.cbx`, file when cleaning.
 
 We are planning to add support for this [later](#possible-enhancements).
 
