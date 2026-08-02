@@ -2,7 +2,7 @@ use std::{collections::HashSet, path::Path, sync::LazyLock};
 
 use regex::Regex;
 
-use crate::helper::{ResultOkWithWarning as _, SourceFile};
+use crate::helper::SourceFile;
 
 static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?mi)Latexmk: Found bibliography file\(s\):\n(\s\s(\S*)\n)*^Latexmk:"#).unwrap()
@@ -40,7 +40,18 @@ pub fn find_referenced_bibs(content: &str, parent: impl AsRef<Path>) -> HashSet<
             .captures_iter(m)
             .filter_map(|c| c.get(1).map(|v| v.as_str()))
             .filter_map(|s| {
-                SourceFile::from_path(parent.as_ref().join(s), parent.as_ref()).ok_with_warning()
+                let path = parent.as_ref().join(s);
+                match SourceFile::from_path(&path, parent.as_ref()) {
+                    Ok(sf) => Some(sf),
+                    Err(e) => {
+                        log::warn!(
+                            "BibTeX file referenced by latexmk not found: {} ({})",
+                            path.display(),
+                            e
+                        );
+                        None
+                    }
+                }
             })
             .collect(),
         None => HashSet::new(),
@@ -68,7 +79,18 @@ pub fn find_referenced_bsts(content: &str, parent: impl AsRef<Path>) -> HashSet<
         .captures_iter(content)
         .filter_map(|c| c.get(1).map(|v| v.as_str()))
         .filter_map(|s| {
-            SourceFile::from_path(parent.as_ref().join(s), parent.as_ref()).ok_with_warning()
+            let path = parent.as_ref().join(s);
+            match SourceFile::from_path(&path, parent.as_ref()) {
+                Ok(sf) => Some(sf),
+                Err(e) => {
+                    log::warn!(
+                        "BibTeX style file referenced by latexmk not found: {} ({})",
+                        path.display(),
+                        e
+                    );
+                    None
+                }
+            }
         })
         .collect()
 }
