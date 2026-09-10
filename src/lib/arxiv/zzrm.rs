@@ -6,12 +6,13 @@ use std::{
     process::Command,
 };
 
+use log::warn;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
     arxiv::preflight::{BibCompiler, CompilerSpec, MainProcessSpec},
-    helper::{ResultOkWithWarning as _, SourceFile},
+    helper::SourceFile,
 };
 
 #[derive(Debug)]
@@ -174,7 +175,7 @@ impl ZeroZeroReadMe {
         if let Some(candidate) = candidates.pop() {
             ZeroZeroReadMe::new_from_file(candidate)
         } else {
-            return Err(ZZRMException::FileNotFound("No 00readme file found".into()));
+            Err(ZZRMException::FileNotFound("No 00readme file found".into()))
         }
     }
 
@@ -384,11 +385,20 @@ impl ZeroZeroReadMe {
                 cmd.arg(path);
                 cmd.current_dir(&parent_dir);
 
-                Some((
-                    SourceFile::from_path(parent_dir.as_ref().join(path), &parent_dir)
-                        .ok_with_warning()?,
-                    cmd,
-                ))
+                let source = match SourceFile::from_path(parent_dir.as_ref().join(path), &parent_dir) {
+                    Ok(source) => source,
+                    Err(e) => {
+                        warn!(
+                            "Failed to create SourceFile for top-level file {:?} in {:?} while preparing compilation: {}",
+                            path,
+                            parent_dir.as_ref(),
+                            e
+                        );
+                        return None;
+                    }
+                };
+
+                Some((source, cmd))
             })
             .collect();
 
@@ -400,7 +410,18 @@ impl ZeroZeroReadMe {
             .iter()
             .filter(|(_, properties)| matches!(properties.usage, Some(FileUsage::TopLevel)))
             .filter_map(|(p, _)| {
-                SourceFile::from_path(parent_dir.as_ref().join(p), &parent_dir).ok_with_warning()
+                match SourceFile::from_path(parent_dir.as_ref().join(p), &parent_dir) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!(
+                            "Failed to create SourceFile for top-level file {:?} in {:?}: {}",
+                            p,
+                            parent_dir.as_ref(),
+                            e
+                        );
+                        None
+                    }
+                }
             })
             .collect()
     }

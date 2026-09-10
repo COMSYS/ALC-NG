@@ -1,6 +1,8 @@
 use std::{collections::HashSet, path::Path};
 
-use crate::helper::{ResultOkWithWarning as _, SourceFile};
+use log::warn;
+
+use crate::helper::SourceFile;
 
 /// Parses a dependency file content and returns a set of `SourceFile` objects.
 ///
@@ -26,8 +28,16 @@ pub fn parse_dep_file<P: AsRef<Path>>(content: &str, base_folder: P) -> HashSet<
                 _ => return None,
             };
 
-            let res = SourceFile::from_path(path, &base_folder);
-            res.ok_with_warning()
+            match SourceFile::from_path(&path, &base_folder) {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    warn!(
+                        "Failed to create SourceFile for {:?} (category: {}) in dependency file: {}",
+                        path, category, err
+                    );
+                    None
+                }
+            }
         })
         .collect()
 }

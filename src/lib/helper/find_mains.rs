@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::{collections::HashSet, fs::read};
 
-use crate::helper::{ResultOkWithWarning, SourceFile};
+use log::warn;
+
+use crate::helper::SourceFile;
 
 /// Searches the given `path` for LaTeX source files that represent the main entry point of a document.
 ///
@@ -33,13 +35,44 @@ where
 
             false
         })
-        .filter_map(Result::ok_with_warning)
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                warn!(
+                    "Failed to read directory entry in {:?} while searching for main files: {}",
+                    path.as_ref(),
+                    e
+                );
+                None
+            }
+        })
         .filter_map(|entry| {
-            let content = read(entry.path()).ok_with_warning()?;
+            let content = match read(entry.path()) {
+                Ok(content) => content,
+                Err(e) => {
+                    warn!(
+                        "Failed to read {:?} while searching for main files: {}",
+                        entry.path(),
+                        e
+                    );
+                    return None;
+                }
+            };
 
             let parsed = parse(&content)?;
             if is_main_tex(&parsed, &content) {
-                return SourceFile::from_path(entry.path(), &path).ok_with_warning();
+                return match SourceFile::from_path(entry.path(), &path) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!(
+                            "Failed to create SourceFile from {:?} (relative to {:?}): {}",
+                            entry.path(),
+                            path.as_ref(),
+                            e
+                        );
+                        None
+                    }
+                };
             }
 
             None

@@ -6,7 +6,6 @@ mod fls_parser;
 mod image_diff;
 mod is_newline;
 mod latexmk_bib_parser;
-mod log_ok;
 mod node_empty;
 mod source_file;
 
@@ -18,7 +17,6 @@ pub use fls_parser::parse_fls;
 pub use image_diff::{image_diff, parse_hex_color};
 pub use is_newline::is_newline;
 pub use latexmk_bib_parser::{find_referenced_bibs, find_referenced_bsts};
-pub use log_ok::ResultOkWithWarning;
 pub use node_empty::is_empty;
 pub use source_file::GroupSourceFiles;
 pub use source_file::SourceFile;

@@ -50,10 +50,10 @@ pub fn image_diff(
     for y in 0..height {
         for x in 0..width {
             let new_color: [u8; 4];
-            let pixel: Rgba<u8>;
-            if x >= before_width || y >= before_height || x >= after_width || y >= after_height {
+            
+            let pixel: Rgba<u8> = if x >= before_width || y >= before_height || x >= after_width || y >= after_height {
                 new_color = [changed_color[0], changed_color[1], changed_color[2], 255];
-                pixel = Rgba(new_color);
+                Rgba(new_color)
             } else {
                 let before_pixel: Rgba<u8> = before.get_pixel(x, y);
                 let after_pixel: Rgba<u8> = after.get_pixel(x, y);
@@ -73,8 +73,8 @@ pub fn image_diff(
                 }
 
                 new_color = [new_red, new_green, new_blue, alpha];
-                pixel = Rgba(new_color);
-            }
+                Rgba(new_color)
+            };
             result.put_pixel(x, y, pixel);
         }
     }
