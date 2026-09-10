@@ -1,15 +1,14 @@
 use alc_ng::{
     cleaner::{config::CleanerConfig, submission::Submission},
     exif_tool,
-    helper::{ResultOkWithWarning, image_diff, parse_hex_color},
+    helper::{image_diff, parse_hex_color},
 };
 
 use clap::{ArgAction, Parser, ValueHint};
 use itertools::Itertools;
-use log::{LevelFilter, info, trace};
+use log::{LevelFilter, info, trace, warn};
 use std::{
     fs::remove_dir_all,
-    io::IsTerminal,
     path::PathBuf,
     sync::{Arc, LazyLock},
 };
@@ -38,7 +37,7 @@ pub struct Config {
     /// Also compile the cleaned folder and compare the cleaned pdf output with the original pdfs.
     #[arg(long, short, default_value_t = false)]
     pub compare: bool,
-    /// Continue cleaning despite hitting errors.
+    /// Continue cleaning despite hitting errors and skip all interactive prompts.
     #[arg(long, short, default_value_t = false)]
     pub force: bool,
     /// The command for exiftool.
@@ -193,15 +192,23 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
     }
 
     if CONFIG.target_path.exists() {
-        use dialoguer::Confirm;
-        if Confirm::new()
-            .with_prompt(format!(
-                "The target path ({}) already exists, do you want to override its contents?",
-                CONFIG.target_path.display()
-            ))
-            .interact()?
-            || !std::io::stdin().is_terminal()
-        {
+        use std::io::IsTerminal;
+        let should_overwrite = if CONFIG.force {
+            true
+        } else if !std::io::stdin().is_terminal() {
+            // No TTY attached (CI, piped input) — auto-proceed
+            true
+        } else {
+            use dialoguer::Confirm;
+            Confirm::new()
+                .with_prompt(format!(
+                    "The target path ({}) already exists, do you want to override its contents?",
+                    CONFIG.target_path.display()
+                ))
+                .interact()?
+        };
+
+        if should_overwrite {
             info!(
                 "Removing existing target path {}",
                 CONFIG.target_path.display()
@@ -226,7 +233,16 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
 
         let walker = WalkDir::new(submission.target_path());
 
-        for entry in walker.into_iter().filter_map(Result::ok_with_warning) {
+        for entry in walker.into_iter().filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                warn!(
+                    "Failed to read directory entry in {:?} while copying to compile folder: {}",
+                    CONFIG.target_path, e
+                );
+                None
+            }
+        }) {
             use std::fs::{copy, create_dir_all};
 
             let stripped = entry.path().strip_prefix(&CONFIG.target_path)?;

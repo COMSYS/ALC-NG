@@ -1293,7 +1293,7 @@ impl<'a> ContentStripper<'a> {
                     }
 
                     // The preserved content dictates the behavior of the following contents.
-                    return self.handle_node(if_content, previous_node);
+                    self.handle_node(if_content, previous_node)
                 } else {
                     // The byte in front of and after the current node is a newline, thus, we are fullline.
                     let fullline = self
@@ -1485,7 +1485,7 @@ impl<'a> ContentStripper<'a> {
                     node.start_position().row + 1,
                     node.start_position().column
                 );
-                new_content.extend_from_slice(&name_with_prefix);
+                new_content.extend_from_slice(name_with_prefix);
 
                 let mut i = 0;
 
@@ -1517,7 +1517,7 @@ impl<'a> ContentStripper<'a> {
                     node.start_position().row + 1,
                     node.start_position().column
                 );
-                new_content.extend_from_slice(&name_with_prefix);
+                new_content.extend_from_slice(name_with_prefix);
 
                 let mut i = 0;
 
@@ -1896,7 +1896,7 @@ impl<'a> ContentStripper<'a> {
 /// Handles both Unix (LF) and Windows (CRLF) line endings.
 /// Returns the remaining bytes after stripping newlines.
 pub fn strip_leading_newline(content: &[u8]) -> &[u8] {
-    match (content.get(0), content.get(1)) {
+    match (content.first(), content.get(1)) {
         (Some(&b'\r'), Some(&b'\n')) => &content[2..],
         (Some(&b'\n'), _) => &content[1..],
         _ => content,

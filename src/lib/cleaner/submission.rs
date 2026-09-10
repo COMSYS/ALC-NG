@@ -22,7 +22,7 @@ use crate::{
     },
     compare::{Comparer, PixelPerfect},
     exif_tool,
-    helper::{ResultOkWithWarning as _, SourceFile, find_mains, find_referenced_bsts},
+    helper::{SourceFile, find_mains, find_referenced_bsts},
     progress::CompilationSpinner,
 };
 
@@ -227,11 +227,16 @@ impl Submission {
             // directories exist, but do not add them to the file list.
             .filter_map(|entry| {
                 if entry.path().is_dir() {
-                    let relative_path = entry
-                        .path()
-                        .strip_prefix(&self.input_path)
-                        .context("Failed to strip prefix")
-                        .ok_with_warning()?;
+                    let relative_path = match entry.path().strip_prefix(&self.input_path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(
+                                "Failed to strip prefix {:?} from directory path {:?} while copying to cache: {}",
+                                self.input_path, entry.path(), e
+                            );
+                            return None;
+                        }
+                    };
 
                     let target = self.cache_path.path().join(relative_path);
                     if let Err(err) = create_dir_all(target).context("Failed to create directory") {
@@ -505,18 +510,36 @@ impl Submission {
 
         self.latexmk_referenced_bibs = self
             .latex_output
-            .values()
-            .map(|o| o.as_ref()) // keep only successful outputs
-            .filter_map(Result::ok_with_warning)
+            .iter()
+            .filter_map(|(main_file, o)| match o.as_ref() {
+                Ok(output) => Some(output), // keep only successful outputs
+                Err(e) => {
+                    warn!(
+                        "Skipping latexmk output for {:?} while detecting bib references: {}",
+                        main_file.relative(),
+                        e
+                    );
+                    None
+                }
+            })
             .map(|o| String::from_utf8_lossy(&o.stdout[..])) // decode stdout as UTF-8 lossily
             .flat_map(|content| find_referenced_bibs(content.as_ref(), &self.cache_path)) // find bib files in the output
             .collect(); // gather into a HashSet
 
         self.latexmk_referenced_bsts = self
             .latex_output
-            .values()
-            .map(|o| o.as_ref()) // keep only successful outputs
-            .filter_map(Result::ok_with_warning)
+            .iter()
+            .filter_map(|(main_file, o)| match o.as_ref() {
+                Ok(output) => Some(output), // keep only successful outputs
+                Err(e) => {
+                    warn!(
+                        "Skipping latexmk output for {:?} while detecting bst references: {}",
+                        main_file.relative(),
+                        e
+                    );
+                    None
+                }
+            })
             .map(|o| String::from_utf8_lossy(&o.stdout[..])) // decode stdout as UTF-8 lossily
             .flat_map(|content| find_referenced_bsts(content.as_ref(), &self.cache_path)) // find bib files in the output
             .collect(); // gather into a HashSet
@@ -542,13 +565,29 @@ impl Submission {
 
         // Find all .fls files in the cache directory, parse them, and collect
         // their inputs and outputs into separate HashSets
-        let (inputs, outputs) = glob(&format!("{}/*.fls", full_cache_path.to_string_lossy()))
+        let pattern = format!("{}/*.fls", full_cache_path.to_string_lossy());
+        let (inputs, outputs) = glob(&pattern)
             // Convert any glob errors into an anyhow error for better context
             .map_err(|e| anyhow::anyhow!("Failed to create glob pattern: {}", e))?
             // Ignore any failed glob entries
-            .filter_map(Result::ok_with_warning)
+            .filter_map(|p| match p {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    warn!(
+                        "Failed to resolve glob entry for pattern {:?}: {}",
+                        pattern, e
+                    );
+                    None
+                }
+            })
             // Parse each .fls file; discard any that fail to parse
-            .filter_map(|p| parse_fls(p, &full_cache_path).ok_with_warning())
+            .filter_map(|p| match parse_fls(&p, &full_cache_path) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    warn!("Failed to parse recorder file {:?}: {}", p, e);
+                    None
+                }
+            })
             // Accumulate the resulting input and output sets
             .fold(
                 (HashSet::new(), HashSet::new()),
@@ -752,7 +791,16 @@ impl Submission {
             .checked_sub(Duration::from_secs(fastrand::u64(10000000..100000000)))
             .ok_or_else(|| anyhow::anyhow!("Failed to calculate timestamp"))?;
 
-        for fs_item in walker.filter_map(Result::ok_with_warning) {
+        for fs_item in walker.filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                warn!(
+                    "Failed to read directory entry in {:?} while scrambling timestamps: {}",
+                    self.target_path, e
+                );
+                None
+            }
+        }) {
             let file = File::open(fs_item.path())?;
 
             #[cfg(target_os = "macos")]
@@ -846,7 +894,16 @@ impl Submission {
 
         let walker = WalkDir::new(self.target_path());
 
-        for entry in walker.into_iter().filter_map(Result::ok_with_warning) {
+        for entry in walker.into_iter().filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                warn!(
+                    "Failed to read directory entry in {:?} while copying to compile folder: {}",
+                    self.target_path, e
+                );
+                None
+            }
+        }) {
             use std::fs::{copy, create_dir_all};
 
             let stripped = entry.path().strip_prefix(&self.target_path)?;
@@ -951,7 +1008,7 @@ impl Submission {
         self.possible_main_files = match self.cleaner_config.user_provided_main_files.clone() {
             Some(provided) => provided
                 .into_iter()
-                .map(|p| SourceFile::from_path(&self.cache_path.path().join(p), &self.cache_path))
+                .map(|p| SourceFile::from_path(self.cache_path.path().join(p), &self.cache_path))
                 .collect::<Result<HashSet<_>, _>>()?,
             None => find_mains(self.cache_path.path())?,
         };

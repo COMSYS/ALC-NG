@@ -10,11 +10,12 @@ use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
 use image::DynamicImage;
 use itertools::Itertools;
+use log::warn;
 use pdfium_render::prelude::{PdfPageRenderRotation, PdfRenderConfig, Pdfium};
 use sha3::{Digest, Sha3_256};
 use temp_dir::TempDir;
 
-use crate::{compare::comparer::Comparer, helper::ResultOkWithWarning as _};
+use crate::compare::comparer::Comparer;
 
 static DY_LIB_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libpdfium.gz"));
 static EXPECTED_CHECKSUM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libpdfium.sha3"));
@@ -83,10 +84,18 @@ impl PixelPerfect {
         let images = document
             .pages()
             .iter()
-            .filter_map(|p| {
-                p.render_with_config(&RENDER_CONFIG)
-                    .ok_with_warning()
-                    .map(|b| b.as_image())
+            .enumerate()
+            .filter_map(|(index, p)| match p.render_with_config(&RENDER_CONFIG) {
+                Ok(b) => Some(b.as_image()),
+                Err(e) => {
+                    warn!(
+                        "Failed to render page {} of {:?}: {}",
+                        index + 1,
+                        src.as_ref(),
+                        e
+                    );
+                    None
+                }
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
