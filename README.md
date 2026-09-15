@@ -18,6 +18,7 @@ Inspired by [`arxiv_latex_cleaner`](https://github.com/google-research/arxiv-lat
 - [Installation](#installation)
 - [Usage](#usage)
 - [How It Works](#how-it-works)
+- [Per-File Directives](#per-file-directives)
 - [Comparison with Other Tools](#comparison-with-other-tools)
 - [Known Constraints & Future Work](#known-constraints--future-work)
 - [Publication](#publication)
@@ -131,6 +132,39 @@ ALC-NG combines several techniques to sanitize LaTeX projects while preserving t
 - **Validation.** Performs a pixel-perfect comparison between the original and cleaned PDFs to confirm correctness.
 - **arXiv-ready packaging.** Cleaned projects can be emitted directly as `.tar.gz` archives.
 
+## Per-File Directives
+
+You can disable specific cleaning steps for an individual file by adding a special comment to it. A directive is a normal LaTeX comment that starts with the `!ALC-NG` tag:
+
+```latex
+% !ALC-NG <directive> [<directive> …]
+```
+
+Several directives can be listed on one line (space‑separated) and across multiple lines. The directive may appear on **any** comment line in the file — it does not have to be the first comment. Directive‑looking text inside `verbatim` or `lstlisting` environments is ignored.
+
+| Directive | Effect |
+|---|---|
+| `keep-comments` | Keep all comments: line and inline comments, the `comment` environment, `\usepackage{comment}`, and custom comment commands (empty‑body `\newcommand`) together with their invocations. |
+| `keep-ifs` | Keep conditional (`\if…`) blocks unevaluated, preserving both branches. *Alias: `keep-conditionals`.* |
+| `keep-tail` | Keep content that appears after `\end{document}`. *Alias: `keep-oob`.* |
+| `keep-all` | Do not clean the file at all; copy it byte‑for‑byte. *Aliases: `skip`, `noclean`.* |
+
+Unknown directives are reported and ignored. The directive line itself is always kept in the output.
+
+> [!NOTE]
+> Directives only apply to tex files (`.tex`, `.sty`, `.cls`, …). They cannot be placed in binary files such as images.
+
+Example — keep the comments in a single file while everything else is cleaned normally:
+
+```latex
+% My paper
+% !ALC-NG keep-comments
+\documentclass{article}
+\begin{document}
+Hello World! % this comment survives
+\end{document}
+```
+
 ## Comparison with Other Tools
 
 *Sorted by technology and endorsement by arXiv. None of these tools reliably sanitizes all test cases, but a subset of authors nonetheless apply them prior to submission.*
@@ -169,6 +203,9 @@ We are planning to add support for this [later](#possible-enhancements).
 ### Supported comment types
 
 We try to remove as much (unneeded) information as possible. We also evaluate ifs and consider custom command comments (command definitions with empty body). Below you can see examples of how the cleaner handles different cases.
+
+> [!TIP]
+> To preserve comments, conditionals, or trailing content in a specific file, opt out per file using a [`% !ALC-NG …` directive](#per-file-directives).
 
 > [!NOTE]
 > We cannot replicate every custom control flow logic. If you use custom control flows, make sure that the cleaner has picked it up or that you evaluate it before passing the source code to the cleaner.
