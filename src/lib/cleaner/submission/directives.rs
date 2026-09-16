@@ -183,7 +183,7 @@ mod tests {
                 ..Default::default()
             }
             .describe(),
-            "keep-comments, keep-ifs, keep-tail"
+            "keep-all"
         );
     }
 
@@ -201,10 +201,7 @@ mod tests {
             keep_tail: true,
             keep_all: true,
         };
-        assert_eq!(
-            all.describe(),
-            "keep-comments, keep-ifs, keep-tail, keep-all"
-        );
+        assert_eq!(all.describe(), "keep-all");
 
         let partial = FileDirectives {
             keep_comments: true,
