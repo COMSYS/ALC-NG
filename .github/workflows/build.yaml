@@ -147,6 +147,14 @@ jobs:
           # gzipped and embedded into the macOS binaries by build.rs, so they
           # must carry the same Developer ID signature as alc-ng itself:
           # sign both in place before goreleaser builds and archives anything.
+          #
+          # Codesigning rewrites the files, which makes the tree dirty and
+          # makes goreleaser abort with "git is in a dirty state"
+          # (goreleaser.com/errors/dirty). The signature only matters at
+          # build time, so hide the modification from `git status`.
+          git update-index --assume-unchanged \
+            external/pdfium/lib_mac_arm64/libpdfium.dylib \
+            external/pdfium/lib_mac_x86_64/libpdfium.dylib
           for dylib in external/pdfium/lib_mac_arm64/libpdfium.dylib \
                        external/pdfium/lib_mac_x86_64/libpdfium.dylib; do
             codesign --force \
