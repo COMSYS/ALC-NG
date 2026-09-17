@@ -62,74 +62,133 @@ jobs:
           path: target/cargo-aur/*.tar.gz
 
 
-  build-release:
-    name: Build (${{ matrix.artifact }})
+  # goreleaser release: one macOS job builds all five targets via the `rust`
+  # builder (cargo-zigbuild cross-compiles linux/windows, plain cargo for
+  # darwin), produces the universal darwin binary (lipo), codesigns +
+  # notarizes it (see scripts/macos-sign.sh), and packages everything
+  # (archives, deb/rpm, AUR files, homebrew cask, sigstore signatures,
+  # checksums). Nothing is built by hand here -- see .goreleaser.yaml.
+  #
+  # Required secrets (all optional except GITHUB_TOKEN):
+  #   GITHUB_TOKEN        : release upload (contents: write)
+  #   MACOS_SIGN_P12 / MACOS_SIGN_PASSWORD : Developer ID Application cert
+  #     (base64-encoded p12); without it the darwin tarball stays unsigned
+  #   MACOS_NOTARY_KEY / MACOS_NOTARY_KEY_ID / MACOS_NOTARY_ISSUER_ID :
+  #     App Store Connect API key (base64 p8) for notarytool
+  #   AUR_KEY             : SSH private key for the AUR push (GoReleaser
+  #     reads it from the environment); without it the AUR publish fails
+  #   HOMEBREW_TAP_GITHUB_TOKEN : PAT with write access to COMSYS/homebrew-tap
+  #     (GITHUB_TOKEN cannot push cross-repo)
+  release:
+    name: Release
     needs: ci
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: alc-ng-linux-amd64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact: alc-ng-linux-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: alc-ng-windows-x64.exe
-          - os: macos-latest
-            target: universal-apple-darwin
-            artifact: alc-ng-macos-unsigned
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Add Rust targets
-        shell: bash
-        run: |
-          if [ "${{ matrix.target }}" = "universal-apple-darwin" ]; then
-            rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          else
-            rustup target add ${{ matrix.target }}
-          fi
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          prefix-key: "v2026.03-rust-${{ matrix.target }}"
-      - name: Build
-        shell: bash
-        run: |
-          if [ "${{ matrix.target }}" = "universal-apple-darwin" ]; then
-            cargo build -r --target aarch64-apple-darwin
-            cargo build -r --target x86_64-apple-darwin
-            lipo -create -output ${{ matrix.artifact }} \
-              target/aarch64-apple-darwin/release/alc-ng \
-              target/x86_64-apple-darwin/release/alc-ng
-          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo build -r --target ${{ matrix.target }}
-            cp target/${{ matrix.target }}/release/alc-ng.exe ${{ matrix.artifact }}
-          else
-            cargo build -r --target ${{ matrix.target }}
-            cp target/${{ matrix.target }}/release/alc-ng ${{ matrix.artifact }}
-          fi
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
-
-  release:
-    name: Create Release
-    needs: build-release
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
+    timeout-minutes: 360
     permissions:
       contents: write
+      id-token: write # cosign keyless signing
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AUR_KEY: ${{ secrets.AUR_KEY }}
+      HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      # Job-level so the step `if:` guards below can see whether the
+      # signing/notarization secrets are configured (secrets context is
+      # not available in step-level `if:`).
+      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          path: artifacts
-          merge-multiple: true
-      - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+          # GoReleaser needs the full history for the changelog.
+          fetch-depth: 0
+
+      - name: Show toolchain versions
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+          node --version
+          clang --version | head -1
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Optional macOS signing infra. All steps are no-ops when the secrets
+      # are not configured; scripts/macos-sign.sh then skips signing.
+      - name: Import Developer ID certificate
+        if: env.MACOS_SIGN_P12 != ''
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+        shell: bash
+        run: |
+          CERT_PATH="$RUNNER_TEMP/signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo -n "$MACOS_SIGN_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$MACOS_SIGN_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          # Save identity for later steps (codesign reads it from the keychain)
+          IDENTITY="Developer ID Application"
+          echo "MACOS_CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Store notarytool credentials
+        if: env.MACOS_NOTARY_KEY != ''
+        env:
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          KEY_PATH="$RUNNER_TEMP/notary.p8"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo -n "$MACOS_NOTARY_KEY" | base64 --decode -o "$KEY_PATH"
+          xcrun notarytool store-credentials alc-ng-notary \
+            --key "$KEY_PATH" --key-id "$MACOS_NOTARY_KEY_ID" \
+            --issuer "$MACOS_NOTARY_ISSUER_ID" --keychain "$KEYCHAIN_PATH"
+          echo "MACOS_NOTARY_PROFILE=alc-ng-notary" >> "$GITHUB_ENV"
+
+      - name: Codesign bundled pdfium dylibs
+        if: env.MACOS_CODESIGN_IDENTITY != ''
+        shell: bash
+        run: |
+          # The prebuilt pdfium dylibs in external/pdfium/lib_mac_* are
+          # gzipped and embedded into the macOS binaries by build.rs, so they
+          # must carry the same Developer ID signature as alc-ng itself:
+          # sign both in place before goreleaser builds and archives anything.
+          for dylib in external/pdfium/lib_mac_arm64/libpdfium.dylib \
+                       external/pdfium/lib_mac_x86_64/libpdfium.dylib; do
+            codesign --force \
+              --sign "${MACOS_CODESIGN_IDENTITY}" \
+              --options runtime \
+              --timestamp \
+              "$dylib"
+            codesign --verify --strict "$dylib"
+          done
+
+      - name: Run goreleaser (build + package + sign + publish)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          files: artifacts/*
-          generate_release_notes: true
+          args: release --parallelism 2 --clean
+          version: "~> v2"
+
+      - name: Verify signed universal binary
+        shell: bash
+        run: |
+          BIN=$(find dist -name alc-ng -path '*darwin_all*')
+          lipo -info "$BIN"
+          codesign -dv "$BIN" 2>&1 | grep -E "Signature|Identifier|TeamIdentifier" || echo "(unsigned)"
+          [[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]] && codesign --verify --strict "$BIN"
