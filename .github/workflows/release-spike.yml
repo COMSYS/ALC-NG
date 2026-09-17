@@ -51,19 +51,8 @@ jobs:
           node --version
           clang --version | head -1
 
-      # zig is required by cargo-zigbuild.
-      # MUST be >= 0.15: zig 0.14.x cannot link the cross targets via
-      # cargo-zigbuild's flags reliably (ziglang/zig#24662 family). The
-      # darwin builds never link via zig (plain `cargo build`, see
-      # .goreleaser.yaml), so this only matters for the zigbuild targets.
       - name: Install zig
-        shell: bash
-        run: |
-          ZIG_VERSION=0.16.0
-          ZIG_DIR=zig-macos-aarch64-${ZIG_VERSION}
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_DIR}.tar.xz" | tar -xJ
-          echo "${GITHUB_WORKSPACE}/${ZIG_DIR}" >> "${GITHUB_PATH}"
-          zig version
+        uses: mlugg/setup-zig@v2
 
       - name: Install cargo-zigbuild
         run: cargo install --locked cargo-zigbuild
