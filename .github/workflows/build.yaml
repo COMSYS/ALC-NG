@@ -30,36 +30,14 @@ jobs:
         run: cargo test
 
       # Build project
-      - name: Build project in release mode
-        run: cargo build -r
-
-      # Install dependencies
-      - name: Install packaging dependencies
-        run: cargo install cargo-aur cargo-deb
-
-      - name: Compile debian package
-        run: cargo deb
-
-      - name: Compile AUR package
-        run: cargo aur
+      - name: Build project
+        run: cargo build
 
       - name: Upload binary
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: Binary (linux-amd64)
-          path: target/release/alc-ng
-
-      - name: Upload deb package
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: Deb package (linux-amd64)
-          path: target/debian/*.deb
-
-      - name: Upload aur package
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: AUR package (linux-amd64)
-          path: target/cargo-aur/*.tar.gz
+          path: target/debug/alc-ng
 
 
   # goreleaser release: one macOS job builds all five targets via the `rust`
