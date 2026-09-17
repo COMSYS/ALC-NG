@@ -27,6 +27,7 @@ use crate::{
 };
 
 pub mod deletion_stats;
+pub mod directives;
 pub mod parsed_file;
 
 type CompareResult =

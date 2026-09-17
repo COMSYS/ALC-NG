@@ -10,13 +10,19 @@ use std::{
 };
 
 use crate::{
-    cleaner::{config::CleanerConfig, submission::deletion_stats::DeletionStats},
+    cleaner::{
+        config::CleanerConfig,
+        submission::{
+            deletion_stats::DeletionStats,
+            directives::{FileDirectives, directive_keywords, parse_directives},
+        },
+    },
     helper::{SourceFile, exception, is_empty, is_newline},
     parsing::{is_main_tex, parse},
 };
 use anyhow::{Context, Result, anyhow};
 use image::ImageDecoder;
-use log::{trace, warn};
+use log::{info, trace, warn};
 use tree_sitter::{Node, Parser, Tree};
 
 /// All common file‑extensions for image formats supported by the image crate.
@@ -741,6 +747,7 @@ pub struct ContentStripper<'a> {
     long_command_definitions: HashSet<Vec<u8>>,
     last_byte_of_document_block: Option<usize>,
     deletion_stats: DeletionStats,
+    directives: FileDirectives,
 }
 
 use NodeHandling::*;
@@ -760,6 +767,20 @@ impl<'a> ContentStripper<'a> {
         trace!("Content size: {} bytes", content.len());
 
         let mut stripper = Self::new(content, filename, cleaner_config);
+        stripper.directives = parse_directives(root, content);
+
+        if !stripper.directives.is_empty() {
+            info!(
+                "Honoring ALC-NG directives in {}: {}",
+                filename,
+                stripper.directives.describe()
+            );
+        }
+
+        // The file opts out of cleaning entirely; keep it byte-for-byte.
+        if stripper.directives.keep_all {
+            return Ok((Some(content.to_vec()), stripper.deletion_stats));
+        }
 
         let result = stripper
             .handle_node(root, NoNode)
@@ -786,6 +807,7 @@ impl<'a> ContentStripper<'a> {
             long_command_definitions: Default::default(),
             last_byte_of_document_block: None,
             deletion_stats: Default::default(),
+            directives: FileDirectives::default(),
         }
     }
 
@@ -840,6 +862,22 @@ impl<'a> ContentStripper<'a> {
                 Ok(Kept(whitespaces))
             }
             "line_comment" | "comment" => {
+                // ALC-NG directive lines are always kept, regardless of other settings.
+                if node.grammar_name() == "line_comment"
+                    && directive_keywords(node_content).is_some()
+                {
+                    let mut kept = whitespaces;
+                    kept.extend_from_slice(node_content);
+                    return Ok(Kept(kept));
+                }
+
+                // If the file opts out of comment cleaning, keep all comments.
+                if self.directives.keep_comments {
+                    let mut kept = whitespaces;
+                    kept.extend_from_slice(node_content);
+                    return Ok(Kept(kept));
+                }
+
                 // If we do not have a previous node, we are the first node and thus (if deleted) remove a whole line
                 let prev = match node.prev_sibling() {
                     Some(p) => p,
@@ -949,7 +987,8 @@ impl<'a> ContentStripper<'a> {
                     }
                 };
 
-                if &self.content[path.byte_range()] == b"comment" {
+                if &self.content[path.byte_range()] == b"comment" && !self.directives.keep_comments
+                {
                     // The byte in front of and after the current node is a newline, thus, we are fullline.
                     let fullline = self
                         .content
@@ -1073,8 +1112,9 @@ impl<'a> ContentStripper<'a> {
                     i += 1;
                 }
 
-                // If this is the document environment, then we want to remove all content after this node, thus we store the last byte
-                if is_document_environment {
+                // If this is the document environment, then we want to remove all content after this node, thus we store the last byte.
+                // Unless the file opts to keep content after \end{document} (keep-tail).
+                if is_document_environment && !self.directives.keep_tail {
                     self.last_byte_of_document_block = Some(node.end_byte());
                 }
 
@@ -1147,7 +1187,33 @@ impl<'a> ContentStripper<'a> {
             }
             // Handle if if else blocks seperatly
             "general_if" => self.handle_if_block(node, previous_node, node_content, whitespaces),
-            r"\iffalse" | r"\fi" | r"\if0" | r"\iftrue" | r"\else" | "comment_environment" => {
+            "comment_environment" => {
+                // Keep the whole `comment` environment if the file opts out of comment cleaning.
+                if self.directives.keep_comments {
+                    whitespaces.extend_from_slice(node_content);
+                    return Ok(Kept(whitespaces));
+                }
+
+                // The byte in front of and after the current node is a newline, thus, we are fullline.
+                let fullline = self
+                    .content
+                    .get(node.start_byte() - 1)
+                    .is_some_and(|&b| is_newline(b))
+                    && self
+                        .content
+                        .get(node.end_byte())
+                        .is_some_and(|&b| is_newline(b))
+                    && self
+                        .content
+                        .get(node.end_byte() + 1)
+                        .is_some_and(|&b| is_newline(b));
+
+                self.deletion_stats
+                    .block_comment_deleted
+                    .push(node_content.to_owned());
+                Ok(BlockCommentDeleted(whitespaces, fullline))
+            }
+            r"\iffalse" | r"\fi" | r"\if0" | r"\iftrue" | r"\else" => {
                 // The byte in front of and after the current node is a newline, thus, we are fullline.
                 let fullline = self
                     .content
@@ -1240,6 +1306,25 @@ impl<'a> ContentStripper<'a> {
         };
 
         let grammar_name = first_child.grammar_name();
+
+        // If the file opts to keep conditionals, preserve the whole block unevaluated.
+        if self.directives.keep_ifs
+            && matches!(
+                grammar_name,
+                r"\iffalse" | r"\if0" | r"\iftrue" | "general_if"
+            )
+        {
+            let mut kept = whitespaces;
+            kept.extend_from_slice(&self.content[node.byte_range()]);
+            return Ok(Kept(kept));
+        }
+
+        // If the file opts to keep comments, preserve comment-like blocks as-is.
+        if self.directives.keep_comments && grammar_name == "comment" {
+            let mut kept = whitespaces;
+            kept.extend_from_slice(&self.content[node.byte_range()]);
+            return Ok(Kept(kept));
+        }
 
         match grammar_name {
             r"\iffalse" | r"\if0" => {
@@ -1452,6 +1537,12 @@ impl<'a> ContentStripper<'a> {
         mut new_content: Vec<u8>,
     ) -> Result<NodeHandling> {
         assert!(node.grammar_name() == "general_if");
+
+        // If the file opts to keep conditionals, preserve the whole if block unevaluated.
+        if self.directives.keep_ifs {
+            new_content.extend_from_slice(node_content);
+            return Ok(Kept(new_content));
+        }
 
         let first_byte_of_next_node = match node.child(0) {
             Some(c) => c.start_byte(),
@@ -1715,7 +1806,9 @@ impl<'a> ContentStripper<'a> {
             "Could not parse cleaned implementation of oldcommand: {}",
             String::from_utf8_lossy(cleaned_impl.text()),
         ))?;
-        if is_empty(&cleaned_impl_tree.root_node()) {
+        // An empty body marks a custom comment command (whose invocations are deleted).
+        // If the file opts out of comment cleaning, treat it as a normal command instead.
+        if is_empty(&cleaned_impl_tree.root_node()) && !self.directives.keep_comments {
             // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
             if long {
                 self.long_command_definitions.insert(name.to_owned());
@@ -1840,7 +1933,9 @@ impl<'a> ContentStripper<'a> {
             "Could not parse cleaned implementation of newcommand: {}",
             String::from_utf8_lossy(cleaned_impl.text()),
         ))?;
-        if is_empty(&cleaned_impl_tree.root_node()) {
+        // An empty body marks a custom comment command (whose invocations are deleted).
+        // If the file opts out of comment cleaning, treat it as a normal command instead.
+        if is_empty(&cleaned_impl_tree.root_node()) && !self.directives.keep_comments {
             // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
             if long {
                 self.long_command_definitions.insert(name.to_owned());
