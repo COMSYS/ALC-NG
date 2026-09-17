@@ -82,7 +82,11 @@ Every release ships a checksum file (`alc-ng_<version>_checksums.txt`) plus a [S
 $ sha256sum -c alc-ng_<version>_checksums.txt --ignore-missing
 
 # Verify a Sigstore signature against the public Fulcio certificate transparency log
-$ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sigstore.json alc-ng_<version>_<platform>.tar.gz
+$ cosign verify-blob \
+    --bundle alc-ng_<version>_<platform>.tar.gz.sigstore.json \
+    --certificate-identity-regexp='^https://github\.com/COMSYS/ALC-NG/\.github/workflows/' \
+    --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+    alc-ng_<version>_<platform>.tar.gz
 ```
 
 Install `cosign` via `brew install cosign`, or see the [cosign releases page](https://github.com/sigstore/cosign/releases).
