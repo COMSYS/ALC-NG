@@ -1,0 +1,178 @@
+# GoReleaser v2 configuration for alc-ng (Rust, via `builder: rust` / cargo-zigbuild).
+#
+# Single-runner design: one `goreleaser release` on a macOS host builds all
+# targets (zigbuild cross-compiles linux/windows, native + cross for darwin),
+# then lipo produces the universal macOS binary, and the rest of the pipeline
+# packages (archives, deb/rpm, AUR files, brew formula), signs (sigstore),
+# checksums, and publishes.
+#
+# Prerequisites on the machine (installed by the workflow, not by this config):
+#   - zig (required by cargo-zigbuild)
+#   - cargo-zigbuild
+#   - node + clang (tree-sitter grammar generation in external/ts-latex)
+#   - cosign (keyless sigstore signing)
+#
+# macOS signing: the universal_binaries post hook calls scripts/macos-sign.sh
+# (codesign + optional notarization). It is a no-op unless
+# MACOS_CODESIGN_IDENTITY is set; the CI workflow imports the Developer ID
+# Application cert from secrets and creates the notarytool profile.
+#
+# Validate with: goreleaser check
+# Snapshot dry-run (build + package + sign, nothing published):
+#   goreleaser release --snapshot --parallel 2 --skip=publish
+
+version: 2
+
+project_name: alc-ng
+
+env:
+  # Some git-based dependencies resolve more reliably via the CLI.
+  - CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+before:
+  hooks:
+    - rustup default stable
+    - cargo fetch
+
+# Three builds. Platform filtering of downstream pipelines (nfpms, aurs, ...)
+# must be done via build IDs, because the OSS `nfpms.if` filter is Pro-only.
+#
+# 1. darwin: plain `cargo build` (tool: cargo, command: build) — native
+#    cross-compilation on the macOS host, exactly like the pre-goreleaser CI.
+#    zig must NOT link darwin here: this crate is crate-type=["lib","cdylib"],
+#    so rustc passes -Wl,-exported_symbols_list for every cdylib link, and
+#    zig's `zig cc` frontend mis-parses rustc's two-argument form of that flag
+#    (ziglang/zig#24662 family) even as of zig 0.16.
+# 2. linux: `cargo zigbuild` (the default tool/command).
+# 3. windows-gnu: `cargo zigbuild`. Note: GNU, not MSVC (zigbuild limitation).
+builds:
+  - id: alc-ng-darwin
+    builder: rust
+    tool: cargo
+    command: build
+    binary: alc-ng # bin declared at src/cleaner/main.rs
+    targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+
+  - id: alc-ng-linux
+    builder: rust # cargo zigbuild
+    binary: alc-ng
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+
+  - id: alc-ng-windows
+    builder: rust # cargo zigbuild
+    binary: alc-ng
+    targets:
+      - x86_64-pc-windows-gnu
+
+# Replace the per-arch darwin binaries with a single universal binary (lipo).
+# Requires a macOS host for the release job.
+#
+# macOS signing happens in the `post` hook, which runs right after the lipo
+# merge and BEFORE the archives/nfpm/checksum pipes, so every packaged
+# artifact contains the signed (and notarized) universal binary.
+# scripts/macos-sign.sh is a no-op unless MACOS_CODESIGN_IDENTITY is set,
+# so local runs and unsigned CI (no secrets configured) pass through.
+universal_binaries:
+  - id: alc-ng-darwin
+    replace: true
+    hooks:
+      post:
+        - cmd: bash scripts/macos-sign.sh "{{ .Path }}"
+          output: true
+
+archives:
+  - id: alc-ng
+    ids:
+      - alc-ng-darwin
+      - alc-ng-linux
+      - alc-ng-windows
+    # NOTE: `.ConventionalFileName` is an nFPM-only template field; it is not
+    # available to the archives pipe. Use the conventional GoReleaser archive
+    # name instead (this is also the default for non-binary formats).
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats: zip
+
+nfpms:
+  - id: alc-ng
+    ids:
+      - alc-ng-linux # linux only: OSS has no goos/if filter on nfpms
+    formats:
+      - deb
+      - rpm
+    package_name: alc-ng
+    file_name_template: "{{ .ConventionalFileName }}"
+    maintainer: "David Schütte <david.schuette@rwth-aachen.de>"
+    homepage: https://arxiv.comsys.rwth-aachen.de
+    description: >-
+      A modern LaTeX sanitization tool for arXiv submissions. Strips unused
+      files, comments, conditionals, and metadata while preserving the same
+      output PDF.
+    license: MIT
+    section: utils
+    priority: extra
+
+# Generates AUR package files; with a token set, `aurs.publish` pushes them.
+aurs:
+  - name: alc-ng
+    homepage: https://github.com/COMSYS/ALC-NG
+    description: A modern LaTeX sanitization tool for arXiv submissions.
+    license: MIT
+
+# Homebrew distribution as a Cask (the `brews`/formula pipeline is deprecated
+# since v2.16; casks are the recommended way to distribute prebuilt binaries).
+# Users install via: brew install --cask COMSYS/tap/alc-ng
+homebrew_casks:
+  - name: alc-ng
+    repository:
+      owner: COMSYS
+      name: homebrew-tap
+      # GITHUB_TOKEN cannot push to a different repo; the workflow
+      # provides HOMEBREW_TAP_GITHUB_TOKEN (PAT with write access to
+      # COMSYS/homebrew-tap). Required for real releases; unused in
+      # snapshot runs.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/COMSYS/ALC-NG
+    description: A modern LaTeX sanitization tool for arXiv submissions.
+    license: MIT
+
+# Keyless Sigstore signatures for every artifact (no certificates required).
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    args:
+      - sign-blob
+      - --output-sig
+      - "${signature}"
+      - --bundle
+      - "${signature}.bundle"
+      - --yes
+      - "${artifact}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  prerelease: auto
+  footer: |
+    ## Verification
+
+    All artifacts are signed with [Sigstore](https://sigstore.dev/) (keyless)
+    and listed in `SHA256SUMS.txt`.
+
+    ```console
+    $ sha256sum -c SHA256SUMS.txt --ignore-missing
+    $ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sig.bundle alc-ng_<version>_<platform>.tar.gz
+    ```

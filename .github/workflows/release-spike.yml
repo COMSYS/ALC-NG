@@ -1,0 +1,168 @@
+# Phase 0 feasibility spike for the GoReleaser migration (see plans/goreleaser-release.md).
+#
+# Run manually via Actions > "Spike: goreleaser" > Run workflow.
+# It performs a full snapshot release on a single macOS runner:
+#   - validates .goreleaser.yaml (goreleaser check)
+#   - builds ALL five targets via the `rust` builder (cargo zigbuild)
+#   - creates the universal darwin binary (lipo)
+#   - runs the full packaging pipeline (archives, deb/rpm, AUR files, homebrew cask,
+#     cosign sigstore signatures, SHA256SUMS) -- nothing is published (--skip=publish)
+# Success criteria (check the workflow log + dist artifact):
+#   1. all 5 targets build (tree-sitter grammar gen + zig cross-compile + zig linker)
+#   2. universal darwin binary present and lipo -info shows both arches
+#   3. dist/ contains tar.gz/zip archives, .deb, .rpm, AUR files, cask,
+#      SHA256SUMS.txt and .sig/.bundle for every artifact
+#   4. note total wall-clock time -> informs the --parallel value and the
+#      go/no-go for single-runner release builds in Phase 1
+#      5. if MACOS_SIGN_P12 is set as a secret: the darwin tarball contains a
+#      codesigned (and, with MACOS_NOTARY_KEY et al. set, notarized) binary,
+#      and the bundled pdfium dylibs (external/pdfium/lib_mac_*) are
+#      codesigned in the repo checkout before the build.
+#      Without those secrets, signing is skipped and runs stay identical
+#      to a local snapshot.
+
+name: "Spike: goreleaser"
+
+on:
+  workflow_dispatch:
+
+# id-token: required for cosign keyless signing (signs pipe runs in snapshot mode).
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  snapshot-release:
+    name: Snapshot release (no publish)
+    runs-on: macos-latest
+    timeout-minutes: 360 # GitHub-hosted runners cap jobs at 6h
+    env:
+      # Job-level so the step `if:` guards can see whether secrets are set.
+      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Show toolchain versions
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+          node --version
+          clang --version | head -1
+
+      # zig is required by cargo-zigbuild.
+      # MUST be >= 0.15: zig 0.14.x cannot link the cross targets via
+      # cargo-zigbuild's flags reliably (ziglang/zig#24662 family). The
+      # darwin builds never link via zig (plain `cargo build`, see
+      # .goreleaser.yaml), so this only matters for the zigbuild targets.
+      - name: Install zig
+        shell: bash
+        run: |
+          ZIG_VERSION=0.16.0
+          ZIG_DIR=zig-macos-aarch64-${ZIG_VERSION}
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_DIR}.tar.xz" | tar -xJ
+          echo "${GITHUB_WORKSPACE}/${ZIG_DIR}" >> "${GITHUB_PATH}"
+          zig version
+
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Install goreleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          # v7 always installs the binary; pin to the v2 line.
+          version: "~> v2"
+
+      # Optional macOS signing infra. All steps are no-ops when the secrets
+      # are not configured; scripts/macos-sign.sh then skips signing.
+      # Required secrets (see release checklist in plans/goreleaser-release.md):
+      #   MACOS_SIGN_P12 / MACOS_SIGN_PASSWORD : Developer ID Application cert
+      #   MACOS_NOTARY_KEY / MACOS_NOTARY_KEY_ID / MACOS_NOTARY_ISSUER_ID :
+      #     App Store Connect API key for notarytool
+      - name: Import Developer ID certificate
+        if: env.MACOS_SIGN_P12 != ''
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+        shell: bash
+        run: |
+          CERT_PATH="$RUNNER_TEMP/signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo -n "$MACOS_SIGN_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$MACOS_SIGN_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          # Save identity for later steps (codesign reads it from the keychain)
+          IDENTITY="Developer ID Application"
+          echo "MACOS_CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Store notarytool credentials
+        if: env.MACOS_NOTARY_KEY != ''
+        env:
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          KEY_PATH="$RUNNER_TEMP/notary.p8"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo -n "$MACOS_NOTARY_KEY" | base64 --decode -o "$KEY_PATH"
+          xcrun notarytool store-credentials alc-ng-notary \
+            --key "$KEY_PATH" --key-id "$MACOS_NOTARY_KEY_ID" \
+            --issuer "$MACOS_NOTARY_ISSUER_ID" --keychain "$KEYCHAIN_PATH"
+          echo "MACOS_NOTARY_PROFILE=alc-ng-notary" >> "$GITHUB_ENV"
+
+      - name: Codesign bundled pdfium dylibs
+        if: env.MACOS_CODESIGN_IDENTITY != ''
+        shell: bash
+        run: |
+          # The prebuilt pdfium dylibs in external/pdfium/lib_mac_* are bundled
+          # with the macOS binaries (see build.rs): they must carry the same
+          # Developer ID signature as alc-ng itself, so sign both in place
+          # before goreleaser builds and archives anything.
+          for dylib in external/pdfium/lib_mac_arm64/libpdfium.dylib \
+                       external/pdfium/lib_mac_x86_64/libpdfium.dylib; do
+            codesign --force \
+              --sign "${MACOS_CODESIGN_IDENTITY}" \
+              --options runtime \
+              --timestamp \
+              "$dylib"
+            codesign --verify --strict "$dylib"
+          done
+
+      - name: Validate configuration
+        run: goreleaser check
+
+      - name: Snapshot release (build + package + sign, no publish)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          args: release --snapshot --parallelism 2 --skip=publish
+
+      - name: Inspect dist/
+        shell: bash
+        run: |
+          echo "=== dist contents ==="
+          ls -la dist/
+          BIN=$(find dist -name alc-ng -path '*darwin_all*')
+          echo "=== universal binary arches ==="
+          lipo -info "$BIN"
+          echo "=== darwin universal binary signature ==="
+          codesign -dv "$BIN" 2>&1 | grep -E "Signature|Identifier|TeamIdentifier" || echo "(unsigned)"
+          [[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]] && codesign --verify --strict "$BIN"
+
+      - name: Upload dist for inspection
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: dist-snapshot
+          path: dist/
+          retention-days: 7
