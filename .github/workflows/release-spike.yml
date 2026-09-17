@@ -11,7 +11,7 @@
 #   1. all 5 targets build (tree-sitter grammar gen + zig cross-compile + zig linker)
 #   2. universal darwin binary present and lipo -info shows both arches
 #   3. dist/ contains tar.gz/zip archives, .deb, .rpm, AUR files, cask,
-#      SHA256SUMS.txt and .sig/.bundle for every artifact
+#      checksums file and .sigstore.json for every artifact
 #   4. note total wall-clock time -> informs the --parallel value and the
 #      go/no-go for single-runner release builds in Phase 1
 #      5. if MACOS_SIGN_P12 is set as a secret: the darwin tarball contains a

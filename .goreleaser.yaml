@@ -144,18 +144,19 @@ homebrew_casks:
     license: MIT
 
 # Keyless Sigstore signatures for every artifact (no certificates required).
+# Cosign v3+ merges signature + certificate into a single .sigstore.json
+# bundle (--bundle); the old --output-sig/--output-signature flags were
+# removed, which is what aborted the previous release run.
 signs:
   - cmd: cosign
-    signature: "${artifact}.sig"
+    signature: "${artifact}.sigstore.json"
+    # NOTE: the default is 'none', which silently signs nothing.
     artifacts: all
     args:
       - sign-blob
-      - --output-sig
-      - "${signature}"
-      - --bundle
-      - "${signature}.bundle"
+      - --bundle=${signature}
+      - ${artifact}
       - --yes
-      - "${artifact}"
 
 changelog:
   sort: asc
@@ -175,5 +176,5 @@ release:
 
     ```console
     $ sha256sum -c alc-ng_<version>_checksums.txt --ignore-missing
-    $ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sig.bundle alc-ng_<version>_<platform>.tar.gz
+    $ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sigstore.json alc-ng_<version>_<platform>.tar.gz
     ```

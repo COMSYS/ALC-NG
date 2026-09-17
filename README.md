@@ -75,14 +75,14 @@ The cask in the [`COMSYS/homebrew-tap`](https://github.com/COMSYS/homebrew-tap) 
 
 ### Verifying release artifacts
 
-Every release ships a checksum file (`alc-ng_<version>_checksums.txt`) plus [Sigstore](https://www.sigstore.dev/) keyless signatures (`.sig` and `.sig.bundle`) for each artifact. Verification requires no keys or configuration:
+Every release ships a checksum file (`alc-ng_<version>_checksums.txt`) plus a [Sigstore](https://www.sigstore.dev/) keyless signature bundle (`.sigstore.json`) for each artifact. Verification requires no keys or configuration:
 
 ```console
 # Check the SHA256 checksum of every downloaded artifact
 $ sha256sum -c alc-ng_<version>_checksums.txt --ignore-missing
 
 # Verify a Sigstore signature against the public Fulcio certificate transparency log
-$ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sig.bundle alc-ng_<version>_<platform>.tar.gz
+$ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sigstore.json alc-ng_<version>_<platform>.tar.gz
 ```
 
 Install `cosign` via `brew install cosign`, or see the [cosign releases page](https://github.com/sigstore/cosign/releases).
