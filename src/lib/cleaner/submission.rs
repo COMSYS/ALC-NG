@@ -387,14 +387,15 @@ impl Submission {
 
         // Execute each command with a spinner, collecting the resulting Output
         // into the `latex_output` map. The map key is the main file; the value
-        // is the Result of the command execution.
-        let mut spinner = CompilationSpinner::new(commands.len());
+        // is the Result of the command execution. The subprocess output is
+        // streamed live into the spinner while it is captured for later use.
+        let spinner = CompilationSpinner::new(commands.len());
 
         self.latex_output = commands
             .into_iter()
             .map(|(main_file, mut cmd)| {
                 spinner.update(&main_file.relative().display().to_string());
-                let result = cmd.output();
+                let result = spinner.run_piped(&mut cmd);
                 match &result {
                     Ok(output) => {
                         if output.status.success() {
@@ -921,7 +922,7 @@ impl Submission {
         let main_files: Vec<_> = self.get_mains().into_iter().collect();
 
         // Compile each cleaned main file with a spinner
-        let mut spinner = CompilationSpinner::new(main_files.len());
+        let spinner = CompilationSpinner::new(main_files.len());
         let compile_results: Vec<_> = main_files
             .into_iter()
             .map(|main_file| {
@@ -949,12 +950,13 @@ impl Submission {
                 // Execute the command in the cache directory.
                 cmd.current_dir(&compile_folder);
 
-                cmd.stdout(Stdio::null());
-                cmd.stderr(Stdio::null());
+                // Stream the output into the spinner while capturing it.
+                cmd.stdout(Stdio::piped());
+                cmd.stderr(Stdio::piped());
 
                 (
                     main_file,
-                    cmd.status().map(|s| s.success()).unwrap_or(false),
+                    spinner.run_piped(&mut cmd).is_ok_and(|o| o.status.success()),
                 )
             })
             .collect();
