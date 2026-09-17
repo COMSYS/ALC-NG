@@ -140,13 +140,14 @@ homebrew_casks:
       # snapshot runs.
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/COMSYS/ALC-NG
-    description: A modern LaTeX sanitization tool for arXiv submissions.
+    description: Modern LaTeX sanitization tool for arXiv submissions
     license: MIT
 
 # Keyless Sigstore signatures for every artifact (no certificates required).
 signs:
   - cmd: cosign
     signature: "${artifact}.sig"
+    artifacts: all
     args:
       - sign-blob
       - --output-sig
@@ -173,6 +174,6 @@ release:
     and listed in `SHA256SUMS.txt`.
 
     ```console
-    $ sha256sum -c SHA256SUMS.txt --ignore-missing
+    $ sha256sum -c alc-ng_<version>_checksums.txt --ignore-missing
     $ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sig.bundle alc-ng_<version>_<platform>.tar.gz
     ```

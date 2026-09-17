@@ -27,7 +27,10 @@ Inspired by [`arxiv_latex_cleaner`](https://github.com/google-research/arxiv-lat
 ## Quick Start
 
 ```bash
-# Install (requires Rust, clang, and Node.js; see Installation)
+# Install the prebuilt binary via Homebrew
+brew install --cask comsys/tap/alc-ng
+
+# Or build from source (requires Rust, clang, and Node.js; see Installation)
 cargo install --git https://github.com/COMSYS/ALC-NG.git
 
 # Basic cleaning (output is written to ./cleaned by default)
@@ -55,12 +58,34 @@ alc-ng ./my-latex-project --tar submission.tar.gz
 
 ### Prebuild binaries
 
-Check the [GitHub releases page](https://github.com/COMSYS/ALC-NG/releases).
+Check the [GitHub releases page](https://github.com/COMSYS/ALC-NG/releases) for all artifacts (tar.gz/zip archives, `.deb`, `.rpm`, checksums, and signatures).
+
+#### Homebrew (macOS & Linux)
+
+```bash
+brew install --cask comsys/tap/alc-ng
+```
+
+The cask in the [`COMSYS/homebrew-tap`](https://github.com/COMSYS/homebrew-tap) tap is updated automatically for every tagged release and installs the prebuilt binary into `$(brew --prefix)/bin`.
 
 > [!NOTE]
-> We provide signed binaries for macOS. As they are signed manually, you might need to wait a while to see in them for a new release.
+> The macOS binaries are codesigned (Developer ID Application certificate) and notarized automatically as part of the release pipeline, so Gatekeeper accepts them out of the box.
 > All other published binaries are currently **unsigned**. Code signing for Windows is in progress.
 > Cautious users should [build from source](#from-source-cargo) instead.
+
+### Verifying release artifacts
+
+Every release ships a checksum file (`alc-ng_<version>_checksums.txt`) plus [Sigstore](https://www.sigstore.dev/) keyless signatures (`.sig` and `.sig.bundle`) for each artifact. Verification requires no keys or configuration:
+
+```console
+# Check the SHA256 checksum of every downloaded artifact
+$ sha256sum -c alc-ng_<version>_checksums.txt --ignore-missing
+
+# Verify a Sigstore signature against the public Fulcio certificate transparency log
+$ cosign verify-blob --bundle alc-ng_<version>_<platform>.tar.gz.sig.bundle alc-ng_<version>_<platform>.tar.gz
+```
+
+Install `cosign` via `brew install cosign`, or see the [cosign releases page](https://github.com/sigstore/cosign/releases).
 
 ### From Source (Cargo)
 
