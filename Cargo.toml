@@ -55,3 +55,10 @@ codegen-units = 1
 panic = "abort"
 opt-level = "z"
 strip = true
+
+# Compile tree-sitter-generate with O3 to vastly speed up tree-sitter language compilation
+[profile.dev.package.tree-sitter-generate]
+opt-level = 3
+
+[profile.release.package.tree-sitter-generate]
+opt-level = 3
