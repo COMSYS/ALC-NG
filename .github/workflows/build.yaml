@@ -20,6 +20,7 @@ jobs:
         with:
           version: 2023
           packages: scheme-full
+      - uses: rui314/setup-mold@v1
       - run: rustup update stable && rustup default stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -87,6 +88,8 @@ jobs:
           cargo --version
           node --version
           clang --version | head -1
+
+      - uses: rui314/setup-mold@v1
 
       # Cache ~/.cargo (registry, git deps, installed bins) and the target
       # dir across release runs.
