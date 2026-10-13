@@ -2131,7 +2131,7 @@
     },
     "placeholder": {
       "type": "PATTERN",
-      "value": "#+\\d"
+      "value": "#+\\d|#{2,}"
     },
     "value_literal": {
       "type": "PATTERN",

@@ -439,7 +439,7 @@ module.exports = grammar({
 
     word: $ => /[^\s\\%\{\},\$\[\]\(\)=\#&_\^\-\+\/\*]+/,
 
-    placeholder: $ => /#+\d/,
+    placeholder: $ => /#+\d|#{2,}/,
 
     value_literal: $ => /-?(\d+\.)?\d+/,
 

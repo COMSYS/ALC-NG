@@ -557,3 +557,25 @@ Parse \long in front of command definitions
       (command_name)
       (placeholder)
       (curly_group_impl))))
+
+================================================================================
+Double hash (##) in def body (align template)
+================================================================================
+
+\def\foo#1{\ialign{##\crcr #1}}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (curly_group_impl
+      (generic_command
+        (command_name)
+        (curly_group
+          (text
+            (placeholder)
+            (generic_command
+              (command_name))
+            (placeholder)))))))
