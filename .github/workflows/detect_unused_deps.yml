@@ -1,6 +1,6 @@
 name: Detect unused dependencies
 on:
-  pull_request: { branches: "*" }
+  pull_request: { branches: ["*"] }
 
 jobs:
   detect-unused-dependencies:
