@@ -12,6 +12,7 @@ use std::{
 use crate::{
     cleaner::{
         config::CleanerConfig,
+        file_renames::FileRenames,
         submission::{
             deletion_stats::DeletionStats,
             directives::{FileDirectives, directive_keywords, parse_directives},
@@ -24,6 +25,9 @@ use anyhow::{Context, Result, anyhow};
 use image::ImageDecoder;
 use log::{info, trace, warn};
 use tree_sitter::{Node, Parser, Tree};
+
+/// Extensions of LaTeX class and package files, which are only cleaned with `clean_classes`.
+const CLASS_EXTENSIONS: [&str; 8] = ["sty", "cls", "dtx", "bbx", "cbx", "ins", "def", "clo"];
 
 /// All common file‑extensions for image formats supported by the image crate.
 pub const IMAGE_EXTENSIONS: &[&str] = &[
@@ -54,7 +58,7 @@ pub const IF_TEX_CONDITIONALS: [&[u8]; 16] = [
 
 /// Grammar names that are preserved as‑is during stripping.
 /// These tokens are simply copied to the output without modification.
-pub const GRAMMAR_PRESERVE: [&str; 38] = [
+pub const GRAMMAR_PRESERVE: [&str; 35] = [
     "$",
     "$$",
     "(",
@@ -63,22 +67,19 @@ pub const GRAMMAR_PRESERVE: [&str; 38] = [
     "=",
     "[",
     "]",
+    "active_character",
     "argc",
     "biblatex_include",
-    "bibstyle_include",
-    "bibtex_include",
     "command_name",
     "curly_group_glob_pattern",
-    "curly_group_path",
     "delimiter",
     "hyperlink",
-    "import_include",
     "label",
-    "latex_include",
     "minted_environment",
     "number",
     "old_command_definition",
     "operator",
+    "parameter_delimiter",
     "placeholder",
     "source_code",
     "subscript",
@@ -96,13 +97,15 @@ pub const GRAMMAR_PRESERVE: [&str; 38] = [
 ];
 
 /// Grammar names that may contain nested sub‑nodes that need to be processed recursively.
-pub const GRAMMAR_NESTING: [&str; 75] = [
+pub const GRAMMAR_NESTING: [&str; 81] = [
     "acronym_definition",
     "acronym_reference",
     "asy_enviroment",
     "asydef_environment",
     "author_declaration",
     "begin",
+    "bibstyle_include",
+    "bibtex_include",
     "brack_group",
     "brack_group_argc",
     "brack_group_key_value",
@@ -129,6 +132,8 @@ pub const GRAMMAR_NESTING: [&str; 75] = [
     "curly_group_impl",
     "curly_group_label",
     "curly_group_label_list",
+    "curly_group_path",
+    "curly_group_path_list",
     "curly_group_text",
     "curly_group_text_list",
     "curly_group_value",
@@ -143,6 +148,7 @@ pub const GRAMMAR_NESTING: [&str; 75] = [
     "glossary_entry_reference",
     "graphics_include",
     "if_content",
+    "import_include",
     "inkscape_include",
     "inline_formula",
     "key_value_pair",
@@ -150,6 +156,7 @@ pub const GRAMMAR_NESTING: [&str; 75] = [
     "label_number",
     "label_reference",
     "label_reference_range",
+    "latex_include",
     "let_command_definition",
     "listing_environment",
     "luacode_environment",
@@ -350,6 +357,25 @@ impl OtherFile {
 
         Ok(())
     }
+
+    /// Copies the file to the target path. Uncleaned class and package files
+    /// only get their references to renamed files rewritten.
+    pub fn copy_to(&self, target: impl AsRef<Path>, file_renames: &FileRenames) -> Result<()> {
+        let is_class_file = self
+            .source_file
+            .extension()
+            .is_some_and(|ext| CLASS_EXTENSIONS.contains(&ext.to_string_lossy().as_ref()));
+
+        if is_class_file {
+            file_renames.copy_with_rewritten_references(
+                self.source_file.full(),
+                target.as_ref(),
+                &self.source_file.relative().to_string_lossy(),
+            )
+        } else {
+            self.copy_raw_to(target)
+        }
+    }
 }
 
 /// Methods for handling LaTeX‑like files.
@@ -361,17 +387,19 @@ impl LatexLikeFile {
         &self,
         target: impl AsRef<Path>,
         deletion_stats: &mut DeletionStats,
+        file_renames: &FileRenames,
     ) -> Result<()> {
         use std::fs::File;
 
         let input_filename = self.input_path.join(self.source_file.relative());
         let filename = input_filename.to_string_lossy();
 
-        let (stripped, stats) = ContentStripper::clean(
+        let (stripped, stats) = ContentStripper::clean_with_renames(
             &self.original_content,
             self.tree.root_node(),
             filename.as_ref(),
             self.cleaner_config.clone(),
+            Some(file_renames),
         )?;
 
         deletion_stats.merge(stats);
@@ -387,10 +415,16 @@ impl LatexLikeFile {
     }
 
     /// Copies the raw (unmodified) LaTeX file to the target path.
-    pub fn copy_raw_to(&self, target: impl AsRef<Path>) -> Result<()> {
-        use std::fs::copy;
+    /// Only references to renamed files are rewritten.
+    pub fn copy_raw_to(&self, target: impl AsRef<Path>, file_renames: &FileRenames) -> Result<()> {
+        use std::fs::write;
 
-        copy(self.source_file.full(), target.as_ref())?;
+        let filename = self.source_file.relative().to_string_lossy();
+        let content = file_renames
+            .rewrite_references(&self.original_content, self.tree.root_node(), &filename)
+            .unwrap_or_else(|| self.original_content.clone());
+
+        write(target.as_ref(), content)?;
 
         Ok(())
     }
@@ -425,14 +459,7 @@ impl ParsedFile {
             Some(ext)
                 if ext == "tex"
                     || (cleaner_config.clean_classes
-                        && (ext == "sty"
-                            || ext == "cls"
-                            || ext == "dtx"
-                            || ext == "bbx"
-                            || ext == "cbx"
-                            || ext == "ins"
-                            || ext == "def"
-                            || ext == "clo")) =>
+                        && CLASS_EXTENSIONS.contains(&ext.to_string_lossy().as_ref())) =>
             {
                 let content = read(source_file.full())
                     .context(anyhow!("Failed to read LaTeX file {}", path.display()))?;
@@ -541,12 +568,15 @@ impl ParsedFile {
     }
 
     /// Copies the raw (unmodified) file to the target path.
-    pub fn copy_raw_to(&self, target: impl AsRef<Path>) -> Result<()> {
+    /// Only references to renamed files are rewritten in LaTeX sources.
+    pub fn copy_raw_to(&self, target: impl AsRef<Path>, file_renames: &FileRenames) -> Result<()> {
         match &self {
-            ParsedFile::LatexLike(latex_like_file) => latex_like_file.copy_raw_to(target),
+            ParsedFile::LatexLike(latex_like_file) => {
+                latex_like_file.copy_raw_to(target, file_renames)
+            }
             ParsedFile::Bib(source_file) => source_file.copy_raw_to(target),
             ParsedFile::Image(sf) => sf.copy_raw_to(target),
-            ParsedFile::Other(source_file) => source_file.copy_raw_to(target),
+            ParsedFile::Other(other_file) => other_file.copy_to(target, file_renames),
         }
     }
 
@@ -556,10 +586,11 @@ impl ParsedFile {
         &self,
         target: impl AsRef<Path>,
         deletion_stats: &mut DeletionStats,
+        file_renames: &FileRenames,
     ) -> Result<()> {
         match self {
             ParsedFile::LatexLike(latex_like_file) => {
-                latex_like_file.copy_cleaned_to(target, deletion_stats)
+                latex_like_file.copy_cleaned_to(target, deletion_stats, file_renames)
             }
             ParsedFile::Bib(bib) => {
                 if bib.cleaner_config.keep_bib {
@@ -575,7 +606,7 @@ impl ParsedFile {
                     sf.copy_raw_to(target)
                 }
             }
-            ParsedFile::Other(source_file) => source_file.copy_raw_to(target),
+            ParsedFile::Other(other_file) => other_file.copy_to(target, file_renames),
         }
     }
 
@@ -748,6 +779,8 @@ pub struct ContentStripper<'a> {
     last_byte_of_document_block: Option<usize>,
     deletion_stats: DeletionStats,
     directives: FileDirectives,
+    /// Renamed project files whose references should be rewritten.
+    file_renames: Option<&'a FileRenames>,
 }
 
 use NodeHandling::*;
@@ -763,10 +796,23 @@ impl<'a> ContentStripper<'a> {
         filename: &'a str,
         cleaner_config: Arc<CleanerConfig>,
     ) -> Result<(Option<Vec<u8>>, DeletionStats)> {
+        Self::clean_with_renames(content, root, filename, cleaner_config, None)
+    }
+
+    /// Like [`ContentStripper::clean`], but additionally rewrites references
+    /// (e.g. `\input`, `\includegraphics`) to files renamed in `file_renames`.
+    pub fn clean_with_renames(
+        content: &'a [u8],
+        root: Node<'a>,
+        filename: &'a str,
+        cleaner_config: Arc<CleanerConfig>,
+        file_renames: Option<&'a FileRenames>,
+    ) -> Result<(Option<Vec<u8>>, DeletionStats)> {
         trace!("Starting content stripping for file: {}", filename);
         trace!("Content size: {} bytes", content.len());
 
         let mut stripper = Self::new(content, filename, cleaner_config);
+        stripper.file_renames = file_renames;
         stripper.directives = parse_directives(root, content);
 
         if !stripper.directives.is_empty() {
@@ -777,9 +823,13 @@ impl<'a> ContentStripper<'a> {
             );
         }
 
-        // The file opts out of cleaning entirely; keep it byte-for-byte.
+        // The file opts out of cleaning entirely; keep it byte-for-byte,
+        // except for references to renamed files that would break otherwise.
         if stripper.directives.keep_all {
-            return Ok((Some(content.to_vec()), stripper.deletion_stats));
+            let content = file_renames
+                .and_then(|renames| renames.rewrite_references(content, root, filename))
+                .unwrap_or_else(|| content.to_vec());
+            return Ok((Some(content), stripper.deletion_stats));
         }
 
         let result = stripper
@@ -808,6 +858,7 @@ impl<'a> ContentStripper<'a> {
             last_byte_of_document_block: None,
             deletion_stats: Default::default(),
             directives: FileDirectives::default(),
+            file_renames: None,
         }
     }
 
@@ -969,6 +1020,24 @@ impl<'a> ContentStripper<'a> {
             }
             "old_command_definition" => {
                 self.handle_old_command_definition(node, previous_node, whitespaces, false)
+            }
+            "path" => {
+                // Point references to renamed files to their new name
+                match self
+                    .file_renames
+                    .and_then(|renames| renames.rewrite_reference(node_content))
+                {
+                    Some(rewritten) => {
+                        trace!(
+                            "Rewriting file reference {:?} to {:?}",
+                            String::from_utf8_lossy(node_content),
+                            String::from_utf8_lossy(&rewritten)
+                        );
+                        whitespaces.extend_from_slice(&rewritten);
+                    }
+                    None => whitespaces.extend_from_slice(node_content),
+                }
+                Ok(Kept(whitespaces))
             }
             "package_include" => {
                 // We want to remove the import of the comment package if present
@@ -1745,59 +1814,36 @@ impl<'a> ContentStripper<'a> {
         let node_content = &self.content[node.byte_range()];
         let mut prev_node = previous_node;
 
-        let new_command = match node.child(0) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+        // The parameter text between declaration and implementation may consist of any number
+        // of nodes (e.g. `\def\foo(#1,#2){...}`), so locate the nodes by field instead of index.
+        let (Some(decl), Some(implementation)) = (
+            node.child_by_field_name("declaration"),
+            node.child_by_field_name("implementation"),
+        ) else {
+            whitespaces.extend_from_slice(node_content);
+            return Ok(Kept(whitespaces));
+        };
+
+        // Clean command, declaration and parameter text
+        let mut name = None;
+        let mut i = 0;
+        while let Some(child) = node.child(i) {
+            if child == implementation {
+                break;
             }
-        };
-        let cleaned_command = self.handle_node(new_command, prev_node.clone())?;
+            let result = self.handle_node(child, prev_node.clone())?;
 
-        cleaned_command.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_command;
-
-        // Declaration node
-        let decl = match node.child(1) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+            if child == decl {
+                name = Some(result.text().to_owned());
             }
-        };
-        // Name of command
-        let cleaned_decl = self.handle_node(decl, prev_node.clone())?;
 
-        cleaned_decl.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_decl.clone();
+            result.append_to(&mut new_content, &prev_node);
+            prev_node = result;
+            i += 1;
+        }
+        let name = name.unwrap_or_default();
+        let name = name.as_slice();
 
-        // Name inside declaration node
-        // If it has a child, then the name is wrapped by curly braces
-        let name = match decl.child(1) {
-            Some(c) => &self.content[c.byte_range()],
-            None => cleaned_decl.text(),
-        };
-
-        let args = match node.child(2) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
-        let cleaned_args = self.handle_node(args, prev_node.clone())?;
-
-        cleaned_args.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_args;
-
-        // Extract implementation of new command
-        let implementation = match node.child(3) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
         let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
 
         // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
@@ -1845,8 +1891,8 @@ impl<'a> ContentStripper<'a> {
             cleaned_impl.append_to(&mut new_content, &prev_node);
             prev_node = cleaned_impl;
 
-            // Clean remaining children (starting with index 4)
-            let mut i = 4;
+            // Clean remaining children after the implementation
+            i += 1;
 
             // Clean all child nodes inside the command body
             while let Some(child) = node.child(i) {

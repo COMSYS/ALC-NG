@@ -425,3 +425,57 @@ Reference ranges
       (label))
     (curly_group_label
       (label))))
+
+================================================================================
+Old command definition with delimited parameters
+================================================================================
+
+\def\Tik#1,#2:{#1}
+\def\ax(#1){#1}
+\def\foo#1\par{x}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (parameter_delimiter)
+    (placeholder)
+    (parameter_delimiter)
+    (curly_group_impl
+      (text
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (parameter_delimiter)
+    (placeholder)
+    (parameter_delimiter)
+    (curly_group_impl
+      (text
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (command_name)
+    (curly_group_impl
+      (text
+        (word)))))
+
+================================================================================
+Command definition of active character
+================================================================================
+
+\newcommand{"}[2]{#1}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (new_command_definition
+    (curly_group_command_name
+      (active_character))
+    (brack_group_argc
+      (argc))
+    (curly_group_impl
+      (text
+        (placeholder)))))

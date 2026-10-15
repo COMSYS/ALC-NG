@@ -16,6 +16,8 @@ pub struct CleanerConfig {
     pub no_zzrm: bool,
     /// Create a tar archive that is ready to be uploaded.
     /// If the value is '-' then the archive is piped to stdout.
+    /// Spaces in file names are replaced with underscores (as arXiv does on upload)
+    /// and references to the renamed files are updated.
     pub tar: Option<String>,
     /// Continue cleaning despite hitting errors.
     pub force: bool,

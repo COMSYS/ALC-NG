@@ -1680,8 +1680,17 @@
           "type": "FIELD",
           "name": "command",
           "content": {
-            "type": "SYMBOL",
-            "name": "command_name"
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "command_name"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "active_character"
+              }
+            ]
           }
         },
         {
@@ -2133,6 +2142,14 @@
       "type": "PATTERN",
       "value": "#+\\d|#{2,}"
     },
+    "parameter_delimiter": {
+      "type": "PATTERN",
+      "value": "[^\\s\\\\\\{\\}%#]+"
+    },
+    "active_character": {
+      "type": "PATTERN",
+      "value": "[^\\s\\\\\\{\\}%#]"
+    },
     "value_literal": {
       "type": "PATTERN",
       "value": "-?(\\d+\\.)?\\d+"
@@ -2504,94 +2521,133 @@
       ]
     },
     "math_delimiter": {
-      "type": "PREC_LEFT",
-      "value": 0,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "FIELD",
-            "name": "left_command",
-            "content": {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "STRING",
-                  "value": "\\left"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\bigl"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\Bigl"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\biggl"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\Biggl"
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "PREC_RIGHT",
+          "value": 0,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "_math_delimiter_left"
+              },
+              {
+                "type": "REPEAT",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_root_content"
                 }
-              ]
-            }
-          },
-          {
-            "type": "FIELD",
-            "name": "left_delimiter",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_math_delimiter_part"
-            }
-          },
-          {
-            "type": "REPEAT",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_root_content"
-            }
-          },
-          {
-            "type": "FIELD",
-            "name": "right_command",
-            "content": {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "STRING",
-                  "value": "\\right"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\bigr"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\Bigr"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\biggr"
-                },
-                {
-                  "type": "STRING",
-                  "value": "\\Biggr"
-                }
-              ]
-            }
-          },
-          {
-            "type": "FIELD",
-            "name": "right_delimiter",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_math_delimiter_part"
-            }
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "_math_delimiter_right"
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              }
+            ]
           }
-        ]
-      }
+        },
+        {
+          "type": "PREC",
+          "value": -1,
+          "content": {
+            "type": "SYMBOL",
+            "name": "_math_delimiter_right"
+          }
+        }
+      ]
+    },
+    "_math_delimiter_left": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "left_command",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "\\left"
+              },
+              {
+                "type": "STRING",
+                "value": "\\bigl"
+              },
+              {
+                "type": "STRING",
+                "value": "\\Bigl"
+              },
+              {
+                "type": "STRING",
+                "value": "\\biggl"
+              },
+              {
+                "type": "STRING",
+                "value": "\\Biggl"
+              }
+            ]
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "left_delimiter",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_math_delimiter_part"
+          }
+        }
+      ]
+    },
+    "_math_delimiter_right": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "right_command",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "\\right"
+              },
+              {
+                "type": "STRING",
+                "value": "\\bigr"
+              },
+              {
+                "type": "STRING",
+                "value": "\\Bigr"
+              },
+              {
+                "type": "STRING",
+                "value": "\\biggr"
+              },
+              {
+                "type": "STRING",
+                "value": "\\Biggr"
+              }
+            ]
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "right_delimiter",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_math_delimiter_part"
+          }
+        }
+      ]
     },
     "text_mode": {
       "type": "SEQ",
@@ -6622,8 +6678,21 @@
           "content": {
             "type": "REPEAT",
             "content": {
-              "type": "SYMBOL",
-              "name": "placeholder"
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "placeholder"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "command_name"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "parameter_delimiter"
+                }
+              ]
             }
           }
         },

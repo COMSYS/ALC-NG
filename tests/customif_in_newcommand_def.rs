@@ -32,7 +32,7 @@ mod tests {
                 .unwrap()
                 .contains_slice(br"\newcommand{\customdraft}")
         );
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -67,7 +67,7 @@ mod tests {
                 .unwrap()
                 .contains_slice(br"\newcommand{\customdraft}")
         );
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -102,6 +102,6 @@ mod tests {
                 .unwrap()
                 .contains_slice(br"\newcommand{\customdraft}")
         );
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }

@@ -223,3 +223,30 @@ Foo_{bar}^2
           (word))))
     (superscript
       (letter))))
+
+================================================================================
+Unbalanced math delimiters in environment definition
+================================================================================
+
+\renewenvironment{cases}{\left\{\array{ll}}{\endarray\right.}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (environment_definition
+    (curly_group_text
+      (text
+        (word)))
+    (curly_group_impl
+      (math_delimiter
+        (command_name)
+        (generic_command
+          (command_name)
+          (curly_group
+            (text
+              (word))))))
+    (curly_group_impl
+      (generic_command
+        (command_name))
+      (math_delimiter
+        (word)))))

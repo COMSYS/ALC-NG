@@ -22,7 +22,7 @@ after"#;
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from(b"Textafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -42,7 +42,7 @@ after"#;
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from("Text\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -66,6 +66,6 @@ after"#;
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from("Text\n\n\n\n\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }
