@@ -17,6 +17,7 @@ use crate::{
     arxiv::{FileUsage, ZeroZeroReadMe},
     cleaner::{
         config::CleanerConfig,
+        file_renames::FileRenames,
         submission::{deletion_stats::DeletionStats, parsed_file::ParsedFile},
     },
     compare::{Comparer, PageDiffs, PixelPerfect},
@@ -65,6 +66,8 @@ pub struct Submission {
     pub grammar_errors: Vec<String>,
     /// Store deleted string
     pub deletion_stats: DeletionStats,
+    /// Files that are renamed in the cleaned project (spaces replaced by underscores).
+    file_renames: FileRenames,
 }
 
 impl Submission {
@@ -178,6 +181,7 @@ impl Submission {
             latex_parameters: latex_parameters.clone(),
             grammar_errors: Vec::new(),
             deletion_stats: DeletionStats::default(),
+            file_renames: FileRenames::default(),
         })
     }
 
@@ -612,6 +616,42 @@ impl Submission {
         Ok(())
     }
 
+    /// Determines which files are renamed in the cleaned project.
+    ///
+    /// arXiv replaces spaces in file names with underscores, which breaks references
+    /// to these files. Thus, if a tar archive for the upload is created, we rename
+    /// them ourselves and rewrite the references.
+    fn determine_file_renames(&mut self) {
+        if self.cleaner_config.tar.is_none() {
+            return;
+        }
+
+        self.file_renames = FileRenames::new(
+            self.initial_file_list
+                .iter()
+                .map(|f| f.source_file())
+                // Generated .bbl files are copied as well
+                .chain(
+                    self.recorder_inputs
+                        .iter()
+                        .filter(|f| matches!(f.extension(), Some(x) if x == "bbl")),
+                )
+                .map(|f| f.relative().as_path()),
+        );
+
+        let mut renames: Vec<_> = self.file_renames.iter().collect();
+        renames.sort();
+        for (original, renamed) in renames {
+            info!("Renaming {} to {}", original.display(), renamed.display());
+        }
+    }
+
+    /// Returns the path a file is written to in the cleaned project.
+    fn target_path_of(&self, file: &SourceFile) -> PathBuf {
+        self.target_path
+            .join(self.file_renames.target(file.relative()))
+    }
+
     /// Copies only the files that were actually used during the build into the cleaned output directory.
     ///
     /// Unused files are omitted. Additionally, all `.bbl` files produced by BibTeX are preserved.
@@ -666,13 +706,13 @@ impl Submission {
                 is_anc_file,
             ) {
                 (_, Some(FileUsage::Include), _) => {
-                    let target = self.target_path.join(parsed.source_file().relative());
+                    let target = self.target_path_of(parsed.source_file());
                     // Ensure the parent directory exists before writing.
                     if let Some(parent) = target.parent() {
                         create_dir_all(parent)
                             .context(format!("Could not create directory {}", parent.display()))?;
                     }
-                    parsed.copy_raw_to(&target)?;
+                    parsed.copy_raw_to(&target, &self.file_renames)?;
 
                     Some(target)
                 }
@@ -681,24 +721,28 @@ impl Submission {
                         "Including file {} as it is an ancillary file",
                         parsed.source_file().relative().display()
                     );
-                    let target = self.target_path.join(parsed.source_file().relative());
+                    let target = self.target_path_of(parsed.source_file());
                     // Ensure the parent directory exists before writing.
                     if let Some(parent) = target.parent() {
                         create_dir_all(parent)
                             .context(format!("Could not create directory {}", parent.display()))?;
                     }
-                    parsed.copy_raw_to(&target)?;
+                    parsed.copy_raw_to(&target, &self.file_renames)?;
 
                     Some(target)
                 }
                 (_, Some(FileUsage::TopLevel), _) | (true, _, _) => {
-                    let target = self.target_path.join(parsed.source_file().relative());
+                    let target = self.target_path_of(parsed.source_file());
                     // Ensure the parent directory exists before writing.
                     if let Some(parent) = target.parent() {
                         create_dir_all(parent)
                             .context(format!("Could not create directory {}", parent.display()))?;
                     }
-                    parsed.copy_cleaned_to(&target, &mut self.deletion_stats)?;
+                    parsed.copy_cleaned_to(
+                        &target,
+                        &mut self.deletion_stats,
+                        &self.file_renames,
+                    )?;
 
                     Some(target)
                 }
@@ -734,7 +778,7 @@ impl Submission {
             use std::fs::copy;
 
             // Determine the destination path for the backup file in the cleaned target directory.
-            let target = self.target_path.join(file.relative());
+            let target = self.target_path_of(file);
             // Copy the original .bbl file to the target location
             copy(file.full(), &target)
                 .context(format!("Could not backup file {}", target.display()))?;
@@ -742,7 +786,7 @@ impl Submission {
 
         if !self.cleaner_config.skip_watermark {
             for file in &self.possible_main_files {
-                let target = self.target_path.join(file.relative());
+                let target = self.target_path_of(file);
                 let version = env!("CARGO_PKG_VERSION");
                 let watermark = format!(
                     "\n% Processed with alc-ng ({}) (https://github.com/COMSYS/ALC-NG)",
@@ -943,7 +987,7 @@ impl Submission {
                 cmd.args(&self.latex_parameters);
 
                 // Target the main TeX file.
-                cmd.arg(main_file.relative());
+                cmd.arg(self.file_renames.target(main_file.relative()));
 
                 // Execute the command in the cache directory.
                 cmd.current_dir(&compile_folder);
@@ -976,7 +1020,7 @@ impl Submission {
                 let original = f.full().with_extension("pdf");
                 let new_version = compile_folder
                     .path()
-                    .join(f.relative().with_extension("pdf"));
+                    .join(self.file_renames.target(f.relative()).with_extension("pdf"));
 
                 if !original.exists() || !new_version.exists() {
                     return Ok((f.relative().display().to_string(), None));
@@ -1033,6 +1077,9 @@ impl Submission {
 
         // Determine BibTeX references that were not recorded by the LaTeX compiler.
         self.determine_latexmk_bib_references();
+
+        // Replace spaces in file names of the tar archive, as arXiv would do on upload.
+        self.determine_file_renames();
 
         // Copy only the files that were actually used into the cleaned output directory.
         info!("Copying cleaned project");
