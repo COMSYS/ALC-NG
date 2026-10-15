@@ -3146,6 +3146,10 @@
         "required": true,
         "types": [
           {
+            "type": "active_character",
+            "named": true
+          },
+          {
             "type": "command_name",
             "named": true
           }
@@ -6920,7 +6924,7 @@
     "fields": {
       "left_command": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "\\Biggl",
@@ -6946,7 +6950,7 @@
       },
       "left_delimiter": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "(",
@@ -6980,7 +6984,7 @@
       },
       "right_command": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "\\Biggr",
@@ -7006,7 +7010,7 @@
       },
       "right_delimiter": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "(",
@@ -7884,6 +7888,14 @@
         "multiple": true,
         "required": false,
         "types": [
+          {
+            "type": "command_name",
+            "named": true
+          },
+          {
+            "type": "parameter_delimiter",
+            "named": true
+          },
           {
             "type": "placeholder",
             "named": true
@@ -12795,6 +12807,10 @@
     "named": false
   },
   {
+    "type": "active_character",
+    "named": true
+  },
+  {
     "type": "argc",
     "named": true
   },
@@ -12829,6 +12845,10 @@
   },
   {
     "type": "new_if_name",
+    "named": true
+  },
+  {
+    "type": "parameter_delimiter",
     "named": true
   },
   {

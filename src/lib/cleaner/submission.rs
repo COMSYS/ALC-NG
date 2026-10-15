@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use flate2::{Compression, write::GzEncoder};
-use image::DynamicImage;
 use log::{error, info, trace, warn};
 use std::{
     collections::{HashMap, HashSet},
@@ -20,7 +19,7 @@ use crate::{
         config::CleanerConfig,
         submission::{deletion_stats::DeletionStats, parsed_file::ParsedFile},
     },
-    compare::{Comparer, PixelPerfect},
+    compare::{Comparer, PageDiffs, PixelPerfect},
     exif_tool,
     helper::{SourceFile, find_mains, find_referenced_bsts},
     progress::CompilationSpinner,
@@ -30,8 +29,7 @@ pub mod deletion_stats;
 pub mod directives;
 pub mod parsed_file;
 
-type CompareResult =
-    Result<HashMap<String, Option<HashMap<usize, (Option<DynamicImage>, Option<DynamicImage>)>>>>;
+type CompareResult = Result<HashMap<String, Option<PageDiffs>>>;
 
 /// This struct contains all information needed to clean a LaTeX project.
 pub struct Submission {

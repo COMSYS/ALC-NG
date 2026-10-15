@@ -54,7 +54,7 @@ pub const IF_TEX_CONDITIONALS: [&[u8]; 16] = [
 
 /// Grammar names that are preserved as‑is during stripping.
 /// These tokens are simply copied to the output without modification.
-pub const GRAMMAR_PRESERVE: [&str; 38] = [
+pub const GRAMMAR_PRESERVE: [&str; 40] = [
     "$",
     "$$",
     "(",
@@ -63,6 +63,7 @@ pub const GRAMMAR_PRESERVE: [&str; 38] = [
     "=",
     "[",
     "]",
+    "active_character",
     "argc",
     "biblatex_include",
     "bibstyle_include",
@@ -79,6 +80,7 @@ pub const GRAMMAR_PRESERVE: [&str; 38] = [
     "number",
     "old_command_definition",
     "operator",
+    "parameter_delimiter",
     "placeholder",
     "source_code",
     "subscript",
@@ -1745,59 +1747,36 @@ impl<'a> ContentStripper<'a> {
         let node_content = &self.content[node.byte_range()];
         let mut prev_node = previous_node;
 
-        let new_command = match node.child(0) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+        // The parameter text between declaration and implementation may consist of any number
+        // of nodes (e.g. `\def\foo(#1,#2){...}`), so locate the nodes by field instead of index.
+        let (Some(decl), Some(implementation)) = (
+            node.child_by_field_name("declaration"),
+            node.child_by_field_name("implementation"),
+        ) else {
+            whitespaces.extend_from_slice(node_content);
+            return Ok(Kept(whitespaces));
+        };
+
+        // Clean command, declaration and parameter text
+        let mut name = None;
+        let mut i = 0;
+        while let Some(child) = node.child(i) {
+            if child == implementation {
+                break;
             }
-        };
-        let cleaned_command = self.handle_node(new_command, prev_node.clone())?;
+            let result = self.handle_node(child, prev_node.clone())?;
 
-        cleaned_command.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_command;
-
-        // Declaration node
-        let decl = match node.child(1) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+            if child == decl {
+                name = Some(result.text().to_owned());
             }
-        };
-        // Name of command
-        let cleaned_decl = self.handle_node(decl, prev_node.clone())?;
 
-        cleaned_decl.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_decl.clone();
+            result.append_to(&mut new_content, &prev_node);
+            prev_node = result;
+            i += 1;
+        }
+        let name = name.unwrap_or_default();
+        let name = name.as_slice();
 
-        // Name inside declaration node
-        // If it has a child, then the name is wrapped by curly braces
-        let name = match decl.child(1) {
-            Some(c) => &self.content[c.byte_range()],
-            None => cleaned_decl.text(),
-        };
-
-        let args = match node.child(2) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
-        let cleaned_args = self.handle_node(args, prev_node.clone())?;
-
-        cleaned_args.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_args;
-
-        // Extract implementation of new command
-        let implementation = match node.child(3) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
         let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
 
         // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
@@ -1845,8 +1824,8 @@ impl<'a> ContentStripper<'a> {
             cleaned_impl.append_to(&mut new_content, &prev_node);
             prev_node = cleaned_impl;
 
-            // Clean remaining children (starting with index 4)
-            let mut i = 4;
+            // Clean remaining children after the implementation
+            i += 1;
 
             // Clean all child nodes inside the command body
             while let Some(child) = node.child(i) {

@@ -30,6 +30,6 @@ mod tests {
         let stripped = stripped.unwrap();
         assert!(stripped.contains_slice(br"\ifcsname var-#1\endcsname"));
         assert!(!stripped.contains_slice(br"pdfmarkupcomment"));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }
