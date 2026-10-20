@@ -1,5 +1,9 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
+    use crate::common::test_output_dir;
+
     use alc_ng::cleaner::config::CleanerConfig;
     use alc_ng::cleaner::submission::Submission;
     use std::path::PathBuf;
@@ -24,18 +28,16 @@ mod tests {
 
         let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
         let test_files = root.join("tests/2604_14468v2");
-        let target_path = root.join("2604_14468v2_cleaned");
+        let target_path = test_output_dir().join("2604_14468v2_cleaned");
         let mut submission =
             Submission::new(config.clone(), test_files, target_path, "latexmk", &vec![]).unwrap();
 
         submission.run().unwrap();
 
-        assert!(
-            submission
-                .compare()
-                .unwrap()
-                .into_iter()
-                .all(|(_, res)| res.is_some_and(|r| r.is_empty()))
-        );
+        assert!(submission
+            .compare()
+            .unwrap()
+            .into_iter()
+            .all(|(_, res)| res.is_some_and(|r| r.is_empty())));
     }
 }

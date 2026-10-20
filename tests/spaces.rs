@@ -1,5 +1,9 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
+    use crate::common::test_output_dir;
+
     use alc_ng::cleaner::config::CleanerConfig;
     use alc_ng::cleaner::submission::Submission;
     use alc_ng::helper::ContainsByteSlice;
@@ -18,7 +22,7 @@ mod tests {
 
         let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
         let test_files = root.join("tests/spaces");
-        let target_path = root.join(name);
+        let target_path = test_output_dir().join(name);
         let mut submission =
             Submission::new(config, test_files, &target_path, "latexmk", &vec![]).unwrap();
 
@@ -33,7 +37,7 @@ mod tests {
 
     #[test]
     fn replaces_spaces_in_file_names() {
-        let tar = std::env::temp_dir().join("alc-ng-spaces-test.tar.gz");
+        let tar = test_output_dir().join("alc-ng-spaces-test.tar.gz");
         let (submission, target) = clean("spaces_cleaned", Some(&tar));
 
         assert!(target.join("main_paper.tex").is_file());
@@ -75,12 +79,10 @@ mod tests {
         std::fs::remove_file(&tar).unwrap();
 
         // The renamed project compiles to the same PDF
-        assert!(
-            submission
-                .compare()
-                .unwrap()
-                .into_iter()
-                .all(|(_, res)| res.is_some_and(|r| r.is_empty()))
-        );
+        assert!(submission
+            .compare()
+            .unwrap()
+            .into_iter()
+            .all(|(_, res)| res.is_some_and(|r| r.is_empty())));
     }
 }

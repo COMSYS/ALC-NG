@@ -1,5 +1,9 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
+    use crate::common::test_output_dir;
+
     use alc_ng::cleaner::config::CleanerConfig;
     use alc_ng::cleaner::submission::Submission;
     use alc_ng::helper::ContainsByteSlice;
@@ -16,7 +20,7 @@ mod tests {
 
         let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
         let test_files = root.join("tests/spaces");
-        let target_path = root.join(name);
+        let target_path = test_output_dir().join(name);
         let mut submission =
             Submission::new(config, test_files, &target_path, "latexmk", &vec![]).unwrap();
 
@@ -44,12 +48,10 @@ mod tests {
             read("tests/spaces/frozen.tex")
         );
 
-        assert!(
-            submission
-                .compare()
-                .unwrap()
-                .into_iter()
-                .all(|(_, res)| res.is_some_and(|r| r.is_empty()))
-        );
+        assert!(submission
+            .compare()
+            .unwrap()
+            .into_iter()
+            .all(|(_, res)| res.is_some_and(|r| r.is_empty())));
     }
 }
