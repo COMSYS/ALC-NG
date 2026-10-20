@@ -12,6 +12,7 @@ use std::{
 use crate::{
     cleaner::{
         config::CleanerConfig,
+        file_renames::FileRenames,
         submission::{
             deletion_stats::DeletionStats,
             directives::{FileDirectives, directive_keywords, parse_directives},
@@ -24,6 +25,9 @@ use anyhow::{Context, Result, anyhow};
 use image::ImageDecoder;
 use log::{info, trace, warn};
 use tree_sitter::{Node, Parser, Tree};
+
+/// Extensions of LaTeX class and package files, which are only cleaned with `clean_classes`.
+const CLASS_EXTENSIONS: [&str; 8] = ["sty", "cls", "dtx", "bbx", "cbx", "ins", "def", "clo"];
 
 /// All common file‑extensions for image formats supported by the image crate.
 pub const IMAGE_EXTENSIONS: &[&str] = &[
@@ -54,7 +58,7 @@ pub const IF_TEX_CONDITIONALS: [&[u8]; 16] = [
 
 /// Grammar names that are preserved as‑is during stripping.
 /// These tokens are simply copied to the output without modification.
-pub const GRAMMAR_PRESERVE: [&str; 38] = [
+pub const GRAMMAR_PRESERVE: [&str; 35] = [
     "$",
     "$$",
     "(",
@@ -63,22 +67,19 @@ pub const GRAMMAR_PRESERVE: [&str; 38] = [
     "=",
     "[",
     "]",
+    "active_character",
     "argc",
     "biblatex_include",
-    "bibstyle_include",
-    "bibtex_include",
     "command_name",
     "curly_group_glob_pattern",
-    "curly_group_path",
     "delimiter",
     "hyperlink",
-    "import_include",
     "label",
-    "latex_include",
     "minted_environment",
     "number",
     "old_command_definition",
     "operator",
+    "parameter_delimiter",
     "placeholder",
     "source_code",
     "subscript",
@@ -96,13 +97,15 @@ pub const GRAMMAR_PRESERVE: [&str; 38] = [
 ];
 
 /// Grammar names that may contain nested sub‑nodes that need to be processed recursively.
-pub const GRAMMAR_NESTING: [&str; 75] = [
+pub const GRAMMAR_NESTING: [&str; 81] = [
     "acronym_definition",
     "acronym_reference",
     "asy_enviroment",
     "asydef_environment",
     "author_declaration",
     "begin",
+    "bibstyle_include",
+    "bibtex_include",
     "brack_group",
     "brack_group_argc",
     "brack_group_key_value",
@@ -129,6 +132,8 @@ pub const GRAMMAR_NESTING: [&str; 75] = [
     "curly_group_impl",
     "curly_group_label",
     "curly_group_label_list",
+    "curly_group_path",
+    "curly_group_path_list",
     "curly_group_text",
     "curly_group_text_list",
     "curly_group_value",
@@ -143,6 +148,7 @@ pub const GRAMMAR_NESTING: [&str; 75] = [
     "glossary_entry_reference",
     "graphics_include",
     "if_content",
+    "import_include",
     "inkscape_include",
     "inline_formula",
     "key_value_pair",
@@ -150,6 +156,7 @@ pub const GRAMMAR_NESTING: [&str; 75] = [
     "label_number",
     "label_reference",
     "label_reference_range",
+    "latex_include",
     "let_command_definition",
     "listing_environment",
     "luacode_environment",
@@ -350,6 +357,25 @@ impl OtherFile {
 
         Ok(())
     }
+
+    /// Copies the file to the target path. Uncleaned class and package files
+    /// only get their references to renamed files rewritten.
+    pub fn copy_to(&self, target: impl AsRef<Path>, file_renames: &FileRenames) -> Result<()> {
+        let is_class_file = self
+            .source_file
+            .extension()
+            .is_some_and(|ext| CLASS_EXTENSIONS.contains(&ext.to_string_lossy().as_ref()));
+
+        if is_class_file {
+            file_renames.copy_with_rewritten_references(
+                self.source_file.full(),
+                target.as_ref(),
+                &self.source_file.relative().to_string_lossy(),
+            )
+        } else {
+            self.copy_raw_to(target)
+        }
+    }
 }
 
 /// Methods for handling LaTeX‑like files.
@@ -361,17 +387,19 @@ impl LatexLikeFile {
         &self,
         target: impl AsRef<Path>,
         deletion_stats: &mut DeletionStats,
+        file_renames: &FileRenames,
     ) -> Result<()> {
         use std::fs::File;
 
         let input_filename = self.input_path.join(self.source_file.relative());
         let filename = input_filename.to_string_lossy();
 
-        let (stripped, stats) = ContentStripper::clean(
+        let (stripped, stats) = ContentStripper::clean_with_renames(
             &self.original_content,
             self.tree.root_node(),
             filename.as_ref(),
             self.cleaner_config.clone(),
+            Some(file_renames),
         )?;
 
         deletion_stats.merge(stats);
@@ -387,10 +415,16 @@ impl LatexLikeFile {
     }
 
     /// Copies the raw (unmodified) LaTeX file to the target path.
-    pub fn copy_raw_to(&self, target: impl AsRef<Path>) -> Result<()> {
-        use std::fs::copy;
+    /// Only references to renamed files are rewritten.
+    pub fn copy_raw_to(&self, target: impl AsRef<Path>, file_renames: &FileRenames) -> Result<()> {
+        use std::fs::write;
 
-        copy(self.source_file.full(), target.as_ref())?;
+        let filename = self.source_file.relative().to_string_lossy();
+        let content = file_renames
+            .rewrite_references(&self.original_content, self.tree.root_node(), &filename)
+            .unwrap_or_else(|| self.original_content.clone());
+
+        write(target.as_ref(), content)?;
 
         Ok(())
     }
@@ -425,14 +459,7 @@ impl ParsedFile {
             Some(ext)
                 if ext == "tex"
                     || (cleaner_config.clean_classes
-                        && (ext == "sty"
-                            || ext == "cls"
-                            || ext == "dtx"
-                            || ext == "bbx"
-                            || ext == "cbx"
-                            || ext == "ins"
-                            || ext == "def"
-                            || ext == "clo")) =>
+                        && CLASS_EXTENSIONS.contains(&ext.to_string_lossy().as_ref())) =>
             {
                 let content = read(source_file.full())
                     .context(anyhow!("Failed to read LaTeX file {}", path.display()))?;
@@ -541,12 +568,15 @@ impl ParsedFile {
     }
 
     /// Copies the raw (unmodified) file to the target path.
-    pub fn copy_raw_to(&self, target: impl AsRef<Path>) -> Result<()> {
+    /// Only references to renamed files are rewritten in LaTeX sources.
+    pub fn copy_raw_to(&self, target: impl AsRef<Path>, file_renames: &FileRenames) -> Result<()> {
         match &self {
-            ParsedFile::LatexLike(latex_like_file) => latex_like_file.copy_raw_to(target),
+            ParsedFile::LatexLike(latex_like_file) => {
+                latex_like_file.copy_raw_to(target, file_renames)
+            }
             ParsedFile::Bib(source_file) => source_file.copy_raw_to(target),
             ParsedFile::Image(sf) => sf.copy_raw_to(target),
-            ParsedFile::Other(source_file) => source_file.copy_raw_to(target),
+            ParsedFile::Other(other_file) => other_file.copy_to(target, file_renames),
         }
     }
 
@@ -556,10 +586,11 @@ impl ParsedFile {
         &self,
         target: impl AsRef<Path>,
         deletion_stats: &mut DeletionStats,
+        file_renames: &FileRenames,
     ) -> Result<()> {
         match self {
             ParsedFile::LatexLike(latex_like_file) => {
-                latex_like_file.copy_cleaned_to(target, deletion_stats)
+                latex_like_file.copy_cleaned_to(target, deletion_stats, file_renames)
             }
             ParsedFile::Bib(bib) => {
                 if bib.cleaner_config.keep_bib {
@@ -575,7 +606,7 @@ impl ParsedFile {
                     sf.copy_raw_to(target)
                 }
             }
-            ParsedFile::Other(source_file) => source_file.copy_raw_to(target),
+            ParsedFile::Other(other_file) => other_file.copy_to(target, file_renames),
         }
     }
 
@@ -636,8 +667,10 @@ enum NodeHandling {
     OutOfBounds,
     /// The node was a comment definition that was deleted.
     CommandDefinitionDeleted(Vec<u8>, bool),
+    /// The node was an invocation of a comment command in math mode that was deleted.
     CommandInvocationDeleted(Vec<u8>, bool),
-    LongCommandInvocationDeleted(Vec<u8>),
+    /// The node was an invocation of a comment command that was replaced with `{}`.
+    CommandInvocationReplaced(Vec<u8>),
     CommentPackageIncludeDeleted(Vec<u8>, bool),
     BlockCommentDeleted(Vec<u8>, bool),
 }
@@ -655,9 +688,21 @@ impl NodeHandling {
             CommandInvocationDeleted(ws, _) => Some(ws),
             CommentPackageIncludeDeleted(ws, _) => Some(ws),
             BlockCommentDeleted(ws, _) => Some(ws),
-            LongCommandInvocationDeleted(ws) => Some(ws),
+            CommandInvocationReplaced(ws) => Some(ws),
             _ => None,
         }
+    }
+
+    /// Returns `true` if the node was deleted and spanned complete lines.
+    fn is_fullline_deletion(&self) -> bool {
+        matches!(
+            self,
+            BlockCommentDeleted(_, true)
+                | IfEvaluatedEmpty(_, true)
+                | CommandDefinitionDeleted(_, true)
+                | CommandInvocationDeleted(_, true)
+                | CommentPackageIncludeDeleted(_, true)
+        )
     }
 
     /// Returns a reference to the internal text.
@@ -672,7 +717,7 @@ impl NodeHandling {
             CommandInvocationDeleted(ws, _) => ws,
             CommentPackageIncludeDeleted(ws, _) => ws,
             BlockCommentDeleted(ws, _) => ws,
-            LongCommandInvocationDeleted(ws) => ws,
+            CommandInvocationReplaced(ws) => ws,
             _ => &[],
         }
     }
@@ -683,6 +728,13 @@ impl NodeHandling {
     /// The logic here ensures that line endings and comment delimiters
     /// are preserved correctly when nodes are removed or kept.
     pub fn append_to(&self, existing: &mut Vec<u8>, prev: &NodeHandling) {
+        // A node that spanned complete lines is removed together with its indentation
+        let own_text = if self.is_fullline_deletion() {
+            strip_trailing_indentation(self.text())
+        } else {
+            self.text()
+        };
+
         match &prev {
             OutOfBounds => (),
             BlockCommentDeleted(_, false) => {
@@ -691,7 +743,7 @@ impl NodeHandling {
                 let new_existing = strip_leading_newline(existing);
                 let mut new_existing = new_existing.to_owned();
 
-                new_existing.extend_from_slice(self.text());
+                new_existing.extend_from_slice(own_text);
                 existing.clear();
                 existing.append(&mut new_existing);
             }
@@ -702,10 +754,8 @@ impl NodeHandling {
             | IfEvaluatedEmpty(_, false)
             | CommandDefinitionDeleted(_, false)
             | CommandInvocationDeleted(_, false)
-            | LongCommandInvocationDeleted(_)
-            | CommentPackageIncludeDeleted(_, false) => {
-                existing.append(&mut self.text().to_owned())
-            }
+            | CommandInvocationReplaced(_)
+            | CommentPackageIncludeDeleted(_, false) => existing.extend_from_slice(own_text),
             FullLineCommentDeleted(_)
             | BlockCommentDeleted(_, true)
             | IfEvaluatedEmpty(_, true)
@@ -721,15 +771,8 @@ impl NodeHandling {
                     return;
                 }
 
-                let mut text = self.text();
-                let first = text.iter().next();
-                let first_is_newline = first.is_some_and(|&b| is_newline(b));
-
-                if first_is_newline {
-                    text = strip_leading_newline(text);
-                }
-
-                existing.extend_from_slice(text);
+                // Drop the remainder of the deleted line, i.e. trailing spaces and its newline
+                existing.extend_from_slice(strip_rest_of_blank_line(own_text));
             }
         }
     }
@@ -748,6 +791,8 @@ pub struct ContentStripper<'a> {
     last_byte_of_document_block: Option<usize>,
     deletion_stats: DeletionStats,
     directives: FileDirectives,
+    /// Renamed project files whose references should be rewritten.
+    file_renames: Option<&'a FileRenames>,
 }
 
 use NodeHandling::*;
@@ -763,10 +808,23 @@ impl<'a> ContentStripper<'a> {
         filename: &'a str,
         cleaner_config: Arc<CleanerConfig>,
     ) -> Result<(Option<Vec<u8>>, DeletionStats)> {
+        Self::clean_with_renames(content, root, filename, cleaner_config, None)
+    }
+
+    /// Like [`ContentStripper::clean`], but additionally rewrites references
+    /// (e.g. `\input`, `\includegraphics`) to files renamed in `file_renames`.
+    pub fn clean_with_renames(
+        content: &'a [u8],
+        root: Node<'a>,
+        filename: &'a str,
+        cleaner_config: Arc<CleanerConfig>,
+        file_renames: Option<&'a FileRenames>,
+    ) -> Result<(Option<Vec<u8>>, DeletionStats)> {
         trace!("Starting content stripping for file: {}", filename);
         trace!("Content size: {} bytes", content.len());
 
         let mut stripper = Self::new(content, filename, cleaner_config);
+        stripper.file_renames = file_renames;
         stripper.directives = parse_directives(root, content);
 
         if !stripper.directives.is_empty() {
@@ -777,9 +835,13 @@ impl<'a> ContentStripper<'a> {
             );
         }
 
-        // The file opts out of cleaning entirely; keep it byte-for-byte.
+        // The file opts out of cleaning entirely; keep it byte-for-byte,
+        // except for references to renamed files that would break otherwise.
         if stripper.directives.keep_all {
-            return Ok((Some(content.to_vec()), stripper.deletion_stats));
+            let content = file_renames
+                .and_then(|renames| renames.rewrite_references(content, root, filename))
+                .unwrap_or_else(|| content.to_vec());
+            return Ok((Some(content), stripper.deletion_stats));
         }
 
         let result = stripper
@@ -808,6 +870,7 @@ impl<'a> ContentStripper<'a> {
             last_byte_of_document_block: None,
             deletion_stats: Default::default(),
             directives: FileDirectives::default(),
+            file_renames: None,
         }
     }
 
@@ -948,15 +1011,8 @@ impl<'a> ContentStripper<'a> {
                         Ok(Kept(prefix))
                     }
                     CommandDefinitionDeleted(s, _) => {
-                        // The byte in front of and after the current node is a newline, thus, we are fullline.
-                        let fullline = self
-                            .content
-                            .get(node.start_byte() - 1)
-                            .is_some_and(|&b| is_newline(b))
-                            && self
-                                .content
-                                .get(node.end_byte())
-                                .is_some_and(|&b| is_newline(b));
+                        // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                        let fullline = self.is_fullline(&node);
 
                         // We need the fulline argument corresponding to the wrapped \long\...
                         Ok(CommandDefinitionDeleted(s, fullline))
@@ -969,6 +1025,24 @@ impl<'a> ContentStripper<'a> {
             }
             "old_command_definition" => {
                 self.handle_old_command_definition(node, previous_node, whitespaces, false)
+            }
+            "path" => {
+                // Point references to renamed files to their new name
+                match self
+                    .file_renames
+                    .and_then(|renames| renames.rewrite_reference(node_content))
+                {
+                    Some(rewritten) => {
+                        trace!(
+                            "Rewriting file reference {:?} to {:?}",
+                            String::from_utf8_lossy(node_content),
+                            String::from_utf8_lossy(&rewritten)
+                        );
+                        whitespaces.extend_from_slice(&rewritten);
+                    }
+                    None => whitespaces.extend_from_slice(node_content),
+                }
+                Ok(Kept(whitespaces))
             }
             "package_include" => {
                 // We want to remove the import of the comment package if present
@@ -989,19 +1063,8 @@ impl<'a> ContentStripper<'a> {
 
                 if &self.content[path.byte_range()] == b"comment" && !self.directives.keep_comments
                 {
-                    // The byte in front of and after the current node is a newline, thus, we are fullline.
-                    let fullline = self
-                        .content
-                        .get(node.start_byte() - 1)
-                        .is_some_and(|&b| is_newline(b))
-                        && self
-                            .content
-                            .get(node.end_byte())
-                            .is_some_and(|&b| is_newline(b))
-                        && self
-                            .content
-                            .get(node.end_byte() + 1)
-                            .is_some_and(|&b| is_newline(b));
+                    // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                    let fullline = self.is_fullline(&node);
 
                     self.deletion_stats
                         .comment_package_include_deleted
@@ -1024,37 +1087,30 @@ impl<'a> ContentStripper<'a> {
 
                 let name_str = &self.content[name.byte_range()];
 
-                if self.command_definitions.contains(name_str) {
-                    // The byte in front of and after the current node is a newline, thus, we are fullline.
-                    let fullline = self
-                        .content
-                        .get(node.start_byte() - 1)
-                        .is_some_and(|&b| is_newline(b))
-                        && self
-                            .content
-                            .get(node.end_byte())
-                            .is_some_and(|&b| is_newline(b));
-                    // We are disabling this requirement for now, as it seems to be the way to go.
-                    // && self.content.get(node.end_byte() + 1).map_or(false, |&b| is_newline(b));
-
-                    self.deletion_stats
-                        .comment_invocation_deleted
-                        .push(node_content.to_owned());
-                    return Ok(CommandInvocationDeleted(whitespaces, fullline));
-                }
-
-                if self.long_command_definitions.contains(name_str) {
+                if self.command_definitions.contains(name_str)
+                    || self.long_command_definitions.contains(name_str)
+                {
                     self.deletion_stats
                         .comment_invocation_deleted
                         .push(node_content.to_owned());
 
-                    // We want to replace the command invocation with an empty curly brace to preserve formatting.
-                    // This is special to commands defined with \long
+                    // In math mode, spaces are ignored but an empty group is an atom that changes
+                    // the spacing (e.g. turns a unary minus into a binary one), so delete the invocation.
+                    if is_in_math_mode(&node) {
+                        // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                        let fullline = self.is_fullline(&node);
+
+                        return Ok(CommandInvocationDeleted(whitespaces, fullline));
+                    }
+
+                    // Otherwise, we replace the command invocation with an empty curly brace to preserve formatting.
+                    // Simply deleting it would also delete the space it separates, e.g. the line break of an invocation
+                    // on its own line, which changes the spacing in the PDF.
                     let mut replacement_text = whitespaces;
                     replacement_text.push(b'{');
                     replacement_text.push(b'}');
 
-                    return Ok(LongCommandInvocationDeleted(replacement_text));
+                    return Ok(CommandInvocationReplaced(replacement_text));
                 }
 
                 // Handle child nodes inside the command body, if present
@@ -1194,19 +1250,8 @@ impl<'a> ContentStripper<'a> {
                     return Ok(Kept(whitespaces));
                 }
 
-                // The byte in front of and after the current node is a newline, thus, we are fullline.
-                let fullline = self
-                    .content
-                    .get(node.start_byte() - 1)
-                    .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte())
-                        .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte() + 1)
-                        .is_some_and(|&b| is_newline(b));
+                // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                let fullline = self.is_fullline(&node);
 
                 self.deletion_stats
                     .block_comment_deleted
@@ -1214,19 +1259,8 @@ impl<'a> ContentStripper<'a> {
                 Ok(BlockCommentDeleted(whitespaces, fullline))
             }
             r"\iffalse" | r"\fi" | r"\if0" | r"\iftrue" | r"\else" => {
-                // The byte in front of and after the current node is a newline, thus, we are fullline.
-                let fullline = self
-                    .content
-                    .get(node.start_byte() - 1)
-                    .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte())
-                        .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte() + 1)
-                        .is_some_and(|&b| is_newline(b));
+                // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                let fullline = self.is_fullline(&node);
 
                 self.deletion_stats
                     .block_comment_deleted
@@ -1250,6 +1284,23 @@ impl<'a> ContentStripper<'a> {
                 Ok(Kept(whitespaces))
             }
         }
+    }
+
+    /// Returns `true` if the node spans complete lines, i.e. only spaces or tabs separate it
+    /// from the newline (or start of file) in front of it and the newline after it.
+    fn is_fullline(&self, node: &Node<'a>) -> bool {
+        let newline_before = self.content[..node.start_byte()]
+            .iter()
+            .rev()
+            .find(|&&b| !is_horizontal_whitespace(b))
+            .is_none_or(|&b| is_newline(b));
+
+        let newline_after = self.content[node.end_byte()..]
+            .iter()
+            .find(|&&b| !is_horizontal_whitespace(b))
+            .is_some_and(|&b| is_newline(b));
+
+        newline_before && newline_after
     }
 
     /// Extracts the whitespace that appears between the previous sibling node
@@ -1284,19 +1335,8 @@ impl<'a> ContentStripper<'a> {
         let first_child = match node.child(0) {
             Some(c) => c,
             None => {
-                // The byte in front of and after the current node is a newline, thus, we are fullline.
-                let fullline = self
-                    .content
-                    .get(node.start_byte() - 1)
-                    .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte())
-                        .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte() + 1)
-                        .is_some_and(|&b| is_newline(b));
+                // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                let fullline = self.is_fullline(&node);
 
                 self.deletion_stats
                     .if_evaluated_empty
@@ -1346,19 +1386,8 @@ impl<'a> ContentStripper<'a> {
                     return self.handle_node(else_content, previous_node);
                 }
 
-                // The byte in front of and after the current node is a newline, thus, we are fullline.
-                let fullline = self
-                    .content
-                    .get(node.start_byte() - 1)
-                    .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte())
-                        .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte() + 1)
-                        .is_some_and(|&b| is_newline(b));
+                // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                let fullline = self.is_fullline(&node);
 
                 self.deletion_stats
                     .if_evaluated_empty
@@ -1380,19 +1409,8 @@ impl<'a> ContentStripper<'a> {
                     // The preserved content dictates the behavior of the following contents.
                     self.handle_node(if_content, previous_node)
                 } else {
-                    // The byte in front of and after the current node is a newline, thus, we are fullline.
-                    let fullline = self
-                        .content
-                        .get(node.start_byte() - 1)
-                        .is_some_and(|&b| is_newline(b))
-                        && self
-                            .content
-                            .get(node.end_byte())
-                            .is_some_and(|&b| is_newline(b))
-                        && self
-                            .content
-                            .get(node.end_byte() + 1)
-                            .is_some_and(|&b| is_newline(b));
+                    // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                    let fullline = self.is_fullline(&node);
 
                     self.deletion_stats
                         .if_evaluated_empty
@@ -1404,19 +1422,8 @@ impl<'a> ContentStripper<'a> {
                 let second_child = match node.child(1) {
                     Some(c) => c,
                     None => {
-                        // The byte in front of and after the current node is a newline, thus, we are fullline.
-                        let fullline = self
-                            .content
-                            .get(node.start_byte() - 1)
-                            .is_some_and(|&b| is_newline(b))
-                            && self
-                                .content
-                                .get(node.end_byte())
-                                .is_some_and(|&b| is_newline(b))
-                            && self
-                                .content
-                                .get(node.end_byte() + 1)
-                                .is_some_and(|&b| is_newline(b));
+                        // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                        let fullline = self.is_fullline(&node);
 
                         self.deletion_stats
                             .if_evaluated_empty
@@ -1429,19 +1436,8 @@ impl<'a> ContentStripper<'a> {
                     let text_in_second_child = match second_child.child(0) {
                         Some(c) => c,
                         None => {
-                            // The byte in front of and after the current node is a newline, thus, we are fullline.
-                            let fullline = self
-                                .content
-                                .get(node.start_byte() - 1)
-                                .is_some_and(|&b| is_newline(b))
-                                && self
-                                    .content
-                                    .get(node.end_byte())
-                                    .is_some_and(|&b| is_newline(b))
-                                && self
-                                    .content
-                                    .get(node.end_byte() + 1)
-                                    .is_some_and(|&b| is_newline(b));
+                            // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                            let fullline = self.is_fullline(&node);
 
                             self.deletion_stats
                                 .if_evaluated_empty
@@ -1458,19 +1454,8 @@ impl<'a> ContentStripper<'a> {
                         return Ok(IfEvaluated(whitespaces));
                     }
 
-                    // The byte in front of and after the current node is a newline, thus, we are fullline.
-                    let fullline = self
-                        .content
-                        .get(node.start_byte() - 1)
-                        .is_some_and(|&b| is_newline(b))
-                        && self
-                            .content
-                            .get(node.end_byte())
-                            .is_some_and(|&b| is_newline(b))
-                        && self
-                            .content
-                            .get(node.end_byte() + 1)
-                            .is_some_and(|&b| is_newline(b));
+                    // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                    let fullline = self.is_fullline(&node);
 
                     self.deletion_stats
                         .if_evaluated_empty
@@ -1478,19 +1463,8 @@ impl<'a> ContentStripper<'a> {
                     return Ok(IfEvaluatedEmpty(whitespaces, fullline));
                 }
 
-                // The byte in front of and after the current node is a newline, thus, we are fullline.
-                let fullline = self
-                    .content
-                    .get(node.start_byte() - 1)
-                    .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte())
-                        .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte() + 1)
-                        .is_some_and(|&b| is_newline(b));
+                // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                let fullline = self.is_fullline(&node);
 
                 self.deletion_stats
                     .if_evaluated_empty
@@ -1505,19 +1479,8 @@ impl<'a> ContentStripper<'a> {
                 whitespaces,
             ),
             _ => {
-                // The byte in front of and after the current node is a newline, thus, we are fullline.
-                let fullline = self
-                    .content
-                    .get(node.start_byte() - 1)
-                    .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte())
-                        .is_some_and(|&b| is_newline(b))
-                    && self
-                        .content
-                        .get(node.end_byte() + 1)
-                        .is_some_and(|&b| is_newline(b));
+                // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                let fullline = self.is_fullline(&node);
 
                 self.deletion_stats
                     .if_evaluated_empty
@@ -1673,19 +1636,8 @@ impl<'a> ContentStripper<'a> {
             return self.handle_node(c, previous_node);
         }
 
-        // The byte in front of and after the current node is a newline, thus, we are fullline.
-        let fullline = self
-            .content
-            .get(node.start_byte() - 1)
-            .is_some_and(|&b| is_newline(b))
-            && self
-                .content
-                .get(node.end_byte())
-                .is_some_and(|&b| is_newline(b))
-            && self
-                .content
-                .get(node.end_byte() + 1)
-                .is_some_and(|&b| is_newline(b));
+        // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+        let fullline = self.is_fullline(&node);
 
         self.deletion_stats
             .if_evaluated_empty
@@ -1745,59 +1697,36 @@ impl<'a> ContentStripper<'a> {
         let node_content = &self.content[node.byte_range()];
         let mut prev_node = previous_node;
 
-        let new_command = match node.child(0) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+        // The parameter text between declaration and implementation may consist of any number
+        // of nodes (e.g. `\def\foo(#1,#2){...}`), so locate the nodes by field instead of index.
+        let (Some(decl), Some(implementation)) = (
+            node.child_by_field_name("declaration"),
+            node.child_by_field_name("implementation"),
+        ) else {
+            whitespaces.extend_from_slice(node_content);
+            return Ok(Kept(whitespaces));
+        };
+
+        // Clean command, declaration and parameter text
+        let mut name = None;
+        let mut i = 0;
+        while let Some(child) = node.child(i) {
+            if child == implementation {
+                break;
             }
-        };
-        let cleaned_command = self.handle_node(new_command, prev_node.clone())?;
+            let result = self.handle_node(child, prev_node.clone())?;
 
-        cleaned_command.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_command;
-
-        // Declaration node
-        let decl = match node.child(1) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+            if child == decl {
+                name = Some(result.text().to_owned());
             }
-        };
-        // Name of command
-        let cleaned_decl = self.handle_node(decl, prev_node.clone())?;
 
-        cleaned_decl.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_decl.clone();
+            result.append_to(&mut new_content, &prev_node);
+            prev_node = result;
+            i += 1;
+        }
+        let name = name.unwrap_or_default();
+        let name = name.as_slice();
 
-        // Name inside declaration node
-        // If it has a child, then the name is wrapped by curly braces
-        let name = match decl.child(1) {
-            Some(c) => &self.content[c.byte_range()],
-            None => cleaned_decl.text(),
-        };
-
-        let args = match node.child(2) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
-        let cleaned_args = self.handle_node(args, prev_node.clone())?;
-
-        cleaned_args.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_args;
-
-        // Extract implementation of new command
-        let implementation = match node.child(3) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
         let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
 
         // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
@@ -1827,15 +1756,8 @@ impl<'a> ContentStripper<'a> {
                     .push(node_content.to_owned());
             }
 
-            // The byte in front of and after the current node is a newline, thus, we are fullline.
-            let fullline = self
-                .content
-                .get(node.start_byte() - 1)
-                .is_some_and(|&b| is_newline(b))
-                && self
-                    .content
-                    .get(node.end_byte())
-                    .is_some_and(|&b| is_newline(b));
+            // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+            let fullline = self.is_fullline(&node);
 
             self.deletion_stats
                 .comment_definition_deleted
@@ -1845,8 +1767,8 @@ impl<'a> ContentStripper<'a> {
             cleaned_impl.append_to(&mut new_content, &prev_node);
             prev_node = cleaned_impl;
 
-            // Clean remaining children (starting with index 4)
-            let mut i = 4;
+            // Clean remaining children after the implementation
+            i += 1;
 
             // Clean all child nodes inside the command body
             while let Some(child) = node.child(i) {
@@ -1954,15 +1876,8 @@ impl<'a> ContentStripper<'a> {
                     .push(node_content.to_owned());
             }
 
-            // The byte in front of and after the current node is a newline, thus, we are fullline.
-            let fullline = self
-                .content
-                .get(node.start_byte() - 1)
-                .is_some_and(|&b| is_newline(b))
-                && self
-                    .content
-                    .get(node.end_byte())
-                    .is_some_and(|&b| is_newline(b));
+            // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+            let fullline = self.is_fullline(&node);
 
             Ok(CommandDefinitionDeleted(whitespaces, fullline))
         } else {
@@ -1985,6 +1900,51 @@ impl<'a> ContentStripper<'a> {
             Ok(Kept(new_content))
         }
     }
+}
+
+/// Returns `true` if the node is typeset in math mode, i.e. inside a formula
+/// or math environment but not inside a nested text command (e.g. `\text`).
+fn is_in_math_mode(node: &Node) -> bool {
+    let mut current = node.parent();
+
+    while let Some(parent) = current {
+        match parent.kind() {
+            "inline_formula" | "displayed_equation" | "math_environment" => return true,
+            "text_mode" => return false,
+            _ => current = parent.parent(),
+        }
+    }
+
+    false
+}
+
+/// Returns `true` for spaces and tabs.
+fn is_horizontal_whitespace(byte: u8) -> bool {
+    byte == b' ' || byte == b'\t'
+}
+
+/// Strips the rest of a line that only consists of spaces or tabs, including its newline.
+fn strip_rest_of_blank_line(content: &[u8]) -> &[u8] {
+    let indentation = content
+        .iter()
+        .take_while(|&&b| is_horizontal_whitespace(b))
+        .count();
+
+    match content.get(indentation) {
+        Some(&b) if is_newline(b) => strip_leading_newline(&content[indentation..]),
+        _ => content,
+    }
+}
+
+/// Strips trailing spaces or tabs, i.e. the indentation of a deleted line.
+fn strip_trailing_indentation(content: &[u8]) -> &[u8] {
+    let indentation = content
+        .iter()
+        .rev()
+        .take_while(|&&b| is_horizontal_whitespace(b))
+        .count();
+
+    &content[..content.len() - indentation]
 }
 
 /// Strip one or more newline characters from the start of a byte slice.

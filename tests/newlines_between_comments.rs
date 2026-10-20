@@ -37,6 +37,6 @@ mod tests {
 
         assert_eq!(stripped, expected);
 
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }

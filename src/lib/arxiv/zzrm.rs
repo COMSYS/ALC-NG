@@ -147,17 +147,25 @@ impl ZeroZeroReadMe {
         use glob::glob_with;
         let full_folder_path = PathBuf::from(folder.as_ref()).canonicalize()?;
 
-        let mut candidates: Vec<_> = glob_with(
-            &format!("{}/00README.*", full_folder_path.to_string_lossy()),
-            glob::MatchOptions {
-                case_sensitive: false,
-                require_literal_separator: false,
-                require_literal_leading_dot: false,
-            },
-        )
-        .map_err(|err| ZZRMException::UnsupportedFile(err.to_string()))?
-        .filter_map(Result::ok)
-        .collect();
+        // The classic arXiv 00README may carry any extension (`00README.XXX`,
+        // where XXX is arbitrary) or none at all, so match both the dotted and
+        // the bare file name.
+        let mut candidates: Vec<_> = Vec::new();
+        for name in ["00README.*", "00README"] {
+            candidates.extend(
+                glob_with(
+                    &format!("{}/{}", full_folder_path.to_string_lossy(), name),
+                    glob::MatchOptions {
+                        case_sensitive: false,
+                        require_literal_separator: false,
+                        require_literal_leading_dot: false,
+                    },
+                )
+                .map_err(|err| ZZRMException::UnsupportedFile(err.to_string()))?
+                .filter_map(Result::ok),
+            );
+        }
+        candidates.retain(|candidate| candidate.is_file());
 
         if candidates.len() > 1 {
             let candidate_paths = candidates
@@ -198,16 +206,12 @@ impl ZeroZeroReadMe {
         }
 
         let mut result = match ext.as_str() {
-            // v1 extensions
-            "txt" | "rst" | "readme" => Self::fetch_00readme_v1(file)?,
             // v2 extensions
             "json" | "jsn" | "ndjson" | "toml" | "yml" | "yaml" => Self::fetch_00readme_v2(file)?,
-            _ => {
-                return Err(ZZRMException::UnsupportedFile(format!(
-                    "Unsupported extension: .{}",
-                    ext
-                )));
-            }
+            // v1: the classic arXiv `00README.XXX` allows any extension (XXX is
+            // arbitrary, e.g. `.txt`, `.xxx`, or none), so everything else is
+            // parsed as the legacy text format.
+            _ => Self::fetch_00readme_v1(file)?,
         };
 
         result.path = file.to_path_buf();
@@ -288,7 +292,9 @@ impl ZeroZeroReadMe {
                 }
                 1 => match idioms[0] {
                     "nostamp" => zzrm.stamp = Some(false),
-                    "nohyperref" => zzrm.nohyperref = Some(true),
+                    // `nohypertex` per the classic arXiv spec; `nohyperref` is
+                    // the v2 JSON spelling, kept as an alias.
+                    "nohypertex" | "nohyperref" => zzrm.nohyperref = Some(true),
                     _ => {}
                 },
                 _ => {}
@@ -573,5 +579,66 @@ mod tests {
         let toml_str = "value = \"2023\"\n";
         let result: TestWrapper = toml::from_str(toml_str).unwrap();
         assert_eq!(result.value, Some(2023));
+    }
+
+    /// The classic arXiv `00README.XXX` allows any extension (or none at all);
+    /// all of these must be discovered and parsed as the legacy v1 format.
+    #[test]
+    fn test_v1_classic_names_are_parsed() {
+        for name in ["00README.xxx", "00README.XXX", "00README.txt", "00README"] {
+            let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+            std::fs::write(dir.path().join(name), "main.tex toplevelfile\nnostamp\n").unwrap();
+
+            let zzrm = ZeroZeroReadMe::new_from_folder(dir.path())
+                .unwrap_or_else(|e| panic!("{name} should be parsed as v1: {e}"));
+
+            assert_eq!(zzrm.version, Version::V1, "{name}");
+            assert_eq!(zzrm.sources.len(), 1, "{name}");
+            assert!(
+                matches!(zzrm.sources["main.tex"].usage, Some(FileUsage::TopLevel)),
+                "{name}"
+            );
+            assert_eq!(zzrm.stamp, Some(false), "{name}");
+        }
+    }
+
+    /// `nohypertex` is the keyword of the classic arXiv spec; the v2 JSON
+    /// spelling `nohyperref` is accepted as an alias.
+    #[test]
+    fn test_v1_nohypertex_keyword() {
+        for line in ["nohypertex", "nohyperref"] {
+            let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+            std::fs::write(dir.path().join("00README.xxx"), format!("{line}\n")).unwrap();
+
+            let zzrm = ZeroZeroReadMe::new_from_folder(dir.path()).unwrap();
+            assert_eq!(zzrm.nohyperref, Some(true), "{line}");
+        }
+    }
+
+    #[test]
+    fn test_v2_json_still_parsed() {
+        let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+        std::fs::write(
+            dir.path().join("00README.json"),
+            r#"{"process": {"compiler": "pdflatex"}, "sources": [{"filename": "main.tex", "usage": "toplevel"}]}"#,
+        )
+        .unwrap();
+
+        let zzrm = ZeroZeroReadMe::new_from_folder(dir.path()).unwrap();
+        assert_eq!(zzrm.version, Version::V2);
+        assert!(zzrm.process.is_some());
+        assert_eq!(zzrm.sources.len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_readmes_still_error() {
+        let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+        std::fs::write(dir.path().join("00README.txt"), "main.tex toplevelfile\n").unwrap();
+        std::fs::write(dir.path().join("00README.xxx"), "main.tex toplevelfile\n").unwrap();
+
+        match ZeroZeroReadMe::new_from_folder(dir.path()) {
+            Err(ZZRMException::MultipleFiles(_)) => {}
+            other => panic!("expected MultipleFiles, got {:?}", other.ok()),
+        }
     }
 }

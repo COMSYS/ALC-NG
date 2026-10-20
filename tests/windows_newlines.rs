@@ -18,7 +18,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from(b"Text\r\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -35,7 +35,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from(b"Text\r\n\r\n\r\n\r\n\r\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -51,6 +51,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from(b"Text\r\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }

@@ -67,6 +67,8 @@ pub struct Config {
     pub no_zzrm: bool,
     /// Create a tar archive that is ready to be uploaded.
     /// If the value is '-' then the archive is piped to stdout.
+    /// Spaces in file names are replaced with underscores (as arXiv does on upload)
+    /// and references to the renamed files are updated.
     #[arg(long)]
     pub tar: Option<String>,
     /// Do not add a watermark at the end of main tex files.

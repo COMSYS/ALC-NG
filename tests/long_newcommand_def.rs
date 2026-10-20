@@ -30,7 +30,7 @@ Text  \Ignore{(Comment)}  Besides
 
         assert!(!stripped.contains_slice(br"\Ignore"));
         assert!(stripped.contains_slice(br"Text  {}  Besides"));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -57,7 +57,7 @@ Text  \Ignore{(Comment)}  Besides
 
         assert!(!stripped.contains_slice(br"\Ignore"));
         assert!(stripped.contains_slice(b"Text  {}  Besides"));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -77,6 +77,6 @@ Text  \Ignore{(Comment)}  Besides
         println!("{:?}", String::from_utf8_lossy(&stripped));
 
         assert!(stripped.contains_slice(br"\long\def\Ignore{1}"));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }
