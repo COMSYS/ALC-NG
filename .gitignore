@@ -18,6 +18,7 @@
 /test_output
 /wasm-test/swiftlatex/*
 !/wasm-test/swiftlatex/README.md
+!/wasm-test/swiftlatex/alc-wasi.js
 /wasm-test/texlive-cache
 /wasm-test/fixtures
 /wasm-test/pdfium/*

@@ -9,10 +9,17 @@ and extract here, keeping only:
 - `swiftlatexxetex.js` / `swiftlatexxetex.wasm` — the XeTeX engine (glue **patched**)
 - `swiftlatexdvipdfm.js` / `swiftlatexdvipdfm.wasm` — dvipdfmx (glue **patched**)
 
+`alc-wasi.js` is the exception: it is alc-ng's own code and **is tracked**. Both
+TeX glues start with `importScripts("alc-wasi.js")`, so a checkout that has the
+workers but not the shim fails on every `alcng_*` command (and the worker on
+`ImportWorkerError`).
+
 `python3 -I wasm-test/patch-swiftlatex.py <extracted release> wasm-test/swiftlatex`
-writes the patched XeTeX and dvipdfmx glue (patches 1–5 below on XeTeX; only
-the console forwarding and the idempotent `mkdir` on dvipdfmx) and adds the
-`-cd` patch to all three workers: `setmainfile` takes an optional `dir`
+writes **all three** patched workers from the extracted glue: patches 1–6 on
+pdfTeX, patches 1–5 on XeTeX, and on dvipdfmx only the console forwarding and
+the idempotent `mkdir`. Nothing is patched by hand anymore — the workers here
+are `release + script`, byte for byte. Together with the `-cd` patch on all
+three workers: `setmainfile` takes an optional `dir`
 (relative to `/work`), and the compile runs and reads its output there, like
 `latexmk -cd` — a nested main file such as `report/report.tex` that inputs
 `../figs/…` compiles as it does natively.
@@ -36,7 +43,9 @@ polyglossia, xeCJK, …).
 `PdfTeXEngine.js` is no longer used by the test page; the page drives the
 worker protocol directly (see `index.html`, note in `wasm-test/serve.py`).
 
-**Patches applied to `swiftlatexpdftex.js`** (marked in the file):
+**The patches** — invented on `swiftlatexpdftex.js`, which is why they are
+numbered from there; `patch-swiftlatex.py` applies them by anchor, so it fails
+loudly if a future release moves the code it patches:
 
 1. `seedfiles` command — the host can inject files (`{name: Uint8Array}`) that
    the engine's kpathsea hook serves before anything is fetched remotely.
@@ -69,6 +78,10 @@ worker protocol directly (see `index.html`, note in `wasm-test/serve.py`).
    `FS.cwd` is a function, and MEMFS nodes have no `length` (size comes from
    `getattr`). Add `?wasitrace=1` to the page URL to trace every WASI call,
    `?lognewest=1` to show the log newest-first.
+6. **Format dump name** (pdfTeX only) — `compileformat` reads back
+   `WORKROOT/pdflatex.fmt`, but the dump it just wrote is named after the
+   kpathsea cache id of `pdflatex.ini`; the patch asks for the name the page
+   seeds the dump back under. See “The format dump” below.
 
 **TeX distribution files.** The SwiftLaTeX mirror (`texlive2.swiftlatex.com`)
 is offline (Cloudflare 522) and sends no CORS headers anyway. Run the test
