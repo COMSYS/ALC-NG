@@ -79,10 +79,12 @@ mod tests {
         std::fs::remove_file(&tar).unwrap();
 
         // The renamed project compiles to the same PDF
-        assert!(submission
-            .compare()
-            .unwrap()
-            .into_iter()
-            .all(|(_, res)| res.is_some_and(|r| r.is_empty())));
+        assert!(
+            submission
+                .compare()
+                .unwrap()
+                .into_iter()
+                .all(|(_, res)| res.is_some_and(|r| r.is_empty()))
+        );
     }
 }

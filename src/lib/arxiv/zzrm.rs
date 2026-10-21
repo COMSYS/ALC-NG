@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     fmt::Display,
     path::{Path, PathBuf},
+    // Only used to build the return type on wasm, where spawning is impossible.
     process::Command,
 };
 
@@ -367,48 +368,60 @@ impl ZeroZeroReadMe {
         &self,
         parent_dir: impl AsRef<Path>,
     ) -> Result<Vec<(SourceFile, Command)>, ZZRMException> {
-        let compiler = self
-            .process
-            .clone()
-            .ok_or(ZZRMException::Parse("Missing process spec".into()))?
-            .compiler
-            .as_ref()
-            .ok_or(ZZRMException::Parse("Missing compiler spec".into()))?
-            .tex_compiler()
-            .ok_or(ZZRMException::Parse("Missing compiler".into()))?;
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = parent_dir;
+            Err(ZZRMException::Parse(
+                "Compiling LaTeX is not supported on wasm builds. Provide an .fls recorder file instead."
+                    .into(),
+            ))
+        }
 
-        let tl_files = self
-            .sources
-            .iter()
-            .filter(|(_, properties)| matches!(properties.usage, Some(FileUsage::TopLevel)))
-            .filter_map(|(path, _)| {
-                // TODO: make this more secure?
-                let mut cmd = Command::new(&compiler);
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let compiler = self
+                .process
+                .clone()
+                .ok_or(ZZRMException::Parse("Missing process spec".into()))?
+                .compiler
+                .as_ref()
+                .ok_or(ZZRMException::Parse("Missing compiler spec".into()))?
+                .tex_compiler()
+                .ok_or(ZZRMException::Parse("Missing compiler".into()))?;
 
-                cmd.arg("-interaction=nonstopmode");
-                cmd.arg("-recorder");
-                cmd.arg("-f");
-                cmd.arg(path);
-                cmd.current_dir(&parent_dir);
+            let tl_files = self
+                .sources
+                .iter()
+                .filter(|(_, properties)| matches!(properties.usage, Some(FileUsage::TopLevel)))
+                .filter_map(|(path, _)| {
+                    // TODO: make this more secure?
+                    let mut cmd = Command::new(&compiler);
 
-                let source = match SourceFile::from_path(parent_dir.as_ref().join(path), &parent_dir) {
-                    Ok(source) => source,
-                    Err(e) => {
-                        warn!(
-                            "Failed to create SourceFile for top-level file {:?} in {:?} while preparing compilation: {}",
-                            path,
-                            parent_dir.as_ref(),
-                            e
-                        );
-                        return None;
-                    }
-                };
+                    cmd.arg("-interaction=nonstopmode");
+                    cmd.arg("-recorder");
+                    cmd.arg("-f");
+                    cmd.arg(path);
+                    cmd.current_dir(&parent_dir);
 
-                Some((source, cmd))
-            })
-            .collect();
+                    let source = match SourceFile::from_path(parent_dir.as_ref().join(path), &parent_dir) {
+                        Ok(source) => source,
+                        Err(e) => {
+                            warn!(
+                                "Failed to create SourceFile for top-level file {:?} in {:?} while preparing compilation: {}",
+                                path,
+                                parent_dir.as_ref(),
+                                e
+                            );
+                            return None;
+                        }
+                    };
 
-        Ok(tl_files)
+                    Some((source, cmd))
+                })
+                .collect();
+
+            Ok(tl_files)
+        }
     }
 
     pub fn top_level_files(&self, parent_dir: impl AsRef<Path>) -> HashSet<SourceFile> {

@@ -1,0 +1,16 @@
+.git
+.github
+.openchamber
+target
+datasets
+caches
+extraction_cache
+compile_cache
+inspection
+cleaned
+dist
+test_output
+output*
+input
+wasm-test/texlive-cache
+wasm-test/fixtures

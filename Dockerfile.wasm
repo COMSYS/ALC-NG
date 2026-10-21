@@ -1,0 +1,67 @@
+# Serves the wasm test page (wasm-test/index.html) together with the TeX Live
+# proxy of wasm-test/serve.py.
+#
+#   docker build -f Dockerfile.wasm -t alc-ng-wasm .
+#   docker run --rm -p 8000:8000 alc-ng-wasm
+#   open http://localhost:8000/wasm-test/
+#
+# The patched SwiftLaTeX engines in wasm-test/swiftlatex are gitignored, so
+# they must be present in the build context (see wasm-test/swiftlatex/README.md).
+
+# --- alc-ng as wasm32-wasip1 cdylib ----------------------------------------
+FROM rust:1 AS wasm-build
+
+ARG WASI_SDK_VERSION=34
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# tree-sitter's C sources need a wasm-capable clang and a WASI sysroot.
+RUN set -eux; \
+    arch="$(uname -m | sed 's/aarch64/arm64/')"; \
+    curl -sSfL "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-${arch}-linux.tar.gz" \
+        | tar xz -C /opt; \
+    ln -s "/opt/wasi-sdk-${WASI_SDK_VERSION}.0-${arch}-linux" /opt/wasi-sdk
+
+RUN rustup target add wasm32-wasip1
+
+ENV CC_wasm32_wasip1=/opt/wasi-sdk/bin/clang \
+    AR_wasm32_wasip1=/opt/wasi-sdk/bin/llvm-ar \
+    CFLAGS_wasm32_wasip1=--sysroot=/opt/wasi-sdk/share/wasi-sysroot
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+COPY external ./external
+
+RUN cargo build --target wasm32-wasip1 --lib --release
+
+# --- pdfium (wasm) for the page's compare option ---------------------------
+FROM alpine:3 AS pdfium
+
+RUN apk add --no-cache curl
+WORKDIR /pdfium
+RUN curl -sSfL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-wasm.tgz | tar xz
+
+# --- runtime: TeX Live (for kpsewhich) + serve.py --------------------------
+FROM texlive/texlive:latest AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# serve.py serves this directory as the site root and keeps its per-URL
+# TeX Live cache in wasm-test/texlive-cache.
+WORKDIR /srv
+COPY --from=wasm-build /app/target/wasm32-wasip1/release/alc_ng.wasm ./target/wasm32-wasip1/release/alc_ng.wasm
+COPY --from=pdfium /pdfium ./wasm-test/pdfium
+COPY wasm-test/index.html wasm-test/serve.py ./wasm-test/
+COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
+COPY wasm-test/sample-nested ./wasm-test/sample-nested
+COPY wasm-test/sample-xelatex ./wasm-test/sample-xelatex
+
+ENV SERVE_HOST=0.0.0.0
+EXPOSE 8000
+VOLUME /srv/wasm-test/texlive-cache
+
+ENTRYPOINT ["python3", "-I", "wasm-test/serve.py"]
+CMD ["8000"]

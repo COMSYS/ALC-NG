@@ -8,10 +8,126 @@ use std::{
     io::{IsTerminal as _, Write},
     ops::Not,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::Output,
     sync::Arc,
 };
+// Compiling LaTeX spawns external processes, which do not exist on wasm.
+#[cfg(not(target_family = "wasm"))]
+use std::process::{Command, Stdio};
+// The `temp_dir` crate derives its default location from `std::env::temp_dir`,
+// which is not implemented on wasm; those builds use the explicit fallback in
+// `CacheDir` below instead.
+#[cfg(not(target_family = "wasm"))]
 use temp_dir::TempDir;
+
+/// The temporary cache directory a [`Submission`] copies its input into.
+///
+/// On native targets this is a [`TempDir`]. On wasm, `TempDir` is unavailable
+/// because it asks `std::env::temp_dir` where temporaries live and WASI cannot
+/// answer that yet, so a small hand-rolled equivalent under `$TMPDIR`
+/// (defaulting to `/tmp`, where the wasm host mounts a scratch file system)
+/// takes its place. Like `TempDir`, it removes the directory on drop.
+enum CacheDir {
+    #[cfg(not(target_family = "wasm"))]
+    TempDir(TempDir),
+    #[cfg(target_family = "wasm")]
+    Path(PathBuf),
+}
+
+impl CacheDir {
+    fn with_prefix(prefix: &str) -> Result<Self> {
+        #[cfg(not(target_family = "wasm"))]
+        return Ok(CacheDir::TempDir(TempDir::with_prefix(prefix)?));
+
+        #[cfg(target_family = "wasm")]
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+            let base = PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_owned()));
+            loop {
+                // Combine a timestamp and a counter to avoid collisions within
+                // a single session and between sessions of the same process.
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+                let candidate = base.join(format!("{prefix}{nanos:x}_{n:x}"));
+                match std::fs::create_dir(&candidate) {
+                    Ok(()) => return Ok(CacheDir::Path(candidate)),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            #[cfg(not(target_family = "wasm"))]
+            Self::TempDir(dir) => dir.path(),
+            #[cfg(target_family = "wasm")]
+            Self::Path(path) => path,
+        }
+    }
+}
+
+impl AsRef<Path> for CacheDir {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl Drop for CacheDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.path());
+    }
+}
+
+/// Wasm counterpart of `tar::Builder::append_dir_all("", src_path)` in
+/// `HeaderMode::Deterministic`: the tar crate leaves header metadata filling
+/// unimplemented on wasm32, so the headers are built by hand with the same
+/// traversal order and values (WASI has no execute bit, so files are 0o644).
+#[cfg(target_family = "wasm")]
+fn append_dir_all_deterministic<W: Write>(
+    tar: &mut tar::Builder<W>,
+    src_path: &Path,
+) -> std::io::Result<()> {
+    use tar::{EntryType, Header};
+    // tar::DETERMINISTIC_TIMESTAMP, which the crate does not export on wasm32.
+    const DETERMINISTIC_TIMESTAMP: u64 = 1153704088;
+
+    let mut stack = vec![(src_path.to_path_buf(), true)];
+    while let Some((src, is_dir)) = stack.pop() {
+        let dest = src.strip_prefix(src_path).unwrap().to_path_buf();
+        let mut header = Header::new_gnu();
+        header.set_mtime(DETERMINISTIC_TIMESTAMP);
+        header.set_uid(0);
+        header.set_gid(0);
+        if is_dir {
+            for entry in std::fs::read_dir(&src)? {
+                let entry = entry?;
+                stack.push((entry.path(), entry.file_type()?.is_dir()));
+            }
+            if dest.as_os_str().is_empty() {
+                continue;
+            }
+            header.set_entry_type(EntryType::Directory);
+            header.set_mode(0o755);
+            header.set_size(0);
+            tar.append_data(&mut header, &dest, std::io::empty())?;
+        } else {
+            let mut file = File::open(&src)?;
+            header.set_entry_type(EntryType::Regular);
+            header.set_mode(0o644);
+            header.set_size(file.metadata()?.len());
+            tar.append_data(&mut header, &dest, &mut file)?;
+        }
+    }
+    Ok(())
+}
 
 use crate::{
     arxiv::{FileUsage, ZeroZeroReadMe},
@@ -20,9 +136,15 @@ use crate::{
         file_renames::FileRenames,
         submission::{deletion_stats::DeletionStats, parsed_file::ParsedFile},
     },
+    helper::{SourceFile, find_mains, find_referenced_bsts},
+};
+
+// Compiling LaTeX, comparing PDFs and stripping EXIF data spawn external
+// processes, which do not exist on wasm targets.
+#[cfg(not(target_family = "wasm"))]
+use crate::{
     compare::{Comparer, PageDiffs, PixelPerfect},
     exif_tool,
-    helper::{SourceFile, find_mains, find_referenced_bsts},
     progress::CompilationSpinner,
 };
 
@@ -30,6 +152,7 @@ pub mod deletion_stats;
 pub mod directives;
 pub mod parsed_file;
 
+#[cfg(not(target_family = "wasm"))]
 type CompareResult = Result<HashMap<String, Option<PageDiffs>>>;
 
 /// This struct contains all information needed to clean a LaTeX project.
@@ -40,8 +163,8 @@ pub struct Submission {
     input_path: PathBuf,
     /// A directory that will contain the cleaned latex project.
     target_path: PathBuf,
-    /// A temporary directory that is used to determine used files. This uses `TempDir` to create a temporary directory and ensures it is deleted when the struct is dropped.
-    cache_path: TempDir,
+    /// A temporary directory that is used to determine used files. This uses [`CacheDir`] to create a temporary directory and ensures it is deleted when the struct is dropped.
+    cache_path: CacheDir,
     /// Potentially store a parsed 00readme.
     zzrm: Option<ZeroZeroReadMe>,
     /// HashSet that stores all initial files that are part of the project.
@@ -59,8 +182,12 @@ pub struct Submission {
     /// A set of possible latex files that contain text hinting at them being a main tex file.
     possible_main_files: HashSet<SourceFile>,
     /// The command used to compile the LaTeX document.
+    // Only read by compile(), which is compiled out on wasm targets.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     latex_cmd: String,
     /// Additional parameters passed to the LaTeX compiler.
+    // Only read by compile(), which is compiled out on wasm targets.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     latex_parameters: Vec<String>,
     /// Store grammar errors
     pub grammar_errors: Vec<String>,
@@ -111,7 +238,7 @@ impl Submission {
 
         // Create a temporary directory for caching files during the cleaning process.
         let cache_dir =
-            TempDir::with_prefix("alc-ng_").context("Could not obtain a temporary directory.")?;
+            CacheDir::with_prefix("alc-ng_").context("Could not obtain a temporary directory.")?;
         trace!("Created temporary cache directory: {:?}", cache_dir.path());
 
         // Convert the input and target paths to owned `PathBuf`s for later use.
@@ -340,6 +467,7 @@ impl Submission {
     }
 
     /// Compiles the identified LaTeX main files and records the compiler output.
+    #[cfg(not(target_family = "wasm"))]
     fn compile(&mut self) {
         use std::process::{Command, Stdio};
 
@@ -430,6 +558,7 @@ impl Submission {
     ///
     /// If `verbose` is enabled, prints full output to stdout unconditionally.
     /// Otherwise, asks the user via a y/n prompt whether to show the output.
+    #[cfg(not(target_family = "wasm"))]
     fn print_compile_failures(&self) {
         let has_failures = self
             .latex_output
@@ -462,6 +591,7 @@ impl Submission {
     }
 
     /// Print the stdout/stderr of all failed compilations to stdout.
+    #[cfg(not(target_family = "wasm"))]
     fn print_failed_output(&self) {
         for (main_file, result) in &self.latex_output {
             if let Ok(output) = result {
@@ -903,7 +1033,10 @@ impl Submission {
         // Explicitly do not preserve timestamps and permissions
         tar.mode(tar::HeaderMode::Deterministic);
         // Append target directory
+        #[cfg(not(target_family = "wasm"))]
         tar.append_dir_all("", &self.target_path)?;
+        #[cfg(target_family = "wasm")]
+        append_dir_all_deterministic(&mut tar, &self.target_path)?;
         trace!("Added target directory to tar archive");
         // Write termination section of archive
         tar.finish()?;
@@ -912,6 +1045,7 @@ impl Submission {
         Ok(())
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn latexmk_clean(&self) -> Result<()> {
         let mut cmd = Command::new("latexmk");
         cmd.args([
@@ -930,6 +1064,10 @@ impl Submission {
         Ok(())
     }
 
+    /// Compiles the cleaned submission and compares its PDF output with the
+    /// original PDFs. Only available on native builds, where a LaTeX compiler
+    /// and the pdfium library are present.
+    #[cfg(not(target_family = "wasm"))]
     pub fn compare(&self) -> CompareResult {
         use std::process::{Command, Stdio};
         use walkdir::WalkDir;
@@ -998,7 +1136,9 @@ impl Submission {
 
                 (
                     main_file,
-                    spinner.run_piped(&mut cmd).is_ok_and(|o| o.status.success()),
+                    spinner
+                        .run_piped(&mut cmd)
+                        .is_ok_and(|o| o.status.success()),
                 )
             })
             .collect();
@@ -1038,13 +1178,30 @@ impl Submission {
     /// This method orchestrates cache creation, main file detection, LaTeX compilation,
     /// recorder parsing, bib reference determination, and file copying/cleaning.
     pub fn run(&mut self) -> Result<()> {
+        // In provided-fls mode the LaTeX compile step is skipped entirely and
+        // the provided .fls recorder file is used to determine the used files
+        // instead. Wasm builds cannot spawn a LaTeX compiler, so providing a
+        // recorder file is mandatory there.
+        let provided_fls = self.cleaner_config.fls_provided.clone();
+
+        #[cfg(target_family = "wasm")]
+        if provided_fls.is_none() {
+            anyhow::bail!(
+                "No .fls recorder file provided. Wasm builds cannot run a LaTeX compiler; \
+                 set `fls_provided` to an .fls file for this submission."
+            );
+        }
+
         // Build caches by copying the input files into a temporary directory.
         info!("Cleaning project");
         self.create_caches();
 
         // Remove temporary files before trying to compile submission
-        info!("Cleaning temporary files with latexmk");
-        self.latexmk_clean()?;
+        #[cfg(not(target_family = "wasm"))]
+        if provided_fls.is_none() {
+            info!("Cleaning temporary files with latexmk");
+            self.latexmk_clean()?;
+        }
 
         // Remove temporary files before trying to compile submission
         self.set_inital_file_list();
@@ -1070,7 +1227,25 @@ impl Submission {
         }
 
         // Compile the identified main files using LaTeX.
-        self.compile();
+        #[cfg(not(target_family = "wasm"))]
+        if provided_fls.is_none() {
+            self.compile();
+        }
+
+        // In provided-fls mode, use the provided recorder file instead of the
+        // ones produced by the (skipped) compilation. It is copied into the
+        // cache directory so that the recorder parsing finds it.
+        if let Some(fls) = provided_fls {
+            let file_name = fls.file_name().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Provided recorder file has no valid file name: {}",
+                    fls.display()
+                )
+            })?;
+            std::fs::copy(&fls, self.cache_path.path().join(file_name)).context(
+                "Failed to copy the provided .fls recorder file into the cache directory",
+            )?;
+        }
 
         // Process LaTeX recorder files (.fls) to gather input and output files.
         self.process_recorder_files()?;
@@ -1092,14 +1267,18 @@ impl Submission {
         // Create a tar archive if set using CONFIG
         self.pack_as_tar()?;
 
-        if self.cleaner_config.strip_exif {
-            exif_tool::clean_inplace(
-                &self.target_path,
-                &self.cleaner_config.exiftool_cmd,
-                &self.cleaner_config.exiftool_args,
-            )?;
-        } else {
-            trace!("EXIF stripping skipped (not configured)");
+        // Strip EXIF data using exiftool, which is unavailable on wasm.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            if self.cleaner_config.strip_exif {
+                exif_tool::clean_inplace(
+                    &self.target_path,
+                    &self.cleaner_config.exiftool_cmd,
+                    &self.cleaner_config.exiftool_args,
+                )?;
+            } else {
+                trace!("EXIF stripping skipped (not configured)");
+            }
         }
 
         Ok(())

@@ -48,10 +48,12 @@ mod tests {
             read("tests/spaces/frozen.tex")
         );
 
-        assert!(submission
-            .compare()
-            .unwrap()
-            .into_iter()
-            .all(|(_, res)| res.is_some_and(|r| r.is_empty())));
+        assert!(
+            submission
+                .compare()
+                .unwrap()
+                .into_iter()
+                .all(|(_, res)| res.is_some_and(|r| r.is_empty()))
+        );
     }
 }

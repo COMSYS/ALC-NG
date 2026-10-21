@@ -1,20 +1,31 @@
+// The CLI requires a native host with a LaTeX compiler; on wasm targets the
+// binary is a stub pointing at the library API. All items below are therefore
+// gated on non-wasm targets.
+#[cfg(not(target_family = "wasm"))]
 use alc_ng::{
     cleaner::{config::CleanerConfig, submission::Submission},
     exif_tool,
     helper::{image_diff, parse_hex_color},
 };
 
+#[cfg(not(target_family = "wasm"))]
 use clap::{ArgAction, Parser, ValueHint};
+#[cfg(not(target_family = "wasm"))]
 use itertools::Itertools;
+#[cfg(not(target_family = "wasm"))]
 use log::{LevelFilter, info, trace, warn};
+#[cfg(not(target_family = "wasm"))]
 use std::{
     fs::remove_dir_all,
     path::PathBuf,
     sync::{Arc, LazyLock},
 };
+#[cfg(not(target_family = "wasm"))]
 use temp_dir::TempDir;
+#[cfg(not(target_family = "wasm"))]
 use walkdir::WalkDir;
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Config {
@@ -82,6 +93,7 @@ pub struct Config {
     pub diff_color: String,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Config {
     pub fn to_cleaner_config(&self) -> CleanerConfig {
         CleanerConfig {
@@ -97,6 +109,7 @@ impl Config {
             strip_exif: self.strip_exif,
             skip_watermark: self.skip_watermark,
             user_provided_main_files: self.main_files.clone(),
+            fls_provided: None,
             verbose: self.verbose != 0,
         }
     }
@@ -125,6 +138,7 @@ impl Config {
 }
 
 /// Global configuration parsed from command‑line arguments.
+#[cfg(not(target_family = "wasm"))]
 static CONFIG: LazyLock<Config> = LazyLock::new(Config::parse);
 
 /// Ensures that all prerequisites for running the program are satisfied.
@@ -132,6 +146,7 @@ static CONFIG: LazyLock<Config> = LazyLock::new(Config::parse);
 /// successfully. If the check fails, the program panics with a helpful error message.
 /// # Panics
 /// Panics if the LaTeX command cannot be executed or returns a non‑zero exit status.
+#[cfg(not(target_family = "wasm"))]
 pub fn ensure_requirements() {
     use std::process::{Command, Stdio};
 
@@ -153,6 +168,22 @@ pub fn ensure_requirements() {
 }
 
 fn main() -> anyhow::Result<(), anyhow::Error> {
+    #[cfg(target_family = "wasm")]
+    {
+        eprintln!(
+            "The alc-ng CLI is not supported on wasm targets. Use the alc_ng library API instead."
+        );
+        std::process::exit(1);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    run_cli()
+}
+
+/// The CLI implementation. Requires a native host with a LaTeX compiler
+/// (and optionally exiftool) available.
+#[cfg(not(target_family = "wasm"))]
+fn run_cli() -> anyhow::Result<(), anyhow::Error> {
     let log_level = match CONFIG.verbose {
         0 => log::LevelFilter::Info,
         1 => log::LevelFilter::Debug,
