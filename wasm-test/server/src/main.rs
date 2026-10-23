@@ -65,7 +65,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Path as UrlPath, Request, State},
-    http::{HeaderName, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -338,7 +338,11 @@ async fn log_texlive(State(app): State<Arc<App>>, request: Request, next: Next) 
     response
 }
 
-async fn texlive(State(app): State<Arc<App>>, UrlPath(rel): UrlPath<String>) -> Response {
+async fn texlive(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    UrlPath(rel): UrlPath<String>,
+) -> Response {
     match serve_texlive(&app, &rel).await {
         // The engine worker derives its /tex cache path from the fileid/pkid
         // headers — keep them stable per request so repeated fetches rewrite
@@ -347,7 +351,27 @@ async fn texlive(State(app): State<Arc<App>>, UrlPath(rel): UrlPath<String>) -> 
             // Maps stay out of the freshness window: their bytes mix in the
             // tracked texlive-extras/ overrides, not only the frozen image.
             let cache = if is_map_request(&rel) { NO_CACHE } else { TEXLIVE_CACHE };
-            octet_stream(data, cache, &[("fileid", fileid.clone()), ("pkid", fileid)])
+            // A content ETag makes even the no-cache maps cheap: the browser
+            // revalidates with a ~30-byte request instead of re-downloading
+            // the whole file on every compile, while an edited extras override
+            // still shows up on the very next load.
+            let etag = format!("\"{}\"", sha1_hex(&data));
+            if not_modified(&headers, &etag) {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    [(header::ETAG, etag), (header::CACHE_CONTROL, cache.to_string())],
+                )
+                    .into_response();
+            }
+            octet_stream(
+                data,
+                cache,
+                &[
+                    ("etag", etag),
+                    ("fileid", fileid.clone()),
+                    ("pkid", fileid),
+                ],
+            )
         }
         Ok(None) => proxy_not_found(),
         // proxy trouble: report as upstream error
@@ -356,6 +380,28 @@ async fn texlive(State(app): State<Arc<App>>, UrlPath(rel): UrlPath<String>) -> 
             format!("texlive proxy failed: {err:#}"),
         ),
     }
+}
+
+/// `sha1` hex digest, reused for the ETags and the fileids below.
+fn sha1_hex(bytes: &[u8]) -> String {
+    Sha1::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// `If-None-Match` as browsers send it: `*`, comma-separated candidates,
+/// and weak tags matching strong ones (RFC 9110 §13.2.2).
+fn not_modified(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|given| {
+            given.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*" || candidate == etag || candidate == format!("W/{etag}")
+            })
+        })
 }
 
 /// Resolve one engine request, `Ok(None)` standing for "no such file".
@@ -501,12 +547,7 @@ async fn extend_map(app: &App, rel: &str, mut data: Vec<u8>) -> Result<Vec<u8>> 
 /// recorded so `/tex/<fileid>` round-trips back to this very request.
 async fn finish(app: &App, rel: &str, data: Vec<u8>) -> Result<(Vec<u8>, String)> {
     let data = extend_map(app, rel, data).await?;
-    let digest = Sha1::digest(rel.as_bytes());
-    let fileid: String = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()[..16]
-        .to_string();
+    let fileid = sha1_hex(rel.as_bytes())[..16].to_string();
     // The mapping only feeds the XeTeX→dvipdfmx /tex/<fileid> round-trip;
     // a failed write must not fail a request whose bytes are already valid.
     let mapping = app.fileids.join(&fileid);
@@ -713,6 +754,25 @@ fn collect_files(target: &Path, dir: &Path, files: &mut Vec<String>) -> io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Browsers revalidate with `*`, single tags, weak tags and comma lists —
+    /// all must answer 304; a foreign tag must not.
+    #[test]
+    fn if_none_match_accepts_browser_forms() {
+        let etag = "\"abc\"";
+        let mut headers = HeaderMap::new();
+        assert!(!not_modified(&headers, etag));
+        for (value, hit) in [
+            ("*", true),
+            ("\"abc\"", true),
+            ("W/\"abc\"", true),
+            ("\"def\", \"abc\"", true),
+            ("\"def\"", false),
+        ] {
+            headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static(value));
+            assert_eq!(not_modified(&headers, etag), hit, "If-None-Match: {value}");
+        }
+    }
 
     /// The TeX Live freshness window keys off this predicate: real map
     /// requests yes, everything else — dvipdfmx's extensionless or
