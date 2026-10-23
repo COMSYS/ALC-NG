@@ -1296,10 +1296,13 @@ async function loadEngine(engine = "pdftex") {
   resetDvipdfm();
 
   const workerPath = spec.worker;
-  // Cache-bust: the worker script carries behavior patches, and stale HTTP
-  // cache copies of it have bitten this test page before.
+  // No cache-bust query on purpose: a `Date.now()` query is a new URL every
+  // load and forces a full re-download. The server answers these static
+  // files `no-cache` with `Last-Modified`, so a stale copy still cannot
+  // survive — every load revalidates and gets a 304 unless the worker
+  // script actually changed.
   logInfo(`spawning ${spec.label} engine worker ${workerPath}`);
-  const worker = new Worker(`${workerPath}?v=${Date.now()}`);
+  const worker = new Worker(workerPath);
   texWorker = { worker, engine, ready: false, busy: false, pending: null };
   bindWorkerMessages(worker);
 
@@ -2093,7 +2096,10 @@ let dviPromise = null;
 function loadDvipdfm() {
   dviPromise ??= new Promise((resolve, reject) => {
     logInfo(`spawning dvipdfmx worker ${DVIPDFM_WORKER}`);
-    const worker = new Worker(`${DVIPDFM_WORKER}?v=${Date.now()}`);
+    // No cache-bust query — see the engine worker's note: `no-cache` +
+    // revalidation already rules out stale copies, a `Date.now()` query
+    // just forces a full download of the worker script on every load.
+    const worker = new Worker(DVIPDFM_WORKER);
     const dvi = { worker, queue: makeCallQueue(), pending: null, ready: false };
     worker.onmessage = (ev) => {
       const data = ev.data;
