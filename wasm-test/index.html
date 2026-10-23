@@ -830,10 +830,11 @@
 // submissions (ISMVL 2003 and Bubeck et al.'s “Sparks of AGI”, both under
 // fixtures/ and kept out of git, like any real paper content).
 //
-// A sample either lists its files (`files`) or names a folder (`dir`), which
-// the dev server lists for it with GET /tree/<dir> — so a fresh submission
-// only needs to be unpacked under wasm-test/fixtures/ and named here.
-// `pick`/`blurb` are what the sample picker in the sidebar shows.
+// A sample names its folder (`dir`); it either lists its files (`files`,
+// fetched as <dir>/<file>) or lets the dev server list the folder with
+// GET /tree/<dir> — so a fresh submission only needs to be unpacked under
+// wasm-test/fixtures/ and named here. `pick`/`blurb` are what the sample
+// picker in the sidebar shows.
 //
 // fixtures/bubeck is arXiv-2303.12712v5 unpacked, with one repair: its
 // contents/3_code.tex includes figures/DV3_plot_{1,2,3}.png, which on disk are
@@ -844,10 +845,10 @@
 // or shell-escape; v1 shipped a stale cache (29 listings, ~71 chunks) and
 // cannot compile from the cache at all.
 const SAMPLES = [
-  { label: "tests/provided_fls", pick: "provided_fls", blurb: "fixture with a recorded .fls", src: "/tests/provided_fls", files: ["main.tex", "used.tex", "unused.tex", "main.fls"] },
-  { label: "wasm-test/sample-nested", pick: "sample-nested", blurb: "nested includes, mkdir handling", src: "/wasm-test/sample-nested", files: ["main.tex", "used.tex", "sub/used2.tex", "sub/extra.tex", "main.fls"] },
+  { label: "tests/provided_fls", pick: "provided_fls", blurb: "fixture with a recorded .fls", dir: "/tests/provided_fls", files: ["main.tex", "used.tex", "unused.tex", "main.fls"] },
+  { label: "wasm-test/sample-nested", pick: "sample-nested", blurb: "nested includes, mkdir handling", dir: "/wasm-test/sample-nested", files: ["main.tex", "used.tex", "sub/used2.tex", "sub/extra.tex", "main.fls"] },
   { label: "arXiv-math0303011v1", pick: "arXiv math0303011", blurb: "real submission, no .fls", dir: "/wasm-test/fixtures/math0303011" },
-  { label: "wasm-test/sample-xelatex", pick: "sample-xelatex", blurb: "fontspec and images, XeLaTeX", src: "/wasm-test/sample-xelatex", files: ["main.tex", "used.tex", "unused.tex", "figures/square.png", "figures/unused.png"] },
+  { label: "wasm-test/sample-xelatex", pick: "sample-xelatex", blurb: "fontspec and images, XeLaTeX", dir: "/wasm-test/sample-xelatex", files: ["main.tex", "used.tex", "unused.tex", "figures/square.png", "figures/unused.png"] },
   { label: "bubeck", pick: "bubeck", blurb: "Sparks of AGI, 118 files (arXiv 2303.12712v5)", dir: "/wasm-test/fixtures/bubeck" },
   { label: "wasm-test/fixtures/two-mains", pick: "two-mains", blurb: "two main files — the main-file checklist", dir: "/wasm-test/fixtures/two-mains" },
 ];
@@ -1045,6 +1046,15 @@ const steps = {
     this.row(key).querySelector(".rs-sub").textContent = text;
   },
 
+  // sub-text without the running-step gate: a final summary that is recorded
+  // once a later step has taken over (the compile PDF line) would otherwise
+  // be dropped by detail()
+  note(key, text) {
+    if (!this.active) return;
+    const row = this.row(key);
+    if (row) row.querySelector(".rs-sub").textContent = text;
+  },
+
   complete(key) {
     const row = this.row(key);
     if (!row || !row.classList.contains("running")) return;
@@ -1158,14 +1168,21 @@ const steps = {
 
 const WASM_PATH = "/target/wasm32-wasip1/release/alc_ng.wasm";
 
+// The multi-MB module bytes, fetched and timed. Both consumers — the
+// main-thread module and the engine worker's copy — share this fetch.
+async function fetchWasmBytes() {
+  const t0 = performance.now();
+  const response = await fetch(WASM_PATH);
+  if (!response.ok) throw new Error(`alc_ng.wasm fetch failed: ${response.status} ${response.statusText}`);
+  const bytes = await response.arrayBuffer();
+  logInfo(`wasm fetch: ${fmtKB(bytes.byteLength)} in ${(performance.now() - t0).toFixed(0)} ms`);
+  return bytes;
+}
+
 async function loadModule() {
   setStatus("Loading …");
   try {
-    const t0 = performance.now();
-    const response = await fetch(WASM_PATH);
-    if (!response.ok) throw new Error(`fetch failed: ${response.status} ${response.statusText}`);
-    const bytes = await response.arrayBuffer();
-    logInfo(`wasm fetch: ${fmtKB(bytes.byteLength)} in ${(performance.now() - t0).toFixed(0)} ms`);
+    const bytes = await fetchWasmBytes();
 
     // The wasip1 cdylib imports a handful of WASI functions it never calls
     // on the exported code path (no I/O happens). Stub them all with a
@@ -1262,7 +1279,8 @@ function refreshEngineChip() {
 
 // Spawns the worker of `engine` ("pdftex" | "xetex"), replacing the current
 // one. The alc_ng module lives inside the engine worker, so a switch also
-// drops it (ensureWorkerAlcModule loads it again).
+// drops it (ensureWorkerAlcModule loads it again). The dvipdfmx worker rides
+// the same lifecycle — it exists only to convert this engine's XDV output.
 async function loadEngine(engine = "pdftex") {
   const spec = ENGINES[engine];
   setEngineStatus(`loading ${spec.label} engine …`);
@@ -1272,6 +1290,7 @@ async function loadEngine(engine = "pdftex") {
     texQueue.tail = Promise.resolve();
     workerModuleLoaded = false;
   }
+  resetDvipdfm();
 
   const workerPath = spec.worker;
   // Cache-bust: the worker script carries behavior patches, and stale HTTP
@@ -1375,8 +1394,6 @@ const forwardWorkerLog = (data, label) =>
   logLine(`[${label}] ${data.text ?? ""}`, data.level === "error" ? "error" : "verbose");
 
 function texCallNow(message, responseCmds) {
-  // Sends a command and resolves with the worker's reply. Commands that do
-  // not answer ("setmainfile", "flushcache") resolve immediately.
   const worker = texWorker.worker;
   const expectReply = responseCmds !== null;
   return new Promise((resolve, reject) => {
@@ -1512,7 +1529,7 @@ async function sampleListing(dir) {
 // a native folder picker.
 async function loadSampleFolder(index) {
   const sample = SAMPLES[index];
-  const base = sample.src ?? sample.dir;
+  const base = sample.dir;
   setCtrl({ sample: Number(index), sampleLoading: true });
   setFolderStatus(`Fetching "${sample.label}" …`);
   try {
@@ -1906,9 +1923,10 @@ function normalizeAccessPath(path, dir = "") {
   return parts.length > 0 ? parts.join("/") : null;
 }
 
-// A failed compile is otherwise undiagnosable: the worker's memlog stays empty
-// and pdfTeX writes its log to <main>.log in the engine's memfs. Read that file
-// back through the module's file reader and echo the tail.
+// A failed compile is otherwise undiagnosable: the drained access log
+// ("openlog", patch 4) records opens, not TeX errors, and pdfTeX writes its
+// report to <main>.log in the engine's memfs. Read that file back through the
+// module's file reader and echo the tail.
 async function logEngineTeXLog(main) {
   const stem = stemOf(String(main ?? "main"));
   for (const path of [`/work/${stem}.log`, "/work/main.log"]) {
@@ -2030,7 +2048,7 @@ async function compileFolderInEngine(mains) {
   }
   const compileMs = (performance.now() - tCompile).toFixed(0);
   if (mains.length > 1) logInfo(`compiled ${mains.length} main file(s); the recorder unions their access logs`);
-  steps.detail("compile", `pdf ${fmtKB(pdf.length)} · ${compileMs} ms`);
+  steps.note("compile", `pdf ${fmtKB(pdf.length)} · ${compileMs} ms`);
 
   // Show the compiled PDF in the workspace's pdf tab (the primary's).
   const pdfUrl = URL.createObjectURL(new Blob([pdf], { type: "application/pdf" }));
@@ -2047,6 +2065,8 @@ async function compileFolderInEngine(mains) {
 // plus everything it references (images) at the same paths under /work;
 // fonts come from the /texlive/ proxy like the engine's own requests.
 
+// Spawned on the first xdv → PDF conversion and terminated when loadEngine()
+// replaces the engine worker (resetDvipdfm) — its staged memfs files die with it.
 let dviPromise = null;
 
 function loadDvipdfm() {
@@ -2078,8 +2098,18 @@ function loadDvipdfm() {
       else reject(new Error(`dvipdfmx worker failed: ${err.message ?? err}`));
     };
   });
-  dviPromise.catch(() => { dviPromise = null; });
-  return dviPromise;
+  const loading = dviPromise;
+  // only drop our own promise: a reset may have installed a newer one already
+  loading.catch(() => { if (dviPromise === loading) dviPromise = null; });
+  return loading;
+}
+
+// Drops the dvipdfmx worker with the engine: terminate once it is up (a load
+// still in flight is caught when it resolves), staged memfs files and all.
+function resetDvipdfm() {
+  const loading = dviPromise;
+  dviPromise = null;
+  if (loading) loading.then((dvi) => dvi.worker.terminate()).catch(() => {});
 }
 
 // Serialized like texCall; `reply = false` for commands without an answer.
@@ -2478,13 +2508,9 @@ async function chooseEngine(main) {
 
 async function ensureWorkerAlcModule() {
   if (workerModuleLoaded) return;
-  const t0 = performance.now();
   logInfo("fetching alc_ng.wasm for the engine worker …");
   steps.detail("cleaner", "fetching alc_ng.wasm …");
-  const resp = await fetch(WASM_PATH);
-  if (!resp.ok) throw new Error(`wasm fetch failed: HTTP ${resp.status}`);
-  const buf = await resp.arrayBuffer();
-  logv(`[page] fetched ${fmtKB(buf.byteLength)} in ${(performance.now() - t0).toFixed(0)} ms`);
+  const buf = await fetchWasmBytes();
   const trace = new URLSearchParams(location.search).has("wasitrace");
   const reply = await texCall({ cmd: "alcng_load", wasm: buf, trace }, ["alcng_load"]);
   workerModuleLoaded = true;
@@ -3057,7 +3083,7 @@ function renderDone() {
     line.className = `done-compare ${cmp.state === "ok" ? "ok" : "bad"}`;
     if (cmp.state === "ok") {
       line.innerHTML = `<b>✓ Pixel-perfect.</b> The cleaned PDF renders pixel-identical to the original.`
-        + `<span class="cmp-note">${cmp.pages} page(s) · ${cmp.ms} ms` 
+        + `<span class="cmp-note">${cmp.pages} page(s) · ${cmp.ms} ms`
         + (currentReview.run.mains?.length > 1 ? ` · compared: ${esc(currentReview.run.main)}` : "") + `</span>`;
     } else if (cmp.state === "differs") {
       line.innerHTML = `<b>✗ ${cmp.differing} of ${cmp.pages} page(s) differ.</b> The cleaned PDF is not pixel-identical to the original.`;
@@ -3370,8 +3396,6 @@ function lineOps(A, B) {
   return ops;
 }
 
-// Side-by-side rows: eq pairs align directly; consecutive del/ins runs are
-// zipped pairwise (the shorter side gets a hatched filler).
 // Side-by-side rows: eq pairs align directly; any mixed del/ins run is
 // zipped pairwise (the shorter side gets a hatched filler).
 function pairRows(ops) {
