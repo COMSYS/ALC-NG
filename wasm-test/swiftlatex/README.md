@@ -41,7 +41,8 @@ reads a top-level `00README` and looks for fontspec, unicode-math,
 polyglossia, xeCJK, …).
 
 `PdfTeXEngine.js` is no longer used by the test page; the page drives the
-worker protocol directly (see `index.html`, note in `wasm-test/server`).
+worker protocol directly (see the protocol notes in `index.html`, and the
+`texlive` wire protocol documented in `wasm-test/server/src/main.rs`).
 
 **The patches** — invented on `swiftlatexpdftex.js`, which is why they are
 numbered from there; `patch-swiftlatex.py` applies them by anchor, so it fails
@@ -76,8 +77,7 @@ loudly if a future release moves the code it patches:
    buffer means "more entries"; `clock_time_get` writes one u64 of
    nanoseconds; this Emscripten build's `FS.analyzePath` has no `isDirectory`,
    `FS.cwd` is a function, and MEMFS nodes have no `length` (size comes from
-   `getattr`). Add `?wasitrace=1` to the page URL to trace every WASI call,
-   `?lognewest=1` to show the log newest-first.
+   `getattr`). Add `?wasitrace=1` to the page URL to trace every WASI call.
 6. **Format dump name** (pdfTeX only) — `compileformat` reads back
    `WORKROOT/pdflatex.fmt`, but the dump it just wrote is named after the
    kpathsea cache id of `pdflatex.ini`; the patch asks for the name the page

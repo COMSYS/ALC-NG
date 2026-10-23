@@ -16,7 +16,7 @@ anyhow = "1.0.102"
 axum = "0.8"
 serde_json = "1.0.149"
 sha1 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "time"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 

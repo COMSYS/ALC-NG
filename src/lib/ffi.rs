@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::cleaner::config::CleanerConfig;
-use crate::cleaner::submission::parsed_file::ContentStripper;
 use crate::cleaner::submission::Submission;
+use crate::cleaner::submission::parsed_file::ContentStripper;
 use crate::parsing;
 
 /// Returns the crate version as a static, NUL-terminated string.

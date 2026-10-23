@@ -260,7 +260,10 @@ async fn moved_to_root() -> Response {
 }
 
 /// A prebuilt format dump, or 404 so the page builds one itself.
-async fn get_fmt(State(app): State<Arc<App>>, UrlPath((key, name)): UrlPath<(String, String)>) -> Response {
+async fn get_fmt(
+    State(app): State<Arc<App>>,
+    UrlPath((key, name)): UrlPath<(String, String)>,
+) -> Response {
     let Some(path) = fmt_cache_path(&app, &key, &name) else {
         return (StatusCode::NOT_FOUND, "unknown format dump").into_response();
     };
@@ -269,7 +272,6 @@ async fn get_fmt(State(app): State<Arc<App>>, UrlPath((key, name)): UrlPath<(Str
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .header(header::CONTENT_LENGTH, data.len().to_string())
-            .header(HeaderName::from_static("x-fmt-key"), &key)
             .body(Body::from(data))
             .expect("a decimal length is always a valid header"),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {

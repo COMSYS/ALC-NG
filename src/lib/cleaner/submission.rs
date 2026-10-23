@@ -224,7 +224,7 @@ impl Submission {
         input_path: impl AsRef<Path>,
         target_path: impl AsRef<Path>,
         latex_cmd: &str,
-        latex_parameters: &Vec<String>,
+        latex_parameters: &[String],
     ) -> Result<Self> {
         use std::fs::create_dir_all;
 
@@ -305,7 +305,7 @@ impl Submission {
             latexmk_referenced_bsts: HashSet::new(),
             possible_main_files: HashSet::new(),
             latex_cmd: latex_cmd.to_string(),
-            latex_parameters: latex_parameters.clone(),
+            latex_parameters: latex_parameters.to_vec(),
             grammar_errors: Vec::new(),
             deletion_stats: DeletionStats::default(),
             file_renames: FileRenames::default(),

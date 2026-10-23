@@ -26,7 +26,7 @@ mod tests {
         let target_path = test_output_dir().join("provided_fls_cleaned");
         let _ = std::fs::remove_dir_all(&target_path);
         let mut submission =
-            Submission::new(config, test_files, target_path, "latexmk", &vec![]).unwrap();
+            Submission::new(config, test_files, target_path, "latexmk", &[]).unwrap();
 
         submission.run().unwrap();
 
@@ -74,7 +74,7 @@ mod tests {
         let target_path = test_output_dir().join("provided_fls_foreign_cleaned");
         let _ = std::fs::remove_dir_all(&target_path);
         let mut submission =
-            Submission::new(config, submission_dir, target_path, "latexmk", &vec![]).unwrap();
+            Submission::new(config, submission_dir, target_path, "latexmk", &[]).unwrap();
 
         submission.run().unwrap();
 

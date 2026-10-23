@@ -544,9 +544,7 @@
   }
   .tree-dirname:hover:not(:disabled) { background: var(--color-head); color: var(--color-text); border: 0; box-shadow: none; transform: none; }
   .tree-dirname .tw { display: inline-block; transition: transform 0.15s; font-size: 0.6rem; color: var(--color-faint); }
-  .tree-dirname.closed .tw { transform: rotate(-90deg); }
   .tree-files { padding-bottom: 0.15rem; }
-  .tree-files.closed { display: none; }
   .tree-file {
     display: flex; align-items: center; gap: 0.55rem; width: 100%;
     background: none; border: 0; border-radius: 0; padding: 0.3rem 0.75rem 0.3rem 1.7rem;
@@ -857,7 +855,7 @@ const SAMPLES = [
 const enc = new TextEncoder(), dec = new TextDecoder();
 const $ = (id) => document.getElementById(id);
 let alcExports = null;
-let folder = null;  // { files: Map<relPath, File>, flsFiles: [relPath] }
+let folder = null;  // { files: Map<relPath, File>, label }
 
 // --- UI store -----------------------------------------------------------------
 //
@@ -1238,7 +1236,6 @@ const ENGINES = {
 const DVIPDFM_WORKER = "/wasm-test/swiftlatex/swiftlatexdvipdfm.js";
 
 let texWorker = null;  // the engine's Worker, plus minimal state below
-const workerLogRing = [];  // last engine worker console lines (for error tails)
 
 function texReady() {
   return texWorker !== null && texWorker.ready === true && !texWorker.busy;
@@ -1307,8 +1304,6 @@ function bindWorkerMessages(worker) {
     const data = ev.data;
     if (data?.cmd === "workerlog") {
       logLine(`[engine] ${data.text ?? ""}`, data.level === "error" ? "error" : "verbose");
-      workerLogRing.push(`${data.level === "error" ? "!" : " "} ${data.text ?? ""}`);
-      if (workerLogRing.length > 80) workerLogRing.shift();
       return;
     }
     const pending = texWorker?.pending;
@@ -1426,7 +1421,6 @@ function setSubmissionOpen(open) {
 // objects with webkitRelativePath) and works out what can be run on it.
 async function setFolder(fileList, label) {
   const files = new Map();  // relPath -> File
-  const flsFiles = [];
   for (const file of fileList) {
     let rel = file.webkitRelativePath || file.name;
     const parts = rel.split("/");
@@ -1434,9 +1428,8 @@ async function setFolder(fileList, label) {
     rel = parts.join("/");
     if (!rel) continue;
     files.set(rel, file);
-    if (rel.toLowerCase().endsWith(".fls")) flsFiles.push(rel);
   }
-  folder = { files, flsFiles, label };
+  folder = { files, label };
   const sampleIndex = SAMPLES.findIndex((s) => s.label === label);
   setCtrl({ folder: { label, count: files.size }, sample: sampleIndex < 0 ? null : sampleIndex });
 
@@ -1770,7 +1763,7 @@ async function seedFormatDump(fmtBytes) {
   );
 }
 
-// Format dumps are several MB (XeLaTeX's ~6 MB) — too big for localStorage,
+// Format dumps are several MB (XeLaTeX's ~27 MB) — too big for localStorage,
 // so they live in IndexedDB, keyed by engine.
 function fmtStore(mode, use) {
   return new Promise((resolve, reject) => {
@@ -3260,7 +3253,7 @@ const esc = (s) => s.replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">"
 // Path label in diff headers: a renamed entry names both sides of the move.
 const diffPathLabel = (e) => (e?.renamedFrom
   ? `${e.renamedFrom} → ${e.rel}`
-  : e?.meta?.rel ?? e?.rel ?? "");
+  : e?.rel ?? "");
 
 const diffState = { mode: null, entry: null, rows: null, aLines: null, bLines: null, expanded: new Set(), allExpanded: false, counts: null };
 
@@ -3553,14 +3546,8 @@ function renderDiff() {
   $("diffPane").innerHTML = diffBlockHtml();
 }
 
-// Renders an old→new comparison into `container` (used by the snippet flow).
-function renderSnippetDiff(container, { oldText, newText, meta, mode }) {
-  prepareDiff({ rel: meta.rel, status: null, meta }, oldText, newText, mode);
-  container.innerHTML = diffBlockHtml();
-}
-
-function prepareDiff(entry, oldText, newText, modeOverride) {
-  diffState.mode = diffState.mode ?? modeOverride ?? defaultMode();
+function prepareDiff(entry, oldText, newText) {
+  diffState.mode = diffState.mode ?? defaultMode();
   diffState.entry = entry;
   diffState.expanded = new Set();
   diffState.allExpanded = false;
@@ -3757,7 +3744,6 @@ $("diffPane").addEventListener("click", async (ev) => {
 
     return h(ConfigProvider, { theme },
       h(Upload.Dragger, {
-        className: "dropZone",
         directory: true,
         showUploadList: false,
         fileList: [],

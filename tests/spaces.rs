@@ -24,7 +24,7 @@ mod tests {
         let test_files = root.join("tests/spaces");
         let target_path = test_output_dir().join(name);
         let mut submission =
-            Submission::new(config, test_files, &target_path, "latexmk", &vec![]).unwrap();
+            Submission::new(config, test_files, &target_path, "latexmk", &[]).unwrap();
 
         submission.run().unwrap();
 
