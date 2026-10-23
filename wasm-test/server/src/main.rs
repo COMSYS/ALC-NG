@@ -236,7 +236,7 @@ async fn main() -> Result<()> {
 /// The bench page at the site root: read at request time, so edits show up
 /// after a plain reload (the whole server answers with no-cache anyway).
 async fn index(State(app): State<Arc<App>>) -> Response {
-    match fs::read(app.root.join("wasm-test/index.html")) {
+    match tokio::fs::read(app.root.join("wasm-test/index.html")).await {
         Ok(html) => Response::builder()
             .status(StatusCode::OK)
             .header(
@@ -267,7 +267,7 @@ async fn get_fmt(
     let Some(path) = fmt_cache_path(&app, &key, &name) else {
         return (StatusCode::NOT_FOUND, "unknown format dump").into_response();
     };
-    match fs::read(&path) {
+    match tokio::fs::read(&path).await {
         Ok(data) => octet_stream(data, &[]),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             (StatusCode::NOT_FOUND, "no dump cached yet").into_response()
@@ -323,19 +323,20 @@ async fn serve_texlive(app: &App, rel: &str) -> Result<Option<(Vec<u8>, String)>
         .unwrap_or_default();
     if !stem.is_empty() {
         let known = app.fileids.join(stem);
-        if known.is_file() {
-            rel = fs::read_to_string(&known)
+        if is_file(&known).await {
+            rel = tokio::fs::read_to_string(&known)
+                .await
                 .with_context(|| format!("reading fileid map {}", known.display()))?;
         }
     }
 
     let cache_file = app.cache.join(rel.replace('/', "__"));
-    if let Some(data) = read_cache(&cache_file)? {
-        return Ok(Some(finish(app, &rel, data)?));
+    if let Some(data) = read_cache(&cache_file).await? {
+        return Ok(Some(finish(app, &rel, data).await?));
     }
     if let Some(data) = local_texlive_file(&rel).await? {
-        write_cache(&cache_file, &data)?;
-        return Ok(Some(finish(app, &rel, data)?));
+        write_cache(&cache_file, &data).await?;
+        return Ok(Some(finish(app, &rel, data).await?));
     }
     Ok(None)
 }
@@ -364,52 +365,66 @@ fn proxy_not_found() -> Response {
         .unwrap()
 }
 
-fn read_cache(path: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::read(path) {
+/// `Path::is_file` on the blocking pool: a stat on the served tree must not
+/// park an executor thread.
+async fn is_file(path: &Path) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|meta| meta.is_file())
+}
+
+async fn read_cache(path: &Path) -> Result<Option<Vec<u8>>> {
+    match tokio::fs::read(path).await {
         Ok(data) => Ok(Some(data)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err).context(format!("reading cache {}", path.display())),
     }
 }
 
-fn write_cache(path: &Path, data: &[u8]) -> Result<()> {
+async fn write_cache(path: &Path, data: &[u8]) -> Result<()> {
     let name = path.file_name().context("cache path has no file name")?;
     let tmp = path.with_file_name(format!(
         "{name}.{}.tmp",
         std::process::id(),
         name = name.to_string_lossy()
     ));
-    fs::create_dir_all(path.parent().context("cache path has no parent")?)?;
-    fs::write(&tmp, data).context(format!("writing cache {}", tmp.display()))?;
-    fs::rename(&tmp, path).context(format!("caching {}", path.display()))?;
+    let parent = path.parent().context("cache path has no parent")?;
+    tokio::fs::create_dir_all(parent).await?;
+    tokio::fs::write(&tmp, data)
+        .await
+        .context(format!("writing cache {}", tmp.display()))?;
+    tokio::fs::rename(&tmp, path)
+        .await
+        .context(format!("caching {}", path.display()))?;
     Ok(())
 }
 
 /// Map responses get the tracked fallback lines (texlive-extras/<name>)
 /// appended. pdfTeX reads the map last-entry-wins, so appends override
 /// the cache's stale entries without rewriting the cache itself.
-fn extend_map(app: &App, rel: &str, mut data: Vec<u8>) -> Result<Vec<u8>> {
+async fn extend_map(app: &App, rel: &str, mut data: Vec<u8>) -> Result<Vec<u8>> {
     let parts: Vec<&str> = rel.split('/').collect();
     if parts.len() != 3 || parts[1] != "11" || !parts[2].ends_with(".map") {
         return Ok(data);
     }
     let extra = app.extras.join(parts[2]);
-    if !extra.is_file() {
+    if !is_file(&extra).await {
         return Ok(data);
     }
     if !data.is_empty() && !data.ends_with(b"\n") {
         data.push(b'\n');
     }
-    let mut extra_bytes =
-        fs::read(&extra).context(format!("reading extras {}", extra.display()))?;
+    let mut extra_bytes = tokio::fs::read(&extra)
+        .await
+        .context(format!("reading extras {}", extra.display()))?;
     data.append(&mut extra_bytes);
     Ok(data)
 }
 
 /// Answer for the worker: extended map plus the stable per-request fileid,
 /// recorded so `/tex/<fileid>` round-trips back to this very request.
-fn finish(app: &App, rel: &str, data: Vec<u8>) -> Result<(Vec<u8>, String)> {
-    let data = extend_map(app, rel, data)?;
+async fn finish(app: &App, rel: &str, data: Vec<u8>) -> Result<(Vec<u8>, String)> {
+    let data = extend_map(app, rel, data).await?;
     let digest = Sha1::digest(rel.as_bytes());
     let fileid: String = digest
         .iter()
@@ -419,14 +434,16 @@ fn finish(app: &App, rel: &str, data: Vec<u8>) -> Result<(Vec<u8>, String)> {
     // The mapping only feeds the XeTeX→dvipdfmx /tex/<fileid> round-trip;
     // a failed write must not fail a request whose bytes are already valid.
     let mapping = app.fileids.join(&fileid);
-    if !mapping.is_file() {
-        let write = fs::create_dir_all(&app.fileids)
-            .with_context(|| format!("creating fileid map dir {}", app.fileids.display()))
-            .and_then(|()| {
-                fs::write(&mapping, rel)
-                    .context(format!("writing fileid map {}", mapping.display()))
-            });
-        if let Err(err) = write {
+    if !is_file(&mapping).await {
+        let write = async {
+            tokio::fs::create_dir_all(&app.fileids)
+                .await
+                .with_context(|| format!("creating fileid map dir {}", app.fileids.display()))?;
+            tokio::fs::write(&mapping, rel)
+                .await
+                .context(format!("writing fileid map {}", mapping.display()))
+        };
+        if let Err(err) = write.await {
             eprintln!("[texlive] {err:#} — XeTeX font round-trips will miss");
         }
     }
@@ -510,7 +527,9 @@ async fn lookup_read(
         return Ok(None);
     };
     Ok(Some(
-        fs::read(&found).with_context(|| format!("reading {}", found.display()))?,
+        tokio::fs::read(&found)
+            .await
+            .with_context(|| format!("reading {}", found.display()))?,
     ))
 }
 
@@ -552,8 +571,8 @@ async fn kpsewhich(engine: &str, progname: &str, extra: &[String], name: &str) -
         .unwrap_or_default()
         .trim()
         .to_string();
-    (!found.is_empty() && found.starts_with('/') && Path::new(&found).is_file())
-        .then(|| PathBuf::from(found))
+    let hit = !found.is_empty() && found.starts_with('/') && is_file(Path::new(&found)).await;
+    hit.then(|| PathBuf::from(found))
 }
 
 async fn tree(State(app): State<Arc<App>>, UrlPath(dir): UrlPath<String>) -> Response {
