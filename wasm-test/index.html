@@ -1723,6 +1723,9 @@ async function provideFormatDump() {
       setEngineStatus(`${spec.label} engine ready`, "ok");
       return dump;
     }
+    // A reply without a dump must fail here — silently returning undefined
+    // would let the run continue against an unseeded format.
+    throw new Error(`compileformat answered ${JSON.stringify(result?.result ?? result)} without a dump`);
   } catch (err) {
     // The engine names its dump after the job's input path (the kpathsea
     // cache id of the .ini), so its own readback misses (-253 = "fetch
@@ -1930,8 +1933,12 @@ async function compileFolderInEngine(mains) {
   steps.start("compile");
   const inputs = new Set(), outputs = new Set();
   let primary = null, pdf = null, log = "", primaryLog = "", firstError = null;
-  for (const main of mains) {
+  for (const [mi, main] of mains.entries()) {
     const what = mains.length === 1 ? "compile" : `compile ${main}`;
+    // The recorder drain below completes the compile step; give every
+    // following main a fresh compile run, or its pass progress and failure
+    // details would have no running step to attach to.
+    if (mi > 0) steps.start("compile");
     logInfo(`${what} with SwiftLaTeX ${engineSpec().label} (tex files served via /texlive/)`);
     await setEngineMainFile(main);
     const result = await compileLatexPasses(main, what);
@@ -1984,6 +1991,7 @@ async function compileFolderInEngine(mains) {
     steps.detail("recorder", `${accesses.length} open(s) → ${passInputs.size} input(s), ${passOutputs.size} output(s)`);
     for (const rel of passInputs) { logv(`  input: ${rel}`); inputs.add(rel); }
     for (const rel of passOutputs) { logv(`  output: ${rel}`); outputs.add(rel); }
+    steps.complete("recorder");
   }
 
   if (!primary) {
@@ -2785,8 +2793,8 @@ function kindOf(rel) {
 function computeStats(review, totalMs) {
   const all = [...review.changes, ...review.unchanged];
   const origBytes = all.reduce((n, c) => n + (c.origSize ?? 0), 0);
-  const cleanedBytes = all.reduce((n, c) => n + (c.outSize ?? 0), 0);
-  const savedBytes = origBytes - cleanedBytes;
+  const cleanedTotal = all.reduce((n, c) => n + (c.outSize ?? 0), 0);
+  const savedBytes = origBytes - cleanedTotal;
   // The composition split: whole files dropped, bytes trimmed out of kept
   // files, and bytes the cleaner added (new files, a kept file that grew).
   let droppedBytes = 0, trimmedBytes = 0, addedBytes = 0;
@@ -2813,7 +2821,7 @@ function computeStats(review, totalMs) {
     .filter((r) => r.saved > 0)
     .sort((a, b) => b.saved - a.saved);
   return {
-    origBytes, cleanedBytes, savedBytes, droppedBytes, trimmedBytes, addedBytes, kindRows, reductions,
+    origBytes, cleanedBytes: cleanedTotal, savedBytes, droppedBytes, trimmedBytes, addedBytes, kindRows, reductions,
     stats: review.stats, totalMs, archive: review.archive,
     origN: all.filter((c) => c.origSize !== null).length,
     outN: all.filter((c) => c.outSize !== null).length,
@@ -3702,7 +3710,7 @@ $("diffPane").addEventListener("click", async (ev) => {
   const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M3 7a2 2 0 0 1 2-2h3.6l1.8 2.3H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>';
 
-  const ENGINES = [
+  const ENGINE_OPTIONS = [
     { value: "auto", label: "auto" },
     { value: "pdftex", label: "pdflatex" },
     { value: "xetex", label: "xelatex" },
@@ -3829,7 +3837,7 @@ $("diffPane").addEventListener("click", async (ev) => {
                 h(Field, { label: "log", tip: "How much the wasm pipeline logs; trace is very verbose." },
                   h(Select, { size: "small", value: f.logLevel, options: LOG_LEVELS, onChange: (v) => set("logLevel", v) })),
                 h(Field, { label: "engine", tip: "auto reads a top-level 00README, then looks for fontspec, unicode-math, polyglossia or xeCJK." },
-                  h(Select, { size: "small", value: f.engine, options: ENGINES, onChange: (v) => set("engine", v) }))))
+                  h(Select, { size: "small", value: f.engine, options: ENGINE_OPTIONS, onChange: (v) => set("engine", v) }))))
           }],
         })),
 

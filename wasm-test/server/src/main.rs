@@ -411,11 +411,19 @@ fn finish(app: &App, rel: &str, data: Vec<u8>) -> Result<(Vec<u8>, String)> {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()[..16]
         .to_string();
+    // The mapping only feeds the XeTeX→dvipdfmx /tex/<fileid> round-trip;
+    // a failed write must not fail a request whose bytes are already valid.
     let mapping = app.fileids.join(&fileid);
     if !mapping.is_file() {
-        fs::create_dir_all(&app.fileids)
-            .with_context(|| format!("creating fileid map dir {}", app.fileids.display()))?;
-        fs::write(&mapping, rel).context(format!("writing fileid map {}", mapping.display()))?;
+        let write = fs::create_dir_all(&app.fileids)
+            .with_context(|| format!("creating fileid map dir {}", app.fileids.display()))
+            .and_then(|()| {
+                fs::write(&mapping, rel)
+                    .context(format!("writing fileid map {}", mapping.display()))
+            });
+        if let Err(err) = write {
+            eprintln!("[texlive] {err:#} — XeTeX font round-trips will miss");
+        }
     }
     Ok((data, fileid))
 }
@@ -501,10 +509,27 @@ async fn kpsewhich(engine: &str, progname: &str, extra: &[String], name: &str) -
         .arg(name)
         .stdin(Stdio::null())
         .kill_on_drop(true);
-    let output = tokio::time::timeout(KPSEWHICH_TIMEOUT, command.output())
-        .await
-        .ok()?
-        .ok()?;
+    // A broken TeX Live must not look like a cache miss: timeout and spawn
+    // failure are logged (spawn failure only once, it would repeat per
+    // request), while a plain not-found exit stays the normal silent miss.
+    let output = match tokio::time::timeout(KPSEWHICH_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            static SPAWN_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !SPAWN_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[texlive] cannot spawn kpsewhich: {err} — every lookup will miss");
+            }
+            return None;
+        }
+        Err(_) => {
+            eprintln!(
+                "[texlive] kpsewhich timed out after {}s looking up {name}",
+                KPSEWHICH_TIMEOUT.as_secs()
+            );
+            return None;
+        }
+    };
     let found = String::from_utf8_lossy(&output.stdout)
         .lines()
         .next()

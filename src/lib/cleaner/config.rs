@@ -45,13 +45,17 @@ pub struct CleanerConfig {
     pub verbose: bool,
 }
 
+/// Longest side of a resized image, in pixels. Shared by the CLI default
+/// and `CleanerConfig::default`, so the two cannot drift apart.
+pub const DEFAULT_IM_SIZE: u32 = 512;
+
 impl Default for CleanerConfig {
     fn default() -> Self {
         Self {
             strip_exif: false,
             keep_bib: false,
             resize_images: false,
-            im_size: 1024,
+            im_size: DEFAULT_IM_SIZE,
             clean_classes: false,
             no_zzrm: false,
             tar: None,

@@ -3,7 +3,10 @@
 // gated on non-wasm targets.
 #[cfg(not(target_family = "wasm"))]
 use alc_ng::{
-    cleaner::{config::CleanerConfig, submission::Submission},
+    cleaner::{
+        config::{CleanerConfig, DEFAULT_IM_SIZE},
+        submission::Submission,
+    },
     exif_tool,
     helper::{image_diff, parse_hex_color},
 };
@@ -68,7 +71,7 @@ pub struct Config {
     pub resize_images: bool,
     /// Size of the output images (in pixels, longest side).
     /// Fine tune this to get as close to 10MB as possible.
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = DEFAULT_IM_SIZE)]
     pub im_size: u32,
     /// Also clean .sty and .cls latex files.
     #[arg(long, default_value_t = false)]
