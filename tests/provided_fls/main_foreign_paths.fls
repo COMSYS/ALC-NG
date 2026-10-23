@@ -1,6 +1,0 @@
-PWD /Users/author/Downloads/dv3paper
-INPUT /Users/author/Downloads/dv3paper/main.tex
-INPUT ./used.tex
-OUTPUT main.log
-OUTPUT main.aux
-OUTPUT main.pdf

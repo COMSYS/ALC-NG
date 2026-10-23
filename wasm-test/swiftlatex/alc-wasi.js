@@ -404,8 +404,12 @@ var AlcWasi = (() => {
     fd_prestat_get(fd, out) {
       const name = fd === PREOPEN_ROOT ? "/" : fd === PREOPEN_CWD ? fsCwd() : null;
       if (name === null) return E.EBADF;
-      wU8(out, 0);                 // tag: directory
-      wU32(out + 4, name.length);  // name length
+      // WASI preopen names are byte strings, not UTF-16 strings: the cwd may
+      // contain non-ASCII directories, where name.length differs from the
+      // encoded byte length wasi-libc allocates for fd_prestat_dir_name.
+      const bytes = new TextEncoder().encode(name);
+      wU8(out, 0);                  // tag: directory
+      wU32(out + 4, bytes.length);  // name length in bytes
       return E.SUCCESS;
     },
 
@@ -414,8 +418,9 @@ var AlcWasi = (() => {
       // every dirfd resolves against an unambiguous absolute base.
       const name = fd === PREOPEN_ROOT ? "/" : fd === PREOPEN_CWD ? fsCwd() : null;
       if (name === null) return E.EBADF;
-      if (name.length > pathLen) return E.EINVAL;
-      u8arr(pathPtr, name.length).set(new TextEncoder().encode(name));
+      const bytes = new TextEncoder().encode(name);
+      if (bytes.length > pathLen) return E.EINVAL;
+      u8arr(pathPtr, bytes.length).set(bytes);
       return E.SUCCESS;
     },
 

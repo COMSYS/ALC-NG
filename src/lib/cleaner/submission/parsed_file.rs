@@ -1707,8 +1707,13 @@ impl<'a> ContentStripper<'a> {
             return Ok(Kept(whitespaces));
         };
 
+        // Use the declaration's actual command token rather than the cleaned
+        // declaration node, which may still contain surrounding braces.
+        let name = declaration_name(decl, self.content)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default();
+
         // Clean command, declaration and parameter text
-        let mut name = None;
         let mut i = 0;
         while let Some(child) = node.child(i) {
             if child == implementation {
@@ -1716,15 +1721,10 @@ impl<'a> ContentStripper<'a> {
             }
             let result = self.handle_node(child, prev_node.clone())?;
 
-            if child == decl {
-                name = Some(result.text().to_owned());
-            }
-
             result.append_to(&mut new_content, &prev_node);
             prev_node = result;
             i += 1;
         }
-        let name = name.unwrap_or_default();
         let name = name.as_slice();
 
         let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
@@ -1737,7 +1737,14 @@ impl<'a> ContentStripper<'a> {
         ))?;
         // An empty body marks a custom comment command (whose invocations are deleted).
         // If the file opts out of comment cleaning, treat it as a normal command instead.
-        if is_empty(&cleaned_impl_tree.root_node()) && !self.directives.keep_comments {
+        // Active-character definitions (e.g. `\newcommand{"}`) are kept: their
+        // invocations are plain characters, not control sequences, so the
+        // stripper cannot identify them and deleting the definition alone
+        // would change the document.
+        if is_empty(&cleaned_impl_tree.root_node())
+            && !self.directives.keep_comments
+            && name.starts_with(b"\\")
+        {
             // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
             if long {
                 self.long_command_definitions.insert(name.to_owned());
@@ -1795,58 +1802,36 @@ impl<'a> ContentStripper<'a> {
         let node_content = &self.content[node.byte_range()];
         let mut prev_node = previous_node;
 
-        let new_command = match node.child(0) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+        let (Some(decl), Some(implementation)) = (
+            node.child_by_field_name("declaration"),
+            node.child_by_field_name("implementation"),
+        ) else {
+            whitespaces.extend_from_slice(node_content);
+            return Ok(Kept(whitespaces));
+        };
+
+        // Use the declaration's actual command token. For a normal command this
+        // is `\foo`; for an active-character declaration it is the single
+        // character (`"`), which the invocation handler cannot match.
+        let name = declaration_name(decl, self.content)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default();
+
+        // Clean command, declaration, optional argument count/default and any
+        // parameter text before the implementation.
+        let mut i = 0;
+        while let Some(child) = node.child(i) {
+            if child == implementation {
+                break;
             }
-        };
-        let cleaned_command = self.handle_node(new_command, prev_node.clone())?;
 
-        cleaned_command.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_command;
+            let result = self.handle_node(child, prev_node.clone())?;
+            result.append_to(&mut new_content, &prev_node);
+            prev_node = result;
+            i += 1;
+        }
+        let name = name.as_slice();
 
-        // Declaration node
-        let decl = match node.child(1) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
-        let cleaned_decl = self.handle_node(decl, prev_node.clone())?;
-
-        cleaned_decl.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_decl.clone();
-
-        // Name inside declaration node
-        // If it has a child, then the name is wrapped by curly braces
-        let name = match decl.child(1) {
-            Some(c) => &self.content[c.byte_range()],
-            None => cleaned_decl.text(),
-        };
-
-        let argc = match node.child(2) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
-        let cleaned_argc = self.handle_node(argc, prev_node.clone())?;
-
-        cleaned_argc.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_argc;
-
-        // Extract implementation of new command
-        let implementation = match node.child(3) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
         let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
 
         // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
@@ -1857,7 +1842,13 @@ impl<'a> ContentStripper<'a> {
         ))?;
         // An empty body marks a custom comment command (whose invocations are deleted).
         // If the file opts out of comment cleaning, treat it as a normal command instead.
-        if is_empty(&cleaned_impl_tree.root_node()) && !self.directives.keep_comments {
+        // Active-character definitions are kept: their invocations are plain
+        // characters, not control sequences, so the stripper cannot identify
+        // them and deleting the definition alone would change the document.
+        if is_empty(&cleaned_impl_tree.root_node())
+            && !self.directives.keep_comments
+            && name.starts_with(b"\\")
+        {
             // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
             if long {
                 self.long_command_definitions.insert(name.to_owned());
@@ -1884,10 +1875,8 @@ impl<'a> ContentStripper<'a> {
             cleaned_impl.append_to(&mut new_content, &prev_node);
             prev_node = cleaned_impl;
 
-            // Clean remaining children (starting with index 4)
-            let mut i = 4;
-
-            // Clean all child nodes inside the command body
+            // Clean all child nodes after the implementation.
+            i += 1;
             while let Some(child) = node.child(i) {
                 let result = self.handle_node(child, prev_node.clone())?;
 
@@ -1900,6 +1889,19 @@ impl<'a> ContentStripper<'a> {
             Ok(Kept(new_content))
         }
     }
+}
+
+/// Returns the token naming the command in a declaration node.
+///
+/// `curly_group_command_name` wraps the actual `command_name` or
+/// `active_character` in braces; a bare `command_name` is the token itself.
+fn declaration_name<'a>(decl: Node<'a>, content: &'a [u8]) -> Option<&'a [u8]> {
+    if decl.kind() == "command_name" {
+        return Some(&content[decl.byte_range()]);
+    }
+
+    decl.child_by_field_name("command")
+        .map(|command| &content[command.byte_range()])
 }
 
 /// Returns `true` if the node is typeset in math mode, i.e. inside a formula

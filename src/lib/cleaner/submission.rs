@@ -798,11 +798,11 @@ impl Submission {
         // recorder inputs and bib references from latexmk.
         //
         // A user-provided main file is required by definition, even when the
-        // recorder does not list it: an .fls recorded on another machine (the
-        // typical provided-fls input — e.g. the author's own latexmk run)
-        // references the main file with an absolute path outside the
-        // submission, which parse_fls cannot resolve into the tree. Without
-        // this, cleaning such a submission would silently drop its main file.
+        // recorder does not list it: a recorder generated on another machine
+        // (e.g. the author's own latexmk run) may reference the main file with
+        // an absolute path outside the submission, which parse_fls cannot
+        // resolve into the tree. Without this, cleaning such a submission would
+        // silently drop its main file.
         let forced_main_files: HashSet<SourceFile> = self
             .cleaner_config
             .user_provided_main_files
@@ -1202,38 +1202,48 @@ impl Submission {
             .collect()
     }
 
+    /// Whether the cached submission contains a recorder file at its root,
+    /// where [`Submission::process_recorder_files`] looks for it.
+    #[cfg(target_family = "wasm")]
+    fn has_recorder_file(&self) -> bool {
+        self.initial_file_list.iter().any(|file| {
+            matches!(file.source_file().extension(), Some(ext) if ext == "fls")
+                && file
+                    .source_file()
+                    .relative()
+                    .parent()
+                    .is_some_and(|parent| parent.as_os_str().is_empty())
+        })
+    }
+
     /// Executes the full cleaning pipeline.
     ///
     /// This method orchestrates cache creation, main file detection, LaTeX compilation,
     /// recorder parsing, bib reference determination, and file copying/cleaning.
     pub fn run(&mut self) -> Result<()> {
-        // In provided-fls mode the LaTeX compile step is skipped entirely and
-        // the provided .fls recorder file is used to determine the used files
-        // instead. Wasm builds cannot spawn a LaTeX compiler, so providing a
-        // recorder file is mandatory there.
-        let provided_fls = self.cleaner_config.fls_provided.clone();
-
-        #[cfg(target_family = "wasm")]
-        if provided_fls.is_none() {
-            anyhow::bail!(
-                "No .fls recorder file provided. Wasm builds cannot run a LaTeX compiler; \
-                 set `fls_provided` to an .fls file for this submission."
-            );
-        }
-
         // Build caches by copying the input files into a temporary directory.
         info!("Cleaning project");
         self.create_caches();
 
         // Remove temporary files before trying to compile submission
         #[cfg(not(target_family = "wasm"))]
-        if provided_fls.is_none() {
+        {
             info!("Cleaning temporary files with latexmk");
             self.latexmk_clean()?;
         }
 
         // Remove temporary files before trying to compile submission
         self.set_inital_file_list();
+
+        // Wasm cannot compile, so the host must have written a recorder file
+        // into the input directory before calling run().
+        #[cfg(target_family = "wasm")]
+        if !self.has_recorder_file() {
+            anyhow::bail!(
+                "No .fls recorder file found in the submission. Wasm builds cannot run a \
+                 LaTeX compiler; write a recorder file into the input directory first."
+            );
+        }
 
         // Detect possible main TeX files by scanning the cached directory.
         self.possible_main_files = match self.cleaner_config.user_provided_main_files.clone() {
@@ -1257,24 +1267,7 @@ impl Submission {
 
         // Compile the identified main files using LaTeX.
         #[cfg(not(target_family = "wasm"))]
-        if provided_fls.is_none() {
-            self.compile();
-        }
-
-        // In provided-fls mode, use the provided recorder file instead of the
-        // ones produced by the (skipped) compilation. It is copied into the
-        // cache directory so that the recorder parsing finds it.
-        if let Some(fls) = provided_fls {
-            let file_name = fls.file_name().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Provided recorder file has no valid file name: {}",
-                    fls.display()
-                )
-            })?;
-            std::fs::copy(&fls, self.cache_path.path().join(file_name)).context(
-                "Failed to copy the provided .fls recorder file into the cache directory",
-            )?;
-        }
+        self.compile();
 
         // Process LaTeX recorder files (.fls) to gather input and output files.
         self.process_recorder_files()?;

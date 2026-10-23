@@ -1,5 +1,0 @@
-INPUT ./main.tex
-INPUT ./used.tex
-OUTPUT main.log
-OUTPUT main.aux
-OUTPUT main.pdf

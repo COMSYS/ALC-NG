@@ -148,12 +148,11 @@ static STDERR_LOG: StderrLog = StderrLog;
 /// and the compare step, which is native-only).
 ///
 /// `input` must point to `len` readable bytes of a UTF-8 JSON object:
-/// `{"input": "/path/submission", "target": "/path/out", "fls_provided":
-/// "/path/main.fls", ...}` where the remaining keys are the
-/// [`CleanerConfig`] flags. Wasm builds cannot spawn a LaTeX compiler, so
-/// the host compiles the submission itself (e.g. with the in-browser
-/// engine), records the used files into a `.fls` file and passes it as
-/// `fls_provided`.
+/// `{"input": "/path/submission", "target": "/path/out", ...}` where the
+/// remaining keys are the [`CleanerConfig`] flags. Wasm builds cannot spawn a
+/// LaTeX compiler, so the host compiles the submission itself (e.g. with the
+/// in-browser engine) and writes the used files into an `.fls` file inside
+/// `input` before calling this function.
 ///
 /// Returns a NUL-terminated JSON string `{"ok": true, "target": "..."}`
 /// or `{"error": "..."}`, which must be freed with [`alc_ng_free_string`].
@@ -188,9 +187,10 @@ fn run_pipeline(bytes: &[u8]) -> String {
         "trace" => log::LevelFilter::Trace,
         _ => log::LevelFilter::Info,
     };
-    if log::set_logger(&STDERR_LOG).is_ok() {
-        log::set_max_level(level);
-    }
+    // The logger can only be installed once, but every run may choose a
+    // different level; keep the filter update outside the guard.
+    let _ = log::set_logger(&STDERR_LOG);
+    log::set_max_level(level);
 
     // Panic messages must reach the page: stdout/stderr are forwarded by
     // the host, but the default hook output would be the only copy — make

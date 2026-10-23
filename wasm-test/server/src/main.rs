@@ -56,7 +56,10 @@ use std::{
     env, fs, io,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -350,7 +353,11 @@ async fn texlive(
         Ok(Some((data, fileid))) => {
             // Maps stay out of the freshness window: their bytes mix in the
             // tracked texlive-extras/ overrides, not only the frozen image.
-            let cache = if is_map_request(&rel) { NO_CACHE } else { TEXLIVE_CACHE };
+            let cache = if is_map_request(&rel) {
+                NO_CACHE
+            } else {
+                TEXLIVE_CACHE
+            };
             // A content ETag makes even the no-cache maps cheap: the browser
             // revalidates with a ~30-byte request instead of re-downloading
             // the whole file on every compile, while an edited extras override
@@ -359,18 +366,17 @@ async fn texlive(
             if not_modified(&headers, &etag) {
                 return (
                     StatusCode::NOT_MODIFIED,
-                    [(header::ETAG, etag), (header::CACHE_CONTROL, cache.to_string())],
+                    [
+                        (header::ETAG, etag),
+                        (header::CACHE_CONTROL, cache.to_string()),
+                    ],
                 )
                     .into_response();
             }
             octet_stream(
                 data,
                 cache,
-                &[
-                    ("etag", etag),
-                    ("fileid", fileid.clone()),
-                    ("pkid", fileid),
-                ],
+                &[("etag", etag), ("fileid", fileid.clone()), ("pkid", fileid)],
             )
         }
         Ok(None) => proxy_not_found(),
@@ -440,10 +446,17 @@ async fn serve_texlive(app: &App, rel: &str) -> Result<Option<(Vec<u8>, String)>
 /// An octet-stream 200 with a Content-Length and an explicit Cache-Control
 /// (these routes sit outside the blanket no-cache layer, so every answer
 /// states its own freshness), plus any extra headers.
-fn octet_stream(data: Vec<u8>, cache_control: &'static str, extra: &[(&'static str, String)]) -> Response {
+fn octet_stream(
+    data: Vec<u8>,
+    cache_control: &'static str,
+    extra: &[(&'static str, String)],
+) -> Response {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CACHE_CONTROL, HeaderValue::from_static(cache_control))
+        .header(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(cache_control),
+        )
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, data.len().to_string());
     for (name, value) in extra {
@@ -495,10 +508,15 @@ async fn read_cache(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 async fn write_cache(path: &Path, data: &[u8]) -> Result<()> {
+    // One writer per request: two concurrent misses for the same file must
+    // not share (and truncate) a temporary file or race each other's rename.
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+
     let name = path.file_name().context("cache path has no file name")?;
     let tmp = path.with_file_name(format!(
-        "{name}.{}.tmp",
+        "{name}.{}.{}.tmp",
         std::process::id(),
+        NEXT_TMP.fetch_add(1, Ordering::Relaxed),
         name = name.to_string_lossy()
     ));
     let parent = path.parent().context("cache path has no parent")?;
@@ -506,9 +524,10 @@ async fn write_cache(path: &Path, data: &[u8]) -> Result<()> {
     tokio::fs::write(&tmp, data)
         .await
         .context(format!("writing cache {}", tmp.display()))?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .context(format!("caching {}", path.display()))?;
+    if let Err(err) = tokio::fs::rename(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(err).context(format!("caching {}", path.display()));
+    }
     Ok(())
 }
 
@@ -552,15 +571,10 @@ async fn finish(app: &App, rel: &str, data: Vec<u8>) -> Result<(Vec<u8>, String)
     // a failed write must not fail a request whose bytes are already valid.
     let mapping = app.fileids.join(&fileid);
     if !is_file(&mapping).await {
-        let write = async {
-            tokio::fs::create_dir_all(&app.fileids)
-                .await
-                .with_context(|| format!("creating fileid map dir {}", app.fileids.display()))?;
-            tokio::fs::write(&mapping, rel)
-                .await
-                .context(format!("writing fileid map {}", mapping.display()))
-        };
-        if let Err(err) = write.await {
+        // Atomic write: a concurrent request may read this mapping while
+        // another creates it, and a half-written fileid would send the
+        // round-trip to the wrong TeX Live path.
+        if let Err(err) = write_cache(&mapping, rel.as_bytes()).await {
             eprintln!("[texlive] {err:#} — XeTeX font round-trips will miss");
         }
     }

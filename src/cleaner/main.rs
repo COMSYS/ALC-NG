@@ -112,7 +112,6 @@ impl Config {
             strip_exif: self.strip_exif,
             skip_watermark: self.skip_watermark,
             user_provided_main_files: self.main_files.clone(),
-            fls_provided: None,
             verbose: self.verbose != 0,
         }
     }

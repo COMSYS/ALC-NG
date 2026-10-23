@@ -838,10 +838,9 @@
 <script>
 "use strict";
 
-// Bundled samples: the fixture used by tests/provided_fls.rs, a nested folder
-// that exercises the engine's mkdir/writefile handling, and two real arXiv
-// submissions (ISMVL 2003 and Bubeck et al.'s “Sparks of AGI”, both under
-// fixtures/ and kept out of git, like any real paper content).
+// Bundled samples: a comment-removal fixture and one real arXiv submission
+// (Bubeck et al.'s “Sparks of AGI”, under fixtures/ and kept out of git, like
+// any real paper content).
 //
 // A sample names its folder (`dir`); it either lists its files (`files`,
 // fetched as <dir>/<file>) or lets the dev server list the folder with
@@ -1316,7 +1315,9 @@ async function loadEngine(engine = "pdftex") {
     texWorker.ready = true;
   } catch (err) {
     logErr(`engine load failed: ${err.message}`);
-    texWorker = null;
+    try { worker.terminate(); } catch (e) { /* already gone */ }
+    if (texWorker?.worker === worker) texWorker = null;
+    workerModuleLoaded = false;
   }
 }
 
@@ -1344,11 +1345,21 @@ function bindWorkerMessages(worker) {
   };
   worker.onerror = (err) => {
     logErr(`[engine] worker crashed: ${err.message ?? err}`);
-    const pending = texWorker?.pending;
+    const current = texWorker;
+    const pending = current?.pending;
     if (pending) {
-      texWorker.pending = null;
+      current.pending = null;
       pending.reject(new Error(`engine worker crashed: ${err.message ?? err}`));
     }
+    // The worker cannot answer anymore. Force the next run to spawn a fresh
+    // engine (and load the alc_ng module into it); leaving ready=true makes
+    // texReady() skip loadEngine() and the next call waits forever.
+    if (current?.worker === worker) {
+      texWorker = null;
+      workerModuleLoaded = false;
+      texQueue.tail = Promise.resolve();
+    }
+    try { worker.terminate(); } catch (e) { /* already gone */ }
   };
 }
 
@@ -1506,7 +1517,8 @@ async function setFolder(fileList, label) {
   }
   if ((await refreshMainFiles()) === 0) return;  // the reason is already on the status line
   // Run alc-ng always compiles first and derives the recorder from the
-  // engine's access log, so a submitted .fls is no longer worth a note.
+  // engine's access log; a submitted .fls belongs to an older build and is
+  // not staged.
   setFolderStatus(`${files.size} file(s) in "${label}".`, "ok");
 }
 
@@ -1744,13 +1756,13 @@ async function stageIntoEngine(entries, call, onWrite, label = "engine") {
 // browser never writes there, and users are not trusted to. A dump is only
 // valid for the engine build that wrote it, so the URL carries the versioned
 // `fmtKey`; if the served dump fails to load, this session builds its own.
-let serverFmtBad = false;  // a cached copy failed to load — rebuild instead of reusing it
+const badServerFmts = new Set();  // per-key: a served dump failed to load — rebuild it
 
 const fmtServerUrl = (spec) =>
   `/fmt/${encodeURIComponent(spec.fmtKey)}/${encodeURIComponent(spec.fmtName)}`;
 
 async function fetchServerFmt(spec) {
-  if (serverFmtBad) return null;
+  if (badServerFmts.has(spec.fmtKey)) return null;
   try {
     // the dump is 17–28 MB — show the percentage on the stage step
     const buf = await fetchWithProgress(fmtServerUrl(spec), (loaded, total) =>
@@ -1887,7 +1899,10 @@ async function loadFmt(key) {
 async function dropFmt(key) {
   // The dump on hand is unusable (a "format file" error), so distrust the
   // server copy too: the rebuild below replaces both with a working dump.
-  serverFmtBad = true;
+  badServerFmts.add(key);
+  // Drop the in-memory copy as well. Otherwise provideFormatDump() returns it
+  // immediately on the next run and the local rebuild never happens.
+  if (texWorker) texWorker.fmtBytes = undefined;
   try { await fmtStore("readwrite", (store) => store.delete(key)); } catch (err) {}
 }
 
@@ -1986,6 +2001,9 @@ async function compileFolderInEngine(mains) {
   steps.detail("stage", `staging ${folder.files.size} file(s) → engine memfs …`);
   const staged = [];  // also handed to dvipdfmx after a XeTeX compile
   for (const rel of [...folder.files.keys()].sort()) {
+    // Recorded usage is supplied by the host after compiling; a .fls shipped
+    // in the submission belongs to an older build and must not be staged.
+    if (/\.fls$/i.test(rel)) continue;
     staged.push({ rel, bytes: new Uint8Array(await folder.files.get(rel).arrayBuffer()) });
   }
   let written = 0;
@@ -2094,37 +2112,47 @@ async function compileFolderInEngine(mains) {
 let dviPromise = null;
 
 function loadDvipdfm() {
-  dviPromise ??= new Promise((resolve, reject) => {
-    logInfo(`spawning dvipdfmx worker ${DVIPDFM_WORKER}`);
-    // No cache-bust query — see the engine worker's note: `no-cache` +
-    // revalidation already rules out stale copies, a `Date.now()` query
-    // just forces a full download of the worker script on every load.
-    const worker = new Worker(DVIPDFM_WORKER);
-    const dvi = { worker, queue: makeCallQueue(), pending: null, ready: false };
-    worker.onmessage = (ev) => {
-      const data = ev.data;
-      if (data?.cmd === "workerlog") {
-        forwardWorkerLog(data, "dvipdfmx");
-        return;
-      }
-      if (!dvi.ready) {  // the runtime's spontaneous {result: "ok"} after init
-        dvi.ready = true;
-        worker.postMessage({ cmd: "settexliveurl", url: "/texlive/" });
-        resolve(dvi);
-        return;
-      }
-      const pending = dvi.pending;
-      dvi.pending = null;
-      pending?.(data);
-    };
-    worker.onerror = (err) => {
-      logErr(`[dvipdfmx] worker crashed: ${err.message ?? err}`);
-      const pending = dvi.pending;
-      dvi.pending = null;
-      if (pending) pending({ result: "failed", log: String(err.message ?? err) });
-      else reject(new Error(`dvipdfmx worker failed: ${err.message ?? err}`));
-    };
-  });
+  if (!dviPromise) {
+    const holder = {};
+    const promise = new Promise((resolve, reject) => {
+      logInfo(`spawning dvipdfmx worker ${DVIPDFM_WORKER}`);
+      // No cache-bust query — see the engine worker's note: `no-cache` +
+      // revalidation already rules out stale copies, a `Date.now()` query
+      // just forces a full download of the worker script on every load.
+      const worker = new Worker(DVIPDFM_WORKER);
+      const dvi = { worker, queue: makeCallQueue(), pending: null, ready: false };
+      worker.onmessage = (ev) => {
+        const data = ev.data;
+        if (data?.cmd === "workerlog") {
+          forwardWorkerLog(data, "dvipdfmx");
+          return;
+        }
+        if (!dvi.ready) {  // the runtime's spontaneous {result: "ok"} after init
+          dvi.ready = true;
+          worker.postMessage({ cmd: "settexliveurl", url: "/texlive/" });
+          resolve(dvi);
+          return;
+        }
+        const pending = dvi.pending;
+        dvi.pending = null;
+        pending?.(data);
+      };
+      worker.onerror = (err) => {
+        logErr(`[dvipdfmx] worker crashed: ${err.message ?? err}`);
+        const pending = dvi.pending;
+        dvi.pending = null;
+        dvi.ready = false;
+        try { worker.terminate(); } catch (e) { /* already gone */ }
+        // Drop this worker's promise so the next conversion spawns a new one;
+        // do not clear a newer promise installed by resetDvipdfm().
+        if (dviPromise === holder.promise) dviPromise = null;
+        if (pending) pending({ result: "failed", log: String(err.message ?? err) });
+        else reject(new Error(`dvipdfmx worker failed: ${err.message ?? err}`));
+      };
+    });
+    holder.promise = promise;
+    dviPromise = promise;
+  }
   const loading = dviPromise;
   // only drop our own promise: a reset may have installed a newer one already
   loading.catch(() => { if (dviPromise === loading) dviPromise = null; });
@@ -2484,11 +2512,11 @@ async function runCompare(cfg, run) {
 //
 // Stage the folder in the engine worker's filesystem, compile with
 // SwiftLaTeX (the wasm stand-in for latexmk), synthesize the recorder file
-// from the access log, then run the real pipeline (alc_ng_run) in that same
-// worker via the WASI shim (swiftlatex/alc-wasi.js). The compare step is
-// native-only; strip_exif needs exiftool and is unavailable.
+// from the access log and write it into the staged input, then run the real
+// pipeline (alc_ng_run) in that same worker via the WASI shim
+// (swiftlatex/alc-wasi.js). The compare step is native-only; strip_exif needs
+// exiftool and is unavailable.
 
-const RUN_FLS_PATH = "/work/alc-ng-main.fls";
 let workerModuleLoaded = false;
 
 function currentFlags() {
@@ -2496,7 +2524,6 @@ function currentFlags() {
   return {
     input: "/work",
     target: "/cleaned",
-    fls_provided: RUN_FLS_PATH,
     keep_bib: f.keepBib,
     clean_classes: f.cleanClasses,
     no_zzrm: f.noZzrm,

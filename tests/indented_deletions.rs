@@ -109,6 +109,33 @@ Second paragraph
     }
 
     #[test]
+    fn newcommand_without_argc_keeps_definition() {
+        let input = b"\\newcommand{\\keep}{x}\n\\keep\n";
+
+        assert_eq!(clean(input), "\\newcommand{\\keep}{x}\n\\keep\n");
+    }
+
+    #[test]
+    fn newcommand_without_argc_detects_comment_command() {
+        let input = b"\\newcommand{\\note}{}\nBefore \\note after\n";
+
+        assert_eq!(clean(input), "Before {} after\n");
+    }
+
+    #[test]
+    fn active_character_comment_definition_is_kept() {
+        // The stripper cannot recognize active-character invocations, so it
+        // must keep the definition instead of deleting it and leaving the
+        // invocation behind.
+        let input = b"\\newcommand{\"}[1]{}\nBefore \"{gone} after\n";
+
+        assert_eq!(
+            clean(input),
+            "\\newcommand{\"}[1]{}\nBefore \"{gone} after\n"
+        );
+    }
+
+    #[test]
     fn invocation_in_text_inside_math_is_replaced() {
         let input = b"\\newcommand{\\note}[1]{}\n$a \\text{if \\note{x} b}$\n";
 

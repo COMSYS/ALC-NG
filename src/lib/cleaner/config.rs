@@ -33,14 +33,6 @@ pub struct CleanerConfig {
     pub skip_watermark: bool,
     /// Main files override
     pub user_provided_main_files: Option<Vec<PathBuf>>,
-    /// Path to a LaTeX recorder (.fls) file that replaces the compile step.
-    /// When set, the submission is not compiled at all; the provided recorder
-    /// file is used to determine the used files instead. This is required on
-    /// wasm builds, which cannot spawn a LaTeX compiler.
-    ///
-    /// The recorder file is trusted as is: nothing is compiled to verify it,
-    /// so a file missing from its `INPUT` lines is dropped from the output.
-    pub fls_provided: Option<PathBuf>,
     /// Print full LaTeX compiler output on failure.
     pub verbose: bool,
 }
@@ -64,7 +56,6 @@ impl Default for CleanerConfig {
             exiftool_args: Vec::new(),
             skip_watermark: false,
             user_provided_main_files: None,
-            fls_provided: None,
             verbose: false,
         }
     }
