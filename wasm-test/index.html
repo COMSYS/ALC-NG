@@ -399,7 +399,7 @@
   .rs-step.done .rs-mark::after { content: "✓"; color: var(--color-success); }
   .rs-step.failed .rs-mark::after { content: "✗"; color: var(--color-fail); }
   .rs-step.skipped .rs-mark::after { content: "–"; color: var(--color-faint); }
-  .rs-line { display: flex; align-items: baseline; gap: 0.5rem; }
+  .rs-line { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
   .rs-num { font: 600 0.62rem/1.5 var(--font-mono); letter-spacing: 0.06em; color: var(--color-accent); flex: none; }
   .rs-name {
     font: 600 0.7rem/1.5 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase;
@@ -407,6 +407,16 @@
   }
   .rs-line .rs-lead { flex: 1 1 auto; min-width: 0.8rem; border-bottom: 1px dotted var(--color-border); transform: translateY(-0.22em); }
   .rs-time { font: 0.64rem/1.5 var(--font-mono); color: var(--color-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* TeX Live download counter on the step row: a ring wheel that turns
+     while package files arrive and pauses once the step settles. */
+  .rs-dl { display: inline-flex; align-items: center; gap: 0.35em; font: 0.64rem/1.5 var(--font-mono); color: var(--color-secondary); white-space: nowrap; }
+  .rs-dl[hidden] { display: none; }
+  /* narrow sheets swap the label for its short form so the row keeps the
+     step name and its duration */
+  .rs-dl-s { display: none; }
+  .rs-wheel { width: 9px; height: 9px; border: 1.5px solid var(--color-accent); border-right-color: transparent; border-radius: 50%; animation: rs-turn 0.8s linear infinite; }
+  .rs-dl.idle .rs-wheel { animation-play-state: paused; }
+  @keyframes rs-turn { to { transform: rotate(1turn); } }
   .rs-step.running .rs-name { color: var(--color-text); }
   .rs-step.running .rs-name::after {
     content: "▍"; margin-left: 0.28rem; color: var(--color-accent);
@@ -715,6 +725,8 @@
     .fig .n { font-size: 1.6rem; }
     .tabs { gap: 1rem; }
     .tab { font-size: 0.78rem; }
+    .rs-dl-n { display: none; }
+    .rs-dl-s { display: inline; }
   }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
@@ -968,6 +980,7 @@ const steps = {
   current: null,   // key of the running step
   t0: 0,
   timer: null,
+  dlTimer: null,   // idles the download wheel after the last announced file
   rows: new Map(),
   panel() { return $("runSteps").firstElementChild; },
   row(key) { return this.rows.get(key); },
@@ -976,6 +989,7 @@ const steps = {
     this.reset();
     this.active = true;
     this.t0 = performance.now();
+    this.dlTimer = null;
     const host = $("runSteps");
     host.hidden = false;
     // The sheet takes the workspace's main column for the run's duration: the
@@ -1002,6 +1016,7 @@ const steps = {
                 <span class="rs-num">${String(i + 1).padStart(2, "0")}</span>
                 <span class="rs-name">${name}</span>
                 <span class="rs-lead"></span>
+                <span class="rs-dl" hidden title="TeX Live files downloaded from the server during this step"><i class="rs-wheel"></i><span class="rs-dl-n"></span><span class="rs-dl-s"></span></span>
                 <span class="rs-time"></span>
               </div>
               <div class="rs-sub"></div>
@@ -1047,11 +1062,35 @@ const steps = {
     if (row) row.querySelector(".rs-sub").textContent = text;
   },
 
+  // A worker announced one TeX Live file download (the kpathsea hook logs
+  // "Start downloading texlive file …" per request, and the console
+  // forwarding patch ships those lines to this page). Tally them on the
+  // running step behind the little wheel; the hook fetches synchronously
+  // one at a time, so the count is exactly the files asked for so far.
+  texDownload() {
+    if (!this.active || !this.current) return;
+    const dl = this.row(this.current)?.querySelector(".rs-dl");
+    if (!dl) return;
+    const n = (dl.dataset.n ? +dl.dataset.n : 0) + 1;
+    dl.dataset.n = String(n);
+    dl.hidden = false;
+    dl.classList.remove("idle");
+    dl.querySelector(".rs-dl-n").textContent = `${n} tex file${n === 1 ? "" : "s"}`;
+    dl.querySelector(".rs-dl-s").textContent = `${n} tex`;
+    // stand still when no further file arrives for a moment — the engine is
+    // busy typesetting, not downloading.
+    clearTimeout(this.dlTimer);
+    this.dlTimer = setTimeout(() => dl.classList.add("idle"), 1200);
+  },
+
   complete(key) {
     const row = this.row(key);
     if (!row || !row.classList.contains("running")) return;
     row.classList.remove("running");
     row.classList.add("done");
+    // a finished step's download wheel stops turning — the count stands
+    const dl = row.querySelector(".rs-dl");
+    if (dl && !dl.hidden) dl.classList.add("idle");
     row.querySelector(".rs-time").textContent = fmtDur(performance.now() - Number(row.dataset.t0));
     if (this.current === key) this.current = null;
   },
@@ -1148,6 +1187,7 @@ const steps = {
   reset() {
     this.active = false;
     clearInterval(this.timer);
+    clearTimeout(this.dlTimer);
     this.current = null;
     this.rows = new Map();
     const host = $("runSteps");
@@ -1319,9 +1359,14 @@ function texCall(message, responseCmds) {
   return texQueue.run(() => texCallNow(message, responseCmds));
 }
 
-// worker console lines → page log, under a per-worker prefix.
-const forwardWorkerLog = (data, label) =>
-  logLine(`[${label}] ${data.text ?? ""}`, data.level === "error" ? "error" : "verbose");
+// Worker console lines → page log, under a per-worker prefix. The kpathsea
+// hook's "Start downloading texlive file …" lines additionally drive the
+// running step's TeX Live download wheel (engine and dvipdfmx alike).
+const forwardWorkerLog = (data, label) => {
+  const text = data.text ?? "";
+  if (text.startsWith("Start downloading texlive file")) steps.texDownload();
+  logLine(`[${label}] ${text}`, data.level === "error" ? "error" : "verbose");
+};
 
 function texCallNow(message, responseCmds) {
   const worker = texWorker.worker;
@@ -1929,7 +1974,7 @@ async function compileFolderInEngine(mains) {
     // following main a fresh compile run, or its pass progress and failure
     // details would have no running step to attach to.
     if (mi > 0) steps.start("compile");
-    logInfo(`${what} with SwiftLaTeX ${engineSpec().label} (tex files served via /texlive/)`);
+    logInfo(`${what} with SwiftLaTeX ${engineSpec().label} (tex packages downloaded from the server on demand)`);
     await setEngineMainFile(main);
     const result = await compileLatexPasses(main, what);
     log = String(result.log ?? "");
