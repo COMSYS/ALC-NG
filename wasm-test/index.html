@@ -3,10 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>alc-ng — wasm bench</title>
+<title>alc-ng — the arXiv submission cleaner</title>
+<meta name="description" content="alc-ng sanitizes arXiv submissions entirely in your browser: dangling files, embedded metadata and hidden LaTeX content removed by the WebAssembly build, compiled with pdfTeX and XeTeX from SwiftLaTeX.">
+<meta name="keywords" content="arXiv, LaTeX, sanitization, alc-ng, WebAssembly, information disclosure, ALC-NG">
+<!-- inline data-URI favicon: the page's own mark (accent square, white dot à la “alc-ng.”),
+     so it needs no asset and 404s nowhere — not on the dev server, not in the Docker image -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Ccircle cx='22.5' cy='22.5' r='5' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=STIX+Two+Text:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap" rel="stylesheet">
 
 <!-- UI island runtime: React + Ant Design as UMD bundles, no build step.
      Served from wasm-test/vendor/ — run `sh wasm-test/fetch-ui-deps.sh` once to
@@ -23,471 +28,752 @@
 <script src="/wasm-test/vendor/antd.min.js"
         onerror="document.write('<script src=\'https://cdn.jsdelivr.net/npm/antd@5.29.3/dist/antd.min.js\'><\/script>')"></script>
 
-<style>
+<style>  /* ═══════════════════════════════════════════════════════════════════════
+     Look & feel follows the academic project page template used by
+     arxiv.comsys.rwth-aachen.de (paper-template by Seemandhar Jain):
+     Source Serif 4 / IBM Plex Sans / JetBrains Mono on a warm off-white
+     page with a blue accent. One palette, shared by this stylesheet and
+     the antd ConfigProvider theme in the script below.
+     ═══════════════════════════════════════════════════════════════════════ */
   :root {
-    --paper: #f5f2ea;
-    --card: #fdfcf8;
-    --ink: #1d1a15;
-    --muted: #6f685b;
-    --faint: #a49c8c;
-    --rule: #e4ddcd;
-    --rule-strong: #d2c9b5;
-    --red: #a81b1b;
-    --red-deep: #7e1414;
-    --red-soft: #f7e5e2;
-    --green: #2d6a40;
-    --green-soft: #e7f2e7;
-    --amber: #8a6410;
-    --amber-soft: #f6eeda;
-    --term: #242019;
-    --term-ink: #d9d3c5;
-    --term-dim: #938c7c;
-    --serif: "STIX Two Text", Georgia, "Times New Roman", serif;
-    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --color-bg: #fafaf8;
+    --color-surface: #ffffff;
+    --color-text: #1a1a1a;
+    --color-secondary: #555555;
+    --color-faint: #999999;
+    --color-accent: #2563eb;
+    --color-accent-light: #dbeafe;
+    --color-accent-soft: #eff6ff;
+    --color-accent-dark: #1d4ed8;
+    --color-success: #059669;
+    --color-success-soft: #f0fdf4;
+    --color-success-border: #bbf7d0;
+    --color-fail: #dc2626;
+    --color-fail-soft: #fef2f2;
+    --color-fail-border: #fecaca;
+    --color-warn: #d97706;
+    --color-warn-ink: #92400e;
+    --color-warn-soft: #fffbeb;
+    --color-border: #e5e5e5;
+    --color-row: #f0f0f0;
+    --color-head: #f8f9fb;
+    --color-code-bg: #f5f5f0;
+    --term: #1a1a1a;
+    --term-ink: #e5e5e5;
+    --term-dim: #8a8a8a;
+    --font-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --max-width-wide: 1100px;
+    --radius: 12px;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
   }
   * { box-sizing: border-box; }
   html { scrollbar-gutter: stable; }
   body {
-    margin: 0 auto; padding: 1.4rem 1.4rem 2.5rem; max-width: 88rem;
-    background: var(--paper); color: var(--ink);
-    font: 1rem/1.55 var(--serif);
+    margin: 0;
+    background: var(--color-bg); color: var(--color-text);
+    font: 1rem/1.7 var(--font-sans);
+    -webkit-font-smoothing: antialiased;
   }
-  body::before {  /* faint paper grain */
-    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 40;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.045'/%3E%3C/svg%3E");
-    mix-blend-mode: multiply;
-  }
-  code, kbd { font-family: var(--mono); }
-  a { color: var(--red-deep); }
+  code { font-family: var(--font-mono); }
+  a { color: var(--color-accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
 
-  /* --- masthead: a paper title block ------------------------------------ */
-  .masthead { display: flex; gap: 1.4rem; align-items: flex-end; flex-wrap: wrap; }
-  .brand { font: 700 2.1rem/1 var(--serif); letter-spacing: -0.01em; }
-  .brand .dot { color: var(--red); }
-  .mast-sub { font-style: italic; color: var(--muted); margin-top: 0.25rem; font-size: 0.95rem; }
-  .mast-sub code { font-size: 0.8rem; font-style: normal; }
-  .mast-right { margin-left: auto; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+  /* ════════════════════════════════════════════════════════════
+     HERO — the template's title block: gradient panel, pill badge,
+     serif headline with the accent highlight, button row.
+     ════════════════════════════════════════════════════════════ */
+  /* Scoped to the element: `.hero` alone also matched the statistics'
+     `.fig.hero` card, which then inherited the header's flex row. */
+  header.hero {
+    display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; flex-wrap: wrap;
+    padding: 14px 24px;
+    text-align: left;
+    background: linear-gradient(180deg, #f0f4ff 0%, var(--color-bg) 100%);
+    border-bottom: 1px solid var(--color-border);
+  }
+  header.hero .hero-left { min-width: 0; }
+  header.hero .hero-badge {
+    display: inline-block;
+    font-weight: 600; font-size: 11px;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--color-accent-dark);
+    background: var(--color-accent-light);
+    padding: 4px 14px; border-radius: 100px;
+    margin-bottom: 8px;
+  }
+  header.hero h1 {
+    font-family: var(--font-serif);
+    font-size: clamp(22px, 3vw, 30px);
+    font-weight: 700; line-height: 1.15;
+    margin: 0;
+  }
+  header.hero h1 .highlight { color: var(--color-accent); }
+  header.hero .hero-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-left: auto; }
+  .btn-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 7px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 600; text-decoration: none;
+    transition: all 0.2s ease;
+    border: 1.5px solid var(--color-border);
+    background: var(--color-surface); color: var(--color-text);
+  }
+  .btn:hover {
+    border-color: var(--color-accent); color: var(--color-accent);
+    box-shadow: 0 2px 12px rgba(37, 99, 235, 0.1); transform: translateY(-1px);
+    text-decoration: none;
+  }
+  .btn .icon { display: inline-flex; font-size: 16px; }
+
+  /* runtime state chips — the hero's “live stats line” */
+  .chip-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .chipstat {
     display: inline-flex; align-items: center; gap: 0.45rem;
-    font: 500 0.72rem/1 var(--mono); letter-spacing: 0.02em;
-    border: 1px solid var(--rule-strong); border-radius: 999px;
-    padding: 0.32rem 0.65rem; background: var(--card); color: var(--muted);
+    font: 500 0.72rem/1 var(--font-mono); letter-spacing: 0.02em;
+    border: 1px solid var(--color-border); border-radius: 999px;
+    padding: 0.38rem 0.75rem; background: var(--color-surface); color: var(--color-secondary);
     max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    box-shadow: var(--shadow-card);
   }
-  .chipstat::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--faint); flex: none; }
-  .chipstat.ok::before { background: var(--green); }
-  .chipstat.err::before { background: var(--red); }
-  .mast-rules { margin: 0.9rem 0 1.2rem; }
-  .mast-rules::before { content: ""; display: block; border-bottom: 2px solid var(--ink); }
-  .mast-rules::after { content: ""; display: block; border-bottom: 1px solid var(--ink); margin-top: 3px; }
+  .chipstat::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--color-faint); flex: none; }
+  .chipstat.ok::before { background: var(--color-success); }
+  .chipstat.err::before { background: var(--color-fail); }
+  .chipstat.fmeta { font-size: 0.66rem; color: var(--color-faint); }
 
-  /* --- layout ------------------------------------------------------------ */
+  /* ════════════════════════════════════════════════════════════
+     LAYOUT — template container width
+     ════════════════════════════════════════════════════════════ */
+  .page { max-width: calc(var(--max-width-wide) + 2rem); margin: 0 auto; padding: 1.35rem 1rem 2.5rem; }
   .cols { display: grid; grid-template-columns: 21.5rem minmax(0, 1fr); gap: 1.15rem; align-items: start; }
   /* A sticky rail that grows past the window (flags open on a short laptop)
      would pin with its run button out of reach, so it scrolls on its own. */
   .rail { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; scrollbar-width: thin; }
   @media (max-width: 62rem) { .cols { grid-template-columns: 1fr; } .rail { position: static; max-height: none; overflow: visible; } }
 
+  /* ════════════════════════════════════════════════════════════
+     PANELS & SECTION LABELS — the template's card and section-label
+     ════════════════════════════════════════════════════════════ */
   .panel {
-    background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
-    padding: 0.85rem 0.95rem 1rem; margin-bottom: 1rem;
-    box-shadow: 0 1px 0 rgba(29,26,21,0.03), 0 14px 30px -24px rgba(29,26,21,0.35);
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius);
+    padding: 1rem 1.05rem 1.1rem; margin-bottom: 1rem;
+    box-shadow: var(--shadow-card);
   }
   .sec-label {
-    display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.65rem;
-    font: 600 0.68rem/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+    display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.75rem;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--color-accent);
   }
-  .sec-num { color: var(--red); }
-  /* The page's own buttons. They are scoped to the areas that still contain
-     hand-written controls instead of a bare `button` rule, so they never reach
-     into the Ant Design island in the sidebar (.controls) — and, keeping the
-     specificity of a plain type selector, they stay overridable by the class
-     rules below (.tab, .dbar, .tree-file, …). */
+  .sec-num { font-family: var(--font-mono); font-size: 11px; }
+  /* The submission panel folds away by its own head-line — and folds itself
+     away once a run has succeeded, giving the rail over to the changes tree.
+     The body only goes display:none, so the React island inside keeps its
+     state across collapses. */
+  .panel-toggle {
+    margin-left: auto; display: inline-grid; place-content: center;
+    width: 1.3rem; height: 1.3rem; border: 1px solid var(--color-border); border-radius: 6px;
+    background: var(--color-surface); color: var(--color-secondary); cursor: pointer; box-shadow: none;
+    font: 600 0.6rem/1 var(--font-mono); padding: 0; transition: all 0.15s;
+  }
+  .panel-toggle::before { content: "▾"; transition: transform 0.15s; }
+  .panel-toggle:hover { color: var(--color-accent); border-color: var(--color-accent); }
+  .panel-toggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+  .panel.collapsed .panel-toggle::before { transform: rotate(-90deg); }
+  .panel.collapsed { margin-bottom: 0.7rem; }
+  .panel.collapsed .panel-body { display: none; }
+  .panel.collapsed .sec-label { margin-bottom: 0; }
+  /* The ledger strip doubles duty in the narrow rail: same stats, set two
+     sizes down. */
+  .rail .sumstrip { gap: 0.6rem 1.1rem; padding: 0 0.1rem 0.65rem; }
+  .rail .stat .n { font-size: 1.02rem; }
+  .rail .stat .l { font-size: 0.55rem; margin-left: 0.25rem; }
+  .rail .tree { max-height: min(46rem, calc(100vh - 16rem)); overflow: auto; scrollbar-width: thin; }
+
+  /* The page's own buttons — the template's .btn, small: white surface,
+     hairline border, hover turns accent. They are scoped to the areas that
+     still contain hand-written controls instead of a bare `button` rule, so
+     they never reach into the Ant Design island in the sidebar (.controls) —
+     and, keeping the specificity of a plain type selector, they stay
+     overridable by the class rules below (.tab, .dbar, .tree-file, …). */
   :where(.workspace, .logdock) button {
-    background: var(--red); color: #fdfcf8; border: 1px solid var(--red-deep); border-radius: 6px;
-    padding: 0.48rem 0.95rem; font: 600 0.7rem/1 var(--mono);
-    letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
-    transition: background 0.15s, transform 0.05s;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--color-surface); color: var(--color-text);
+    border: 1.5px solid var(--color-border); border-radius: 8px;
+    padding: 0.42rem 0.95rem; font: 600 0.78rem/1.2 var(--font-sans);
+    cursor: pointer; transition: all 0.15s ease;
   }
-  :where(.workspace, .logdock) button:hover:not(:disabled) { background: var(--red-deep); }
-  :where(.workspace, .logdock) button:active:not(:disabled) { transform: translateY(1px); }
+  :where(.workspace, .logdock) button:hover:not(:disabled) {
+    border-color: var(--color-accent); color: var(--color-accent);
+    box-shadow: 0 2px 12px rgba(37, 99, 235, 0.1); transform: translateY(-1px);
+  }
+  :where(.workspace, .logdock) button:active:not(:disabled) { transform: translateY(0); }
   :where(.workspace, .logdock) button:disabled { opacity: 0.45; cursor: not-allowed; }
-  :where(.workspace, .logdock) button.secondary { background: var(--card); color: var(--ink); border: 1px solid var(--rule-strong); }
-  :where(.workspace, .logdock) button.secondary:hover:not(:disabled) { background: var(--paper); }
-  :where(.workspace, .logdock) button:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
-  .meta, .fmeta { color: var(--muted); font-size: 0.78rem; }
-  #status { font-size: 0.8rem; font-family: var(--mono); }
-  #status.ok { color: var(--green); }
-  #status.err { color: var(--red); }
-  #version { color: var(--faint); font-size: 0.74rem; font-family: var(--mono); }
+  :where(.workspace, .logdock) button.secondary { background: var(--color-surface); }
+  :where(.workspace, .logdock) button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+  .fmeta { color: var(--color-faint); font-size: 0.78rem; }
   details summary {
-    cursor: pointer; font: 500 0.74rem/1.4 var(--mono); letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--muted); user-select: none;
+    cursor: pointer; font: 600 0.72rem/1.4 var(--font-sans); letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--color-secondary); user-select: none;
   }
-  details summary:hover { color: var(--ink); }
+  details summary:hover { color: var(--color-text); }
   details[open] summary { margin-bottom: 0.5rem; }
 
-  /* dark terminal insets (config JSON, log) */
-  .terminal {
-    background: var(--term); color: var(--term-ink); border-radius: 8px;
-    border: 1px solid #14110d;
-    box-shadow: inset 0 1px 4px rgba(0,0,0,0.45);
-  }
-
-  /* --- UI island: Ant Design submission controls -------------------------- */
+  /* ════════════════════════════════════════════════════════════
+     UI ISLAND — Ant Design submission controls
+     ════════════════════════════════════════════════════════════ */
   /* The sidebar panel is a React island (see “UI island” in the script below).
      Its colours, radii and control sizes come from the ConfigProvider theme,
-     which maps the tokens onto the paper palette above; what is left here is
-     the typography and spacing antd has no token for. Every rule carries at
+     which maps the tokens onto the template palette above; what is left here
+     is the typography and spacing antd has no token for. Every rule carries at
      least one class, because antd's own `.ant-*` selectors must be matched or
      beaten on specificity rather than on source order. */
   .controls { display: flex; flex-direction: column; gap: 0.8rem; }
   .ctlLabel {
     display: flex; align-items: baseline; gap: 0.3rem; margin-bottom: 0.3rem; min-width: 0;
-    font: 600 0.62rem/1 var(--mono); letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted);
+    font: 600 0.66rem/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-secondary);
   }
-  .ctlLabel .ctlVal { margin-left: auto; color: var(--faint); letter-spacing: 0.02em; text-transform: none; }
-  .ctlHint { display: inline-flex; align-items: center; color: var(--faint); cursor: help; }
-  .ctlHint:hover { color: var(--red); }
-  .ctlHint:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; border-radius: 2px; color: var(--red); }
+  .ctlLabel .ctlVal { margin-left: auto; color: var(--color-faint); letter-spacing: 0; text-transform: none; font-family: var(--font-mono); font-size: 0.62rem; }
+  .ctlHint { display: inline-flex; align-items: center; color: var(--color-faint); cursor: help; transition: color 0.15s; }
+  .ctlHint:hover { color: var(--color-accent); }
+  .ctlHint:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 2px; color: var(--color-accent); }
   .ctlHint svg { display: block; width: 0.75rem; height: 0.75rem; }
   .ctlGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.62rem 0.7rem; }
   @media (max-width: 30rem) { .ctlGrid { grid-template-columns: 1fr; } }
-  .ctlFoot { font-size: 0.72rem; line-height: 1.55; color: var(--faint); }
-  .ctlFoot code { font-size: 0.68rem; }
+  .ctlFoot { font-size: 0.72rem; line-height: 1.6; color: var(--color-faint); }
+  .ctlFoot code { font-size: 0.68rem; background: var(--color-code-bg); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.05em 0.35em; }
 
   /* folder drop zone */
-  .controls .ant-upload.ant-upload-drag { background: #fff; }
+  .controls .ant-upload.ant-upload-drag { background: var(--color-surface); }
   .controls .ant-upload.ant-upload-drag .ant-upload { padding: 0; }   /* .dropRow brings its own */
-  .controls .ant-upload.ant-upload-drag:hover { border-color: var(--red); }
-  .controls .ant-upload.ant-upload-drag.ant-upload-drag-disabled { background: var(--paper); }
+  .controls .ant-upload.ant-upload-drag:hover { border-color: var(--color-accent); }
+  .controls .ant-upload.ant-upload-drag.ant-upload-drag-disabled { background: var(--color-bg); }
   .dropRow { display: flex; align-items: center; gap: 0.6rem; padding: 0.7rem 0.75rem; text-align: left; }
-  .dropIcon { display: flex; flex: none; color: var(--faint); transition: color 0.15s; }
+  .dropIcon { display: flex; flex: none; color: var(--color-faint); transition: color 0.15s; }
   .dropIcon svg { width: 1.4rem; height: 1.4rem; }
-  .controls .ant-upload.ant-upload-drag:hover .dropIcon { color: var(--red); }
+  .controls .ant-upload.ant-upload-drag:hover .dropIcon { color: var(--color-accent); }
   .dropText { min-width: 0; }
   .dropTitle {
-    display: block; font: 500 0.8rem/1.3 var(--mono); color: var(--ink);
+    display: block; font: 600 0.82rem/1.3 var(--font-sans); color: var(--color-text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .dropHint { display: block; margin-top: 0.1rem; font-size: 0.72rem; line-height: 1.35; color: var(--muted); }
-  .dropClear.ant-btn-link { flex: none; margin-left: auto; color: var(--red-deep); }
+  .dropHint { display: block; margin-top: 0.1rem; font-size: 0.72rem; line-height: 1.35; color: var(--color-secondary); }
+  .dropClear.ant-btn-link { flex: none; margin-left: auto; color: var(--color-accent-dark); }
 
   /* the status line: an alert with an icon, not bare coloured text */
   .statusAlert.ant-alert { align-items: flex-start; padding: 0.45rem 0.6rem; }
-  .statusAlert.ant-alert .ant-alert-message { font: 0.74rem/1.45 var(--mono); overflow-wrap: anywhere; }
+  .statusAlert.ant-alert .ant-alert-message { font: 0.74rem/1.45 var(--font-sans); overflow-wrap: anywhere; }
   .statusAlert.ant-alert .ant-alert-icon { margin-top: 0.12rem; }
 
-  /* “native options”: a disclosure in the page's own summary style */
+  /* “native options”: a disclosure with the page's own label style */
   .flags.ant-collapse.ant-collapse-ghost {
-    border-top: 1px dashed var(--rule-strong); border-bottom: 1px dashed var(--rule-strong);
+    border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border);
   }
   .flags.ant-collapse > .ant-collapse-item { border-bottom: 0; }
   .flags.ant-collapse .ant-collapse-header { align-items: center; padding: 0.42rem 0; }
   .flags.ant-collapse .ant-collapse-header-text {
-    font: 600 0.62rem/1 var(--mono); letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted);
+    font: 600 0.66rem/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-secondary);
   }
-  .flags.ant-collapse .ant-collapse-header:hover .ant-collapse-header-text { color: var(--ink); }
-  .flags.ant-collapse .ant-collapse-expand-icon { padding-inline-end: 0.4rem; color: var(--faint); }
+  .flags.ant-collapse .ant-collapse-header:hover .ant-collapse-header-text { color: var(--color-text); }
+  .flags.ant-collapse .ant-collapse-expand-icon { padding-inline-end: 0.4rem; color: var(--color-faint); }
   .flags.ant-collapse > .ant-collapse-item > .ant-collapse-content > .ant-collapse-content-box { padding: 0.15rem 0 0.65rem; }
-  .flags .ant-checkbox-wrapper { font: 0.76rem/1.3 var(--mono); color: var(--ink); }
+  .flags .ant-checkbox-wrapper { font: 0.76rem/1.3 var(--font-mono); color: var(--color-text); }
   .flags .ant-checkbox-wrapper .ant-checkbox + span { padding-inline: 0.35rem 0; }
-  .flags .flagsSub { margin: 0.75rem 0 0.5rem; padding-top: 0.55rem; border-top: 1px dashed var(--rule-strong); }
+  /* one flag per grid cell: the checkbox, then its (i) hint */
+  .flagRow { display: flex; align-items: center; gap: 0.3rem; min-width: 0; }
+  .flagRow .ant-checkbox-wrapper { min-width: 0; }
+  .flagRow .flagHint { flex: none; margin-top: 0.1rem; }
+  .flags .flagsSub { margin: 0.75rem 0 0.5rem; padding-top: 0.55rem; border-top: 1px solid var(--color-border); }
   .ctlField { min-width: 0; }
-
-  /* the run button is the page's primary action, so it wears the page's small
-     caps rather than antd's sentence case */
-  .controls .ant-btn.ant-btn-primary.ant-btn-lg { text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
 
   /* the sample dropdown names each folder and says what it exercises; it is
      portaled to <body>, so these cannot live under .controls */
   .sampleOpt { display: flex; flex-direction: column; gap: 0.05rem; }
-  .sampleOpt small { font-size: 0.85em; font-weight: 400; color: var(--muted); }
+  .sampleOpt small { font-size: 0.85em; font-weight: 400; color: var(--color-secondary); }
 
-  /* --- workspace ---------------------------------------------------------- */
+  /* the main-file checklist (only when a folder has several candidates) */
+  .mainList { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+  .mainList .ant-checkbox-wrapper { font: 0.74rem/1.6 var(--font-mono); color: var(--color-text); margin-inline-start: 0; white-space: nowrap; }
+  .mainList .ant-checkbox-wrapper .ant-checkbox + span { overflow: hidden; text-overflow: ellipsis; }
+
+  /* ════════════════════════════════════════════════════════════
+     WORKSPACE — tabs, empty states, pixel compare
+     ════════════════════════════════════════════════════════════ */
   .workspace { min-width: 0; }
-  .tabs { display: flex; gap: 1.2rem; border-bottom: 1px solid var(--rule-strong); margin-bottom: 0.9rem; }
+  .tabs { display: flex; gap: 1.4rem; border-bottom: 1px solid var(--color-border); margin-bottom: 0.9rem; }
   .tab {
-    background: none; border: 0; border-radius: 0; padding: 0.4rem 0.1rem 0.55rem;
-    font: 600 0.72rem/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--muted); box-shadow: none;
+    background: none; border: 0; border-radius: 0; padding: 0.45rem 0.1rem 0.55rem;
+    font: 600 0.84rem/1 var(--font-sans); letter-spacing: 0.02em;
+    color: var(--color-secondary); box-shadow: none; transition: color 0.15s;
   }
-  .tab:hover:not(:disabled) { background: none; color: var(--ink); }
-  .tab.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--red); }
-  .tab:disabled { color: var(--faint); }
+  .tab:hover:not(:disabled) { background: none; border: 0; color: var(--color-text); box-shadow: none; transform: none; }
+  .tab.on { color: var(--color-accent); box-shadow: inset 0 -2px 0 var(--color-accent); }
+  .tab:disabled { color: #c4c4c4; }
   .cmp-head { font-size: 0.92rem; margin-bottom: 0.8rem; }
-  .cmp-head .cmp-note { color: var(--muted); font-style: italic; }
-  .cmp-head .ok { color: var(--green); }
-  .cmp-head .bad { color: var(--red); }
+  .cmp-head .cmp-note { color: var(--color-secondary); }
+  .cmp-head .ok { color: var(--color-success); font-weight: 600; }
+  .cmp-head .bad { color: var(--color-fail); font-weight: 600; }
   .cmp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.9rem; align-items: start; }
-  .cmp-card { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 0.5rem; }
-  .cmp-card img { display: block; width: 100%; height: auto; border: 1px solid var(--rule); background: #fff; }
-  .cmp-card .cap { display: flex; justify-content: space-between; gap: 0.5rem; margin-top: 0.4rem; font: 500 0.7rem/1.3 var(--mono); color: var(--muted); }
-  .empty-note { font-style: italic; color: var(--muted); padding: 2.2rem 0.5rem; text-align: center; }
-  .empty-note .big { font-size: 1.35rem; display: block; margin-bottom: 0.4rem; font-style: normal; }
+  .cmp-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius); padding: 0.55rem; }
+  .cmp-card img { display: block; width: 100%; height: auto; border: 1px solid var(--color-border); border-radius: 8px; background: #fff; }
+  .cmp-card .cap { display: flex; justify-content: space-between; gap: 0.5rem; margin-top: 0.45rem; font: 500 0.7rem/1.3 var(--font-mono); color: var(--color-secondary); }
+  .empty-note { color: var(--color-secondary); padding: 2.6rem 0.5rem; text-align: center; max-width: 34rem; margin: 0 auto; }
+  .empty-note .big { font-family: var(--font-serif); font-size: 2rem; display: block; margin-bottom: 0.4rem; color: var(--color-accent-light); }
 
-  /* --- statistics: a printer's ledger for the cleaned submission -------- */
-  .ledger { display: flex; flex-direction: column; gap: 0.9rem; }
-  .ledger-note { color: var(--muted); font-size: 0.8rem; font-style: italic; margin: -0.35rem 0 0.15rem; }
-  .figrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.2rem, 1fr)); gap: 0.7rem; }
+  /* ════════════════════════════════════════════════════════════
+     SUCCESS SCREEN — what the review tab shows when a run finishes:
+     the three headline numbers, the pixel compare verdict (when
+     enabled) and the tarball download. It gives way to the diff as
+     soon as a file is picked, and the diff header offers its way back.
+     ════════════════════════════════════════════════════════════ */
+  .done-card {
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius);
+    box-shadow: var(--shadow-card); padding: 2rem 1.5rem 1.7rem; text-align: center;
+    max-width: 44rem; margin: 0.4rem auto 0;
+    animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  }
+  .done-mark {
+    display: inline-grid; place-content: center; width: 2.7rem; height: 2.7rem; border-radius: 50%;
+    background: var(--color-success-soft); border: 1px solid var(--color-success-border);
+    color: var(--color-success); font: 700 1.35rem/1 var(--font-serif); margin-bottom: 0.9rem;
+  }
+  .done-title { font-family: var(--font-serif); font-size: 1.5rem; font-weight: 700; line-height: 1.2; margin-bottom: 1.2rem; }
+  .done-compare {
+    display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 0.15rem 0.5rem;
+    border-radius: 10px; padding: 0.55rem 0.9rem; margin-bottom: 1.25rem; font-size: 0.82rem;
+  }
+  .done-compare.ok { background: var(--color-success-soft); border: 1px solid var(--color-success-border); color: #065f46; }
+  .done-compare.bad { background: var(--color-fail-soft); border: 1px solid var(--color-fail-border); color: #7f1d1d; }
+  .done-compare b { font-weight: 700; }
+  .done-compare .cmp-note { color: inherit; opacity: 0.75; }
+  .done-compare .dget { color: inherit; text-decoration: underline; }
+  .done-card .figrow { margin-bottom: 1.25rem; }
+  .done-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; }
+  .done-actions button { padding: 0.55rem 1.25rem; font-size: 0.84rem; }
+  .done-actions .primary { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+  .done-actions .primary:hover:not(:disabled) {
+    background: var(--color-accent-dark); border-color: var(--color-accent-dark); color: #fff;
+    box-shadow: 0 2px 12px rgba(37, 99, 235, 0.25);
+  }
+  .done-hint { margin-top: 1rem; font-size: 0.74rem; color: var(--color-faint); }
+  .diff-head .dback { background: none; border-color: transparent; color: var(--color-accent); padding: 0.3rem 0.35rem 0.3rem 0; box-shadow: none; }
+  .diff-head .dback:hover:not(:disabled) { background: none; border-color: transparent; box-shadow: none; color: var(--color-accent-dark); }
+
+  /* ════════════════════════════════════════════════════════════
+     RUN PROGRESS — the pipeline stepper, set as the template's
+     figure card: one line per stage, done steps turn green, the
+     running one pulses, and a failed run leaves the sheet up.
+     ════════════════════════════════════════════════════════════ */
+  #runSteps { margin-bottom: 0.9rem; }
+  .runsteps {
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius);
+    padding: 0.9rem 1.1rem 1rem; box-shadow: var(--shadow-card);
+    animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+    transition: opacity 0.45s ease, transform 0.45s ease;
+  }
+  .runsteps.rs-gone { opacity: 0; transform: translateY(-6px); pointer-events: none; }
+  .rs-head { display: flex; align-items: baseline; gap: 0.9rem; flex-wrap: wrap; }
+  .rs-head .sec-label { margin-bottom: 0; }
+  .rs-src {
+    font: 0.72rem/1.3 var(--font-mono); color: var(--color-secondary); max-width: 24rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .rs-clock { margin-left: auto; font: 700 1.5rem/1 var(--font-serif); color: var(--color-accent); letter-spacing: -0.015em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rs-clock small {
+    font: 600 0.62rem/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--color-secondary); margin-left: 0.35rem;
+  }
+  .rs-meter { height: 3px; border-radius: 999px; background: var(--color-border); margin: 0.7rem 0 0.2rem; overflow: hidden; }
+  .rs-meter i {
+    display: block; height: 100%; width: 0; border-radius: 999px; background: var(--color-accent);
+    transition: width 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .rs-step {
+    position: relative; display: grid; grid-template-columns: 1.1rem minmax(0, 1fr); gap: 0 0.55rem;
+    padding: 0.3rem 0 0.34rem;
+    animation: rise 0.4s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+    animation-delay: calc(var(--i) * 55ms);
+  }
+  /* rail: dotted while the run has not arrived, a solid hairline once past */
+  .rs-step::before {
+    content: ""; position: absolute; left: 0.5rem; top: 1.45rem; bottom: -0.28rem;
+    border-left: 1px dotted var(--color-border);
+  }
+  .rs-step:last-child::before { display: none; }
+  .rs-step.running::before, .rs-step.done::before { border-left: 1px solid var(--color-border); }
+  .rs-mark { display: grid; place-content: center; height: 1.15rem; }
+  .rs-mark::after {
+    content: ""; display: block; width: 0.44rem; height: 0.44rem; border-radius: 50%;
+    border: 1.5px solid var(--color-border); background: var(--color-surface);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .rs-step.running .rs-mark::after { background: var(--color-accent); border-color: var(--color-accent); animation: rs-nib 0.9s ease-in-out infinite; }
+  @keyframes rs-nib { 50% { transform: scale(0.5); opacity: 0.5; } }
+  /* resolved marks swap the nib for a serif sign — check, cross, dash */
+  .rs-step.done .rs-mark::after, .rs-step.failed .rs-mark::after, .rs-step.skipped .rs-mark::after {
+    width: auto; height: auto; border: 0; border-radius: 0; background: none;
+    font: 700 0.95rem/1 var(--font-serif); animation: none;
+  }
+  .rs-step.done .rs-mark::after { content: "✓"; color: var(--color-success); }
+  .rs-step.failed .rs-mark::after { content: "✗"; color: var(--color-fail); }
+  .rs-step.skipped .rs-mark::after { content: "–"; color: var(--color-faint); }
+  .rs-line { display: flex; align-items: baseline; gap: 0.5rem; }
+  .rs-num { font: 600 0.62rem/1.5 var(--font-mono); letter-spacing: 0.06em; color: var(--color-accent); flex: none; }
+  .rs-name {
+    font: 600 0.7rem/1.5 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--color-faint); white-space: nowrap; transition: color 0.2s;
+  }
+  .rs-line .rs-lead { flex: 1 1 auto; min-width: 0.8rem; border-bottom: 1px dotted var(--color-border); transform: translateY(-0.22em); }
+  .rs-time { font: 0.64rem/1.5 var(--font-mono); color: var(--color-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .rs-step.running .rs-name { color: var(--color-text); }
+  .rs-step.running .rs-name::after {
+    content: "▍"; margin-left: 0.28rem; color: var(--color-accent);
+    animation: rs-caret 1.05s steps(2, start) infinite;
+  }
+  @keyframes rs-caret { 50% { opacity: 0; } }
+  .rs-step.done .rs-name { color: var(--color-secondary); }
+  .rs-step.failed .rs-name { color: var(--color-fail); }
+  .rs-step.skipped .rs-name { text-decoration: line-through; text-decoration-color: var(--color-border); }
+  .rs-sub { font: 0.7rem/1.5 var(--font-mono); color: var(--color-faint); margin-top: 0.05rem; overflow-wrap: anywhere; }
+  .rs-sub:empty { display: none; }
+  .rs-step.running .rs-sub { color: var(--color-secondary); }
+  .rs-step.failed .rs-sub { color: var(--color-fail); }
+  .rs-note {
+    margin-top: 0.6rem; padding: 0.55rem 0.75rem; border-left: 3px solid var(--color-fail);
+    background: var(--color-fail-soft); border-radius: 0 10px 10px 0;
+    font: 0.74rem/1.55 var(--font-mono); color: #7f1d1d; overflow-wrap: anywhere;
+    animation: rise 0.35s cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+  .rs-note b { color: var(--color-fail); }  /* the TeX-style bang */
+  .rs-note .rs-hint { color: var(--color-secondary); font-style: italic; }
+
+  /* ════════════════════════════════════════════════════════════
+     STATISTICS — the template's stat cards, figures and tables
+     ════════════════════════════════════════════════════════════ */
+  .ledger { display: flex; flex-direction: column; gap: 1rem; }
+  .ledger-note { color: var(--color-secondary); font-size: 0.82rem; margin: 0.15rem 0 0.15rem; }
+  .figrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.6rem, 1fr)); gap: 1.1rem; }
   .fig {
-    border: 1px solid var(--rule); border-radius: 10px; background: var(--card);
-    padding: 0.62rem 0.8rem 0.7rem; position: relative; overflow: hidden;
+    border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface);
+    padding: 1.3rem 0.9rem 1.15rem; text-align: center; box-shadow: var(--shadow-card);
   }
-  .fig::after {  /* corner registration mark */
-    content: ""; position: absolute; right: 0.5rem; top: 0.5rem; width: 0.42rem; height: 0.42rem;
-    border-top: 1px solid var(--rule-strong); border-right: 1px solid var(--rule-strong);
-  }
-  .fig .n { font: 700 1.75rem/1 var(--serif); letter-spacing: -0.015em; }
-  .fig .n small { font-size: 0.78rem; color: var(--muted); font-weight: 400; letter-spacing: 0; }
-  .fig .l { font: 500 0.6rem/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-top: 0.42rem; }
-  .fig .s { font: 0.7rem/1.3 var(--mono); color: var(--faint); margin-top: 0.28rem; }
-  .fig.hero .n { color: var(--red); }
-  .fig.warn .n { color: var(--amber); }
-  .fig.good .n { color: var(--green); }
+  .fig .n { font-family: var(--font-serif); font-size: 2.05rem; font-weight: 700; line-height: 1; letter-spacing: -0.015em; }
+  .fig .n small { font-size: 0.78rem; color: var(--color-secondary); font-weight: 400; letter-spacing: 0; }
+  .fig .l { font-size: 0.66rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-secondary); margin-top: 0.5rem; }
+  .fig .s { font: 0.7rem/1.35 var(--font-mono); color: var(--color-faint); margin-top: 0.3rem; }
+  .fig.lead .n { color: var(--color-accent); }
+  .fig.warn .n { color: var(--color-warn); }
+  .fig.good .n { color: var(--color-success); }
 
   /* composition bar: where the original bytes went */
-  .comp { border: 1px solid var(--rule); border-radius: 10px; background: var(--card); padding: 0.75rem 0.9rem 0.85rem; }
-  .comp-title { font: 600 0.6rem/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.55rem; }
-  .comp-bar { display: flex; height: 1.9rem; border: 1px solid var(--rule-strong); border-radius: 5px; overflow: hidden; background: var(--paper); }
-  .comp-seg { min-width: 0; transition: flex-grow 0.7s cubic-bezier(0.2, 0.7, 0.2, 1); position: relative; }
+  .comp { border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); padding: 0.8rem 0.95rem 0.9rem; box-shadow: var(--shadow-card); }
+  .comp-title { font: 600 0.66rem/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-secondary); margin-bottom: 0.6rem; }
+  .comp-bar { display: flex; gap: 2px; height: 1.4rem; border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; background: var(--color-surface); padding: 2px; }
+  .comp-seg { min-width: 0; border-radius: 4px; transition: flex-grow 0.7s cubic-bezier(0.2, 0.7, 0.2, 1); position: relative; }
   .comp-seg.keep {
-    background-color: var(--paper);
-    background-image: repeating-linear-gradient(45deg, transparent 0 3px, rgba(29, 26, 21, 0.13) 3px 4px);
+    background-color: #f1f1ef;
+    background-image: repeating-linear-gradient(45deg, transparent 0 3px, rgba(0, 0, 0, 0.05) 3px 4px);
   }
-  .comp-seg.trim { background: var(--amber-soft); box-shadow: inset 0 0 0 1px rgba(138, 100, 16, 0.28); }
+  .comp-seg.trim { background: var(--color-warn-soft); box-shadow: inset 0 0 0 1px rgba(217, 119, 6, 0.35); }
   .comp-seg.drop {
-    background-color: var(--red-soft);
-    background-image: repeating-linear-gradient(45deg, transparent 0 3px, rgba(168, 27, 27, 0.22) 3px 4px);
+    background-color: var(--color-fail-soft);
+    background-image: repeating-linear-gradient(45deg, transparent 0 3px, rgba(220, 38, 38, 0.22) 3px 4px);
+    box-shadow: inset 0 0 0 1px var(--color-fail-border);
   }
-  .comp-seg.add { background: var(--green-soft); box-shadow: inset 0 0 0 1px rgba(45, 106, 64, 0.28); }
-  .comp-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; margin-top: 0.55rem; font: 0.72rem/1.4 var(--mono); color: var(--muted); }
-  .comp-legend b { color: var(--ink); font-weight: 600; }
+  .comp-seg.add { background: var(--color-success-soft); box-shadow: inset 0 0 0 1px var(--color-success-border); }
+  .comp-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; margin-top: 0.6rem; font: 0.72rem/1.4 var(--font-mono); color: var(--color-secondary); }
+  .comp-legend b { color: var(--color-text); font-weight: 600; }
   .comp-legend i { display: inline-block; width: 0.62rem; height: 0.62rem; border-radius: 2px; margin-right: 0.35rem; vertical-align: -1px; }
-  .comp-legend .k-keep i { background-image: repeating-linear-gradient(45deg, transparent 0 2px, rgba(29,26,21,0.28) 2px 3px); border: 1px solid var(--rule-strong); }
-  .comp-legend .k-trim i { background: var(--amber-soft); border: 1px solid rgba(138,100,16,0.35); }
-  .comp-legend .k-drop i { background-image: repeating-linear-gradient(45deg, transparent 0 2px, rgba(168,27,27,0.3) 2px 3px); border: 1px solid rgba(168,27,27,0.3); }
-  .comp-legend .k-add i { background: var(--green-soft); border: 1px solid rgba(45,106,64,0.35); }
+  .comp-legend .k-keep i { background-image: repeating-linear-gradient(45deg, transparent 0 2px, rgba(0, 0, 0, 0.12) 2px 3px); background-color: #f1f1ef; border: 1px solid var(--color-border); }
+  .comp-legend .k-trim i { background: var(--color-warn-soft); border: 1px solid rgba(217, 119, 6, 0.4); }
+  .comp-legend .k-drop i { background-image: repeating-linear-gradient(45deg, transparent 0 2px, rgba(220, 38, 38, 0.3) 2px 3px); background-color: var(--color-fail-soft); border: 1px solid var(--color-fail-border); }
+  .comp-legend .k-add i { background: var(--color-success-soft); border: 1px solid rgba(5, 150, 105, 0.35); }
 
-  /* ledger tables */
+  /* ledger tables — the template's table rows */
   .lrow {
     display: grid; gap: 0.55rem; align-items: center;
-    padding: 0.4rem 0.85rem; border-top: 1px solid var(--rule);
+    padding: 0.5rem 0.9rem; border-top: 1px solid var(--color-row);
     animation: ledger-in 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
   }
   .lrow:first-child { border-top: 0; }
   .lrow.head {
-    background: var(--paper); border-top: 0;
-    font: 600 0.58rem/1 var(--mono); letter-spacing: 0.13em; text-transform: uppercase; color: var(--faint);
+    background: var(--color-head); border-top: 0;
+    font: 600 0.62rem/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-secondary);
     animation: none;
   }
   @keyframes ledger-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   .lrow .name { font-size: 0.84rem; min-width: 0; }
-  .lrow .name .sub { display: block; font: 0.68rem/1.35 var(--mono); color: var(--faint); margin-top: 0.1rem; }
-  .lrow .num, .lrow .bytes { font: 0.74rem/1.3 var(--mono); text-align: right; white-space: nowrap; }
-  .lrow .num { color: var(--ink); }
-  .lrow .bytes { color: var(--muted); }
-  .lrow .bar { height: 0.42rem; border-radius: 999px; background: var(--paper); box-shadow: inset 0 0 0 1px var(--rule); overflow: hidden; }
-  .lrow .bar i { display: block; height: 100%; border-radius: 999px; background: var(--red); transform-origin: left; animation: bar-grow 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .lrow .name .sub { display: block; font: 0.68rem/1.35 var(--font-mono); color: var(--color-faint); margin-top: 0.1rem; }
+  .lrow .num, .lrow .bytes { font: 0.74rem/1.3 var(--font-mono); text-align: right; white-space: nowrap; }
+  .lrow .num { color: var(--color-text); }
+  .lrow .bytes { color: var(--color-secondary); }
+  .lrow .bar { height: 0.42rem; border-radius: 999px; background: var(--color-head); box-shadow: inset 0 0 0 1px var(--color-border); overflow: hidden; }
+  .lrow .bar i { display: block; height: 100%; border-radius: 999px; background: var(--color-accent); transform-origin: left; animation: bar-grow 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
   @keyframes bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-  .lrow.total { background: var(--paper); font-weight: 600; }
-  .lrow.total .name { font-size: 0.78rem; color: var(--muted); }
-  .lrow.total .num, .lrow.total .bytes { color: var(--ink); }
   .lrow.click { cursor: pointer; }
-  .lrow.click:hover { background: var(--paper); }
-  .lrow .st { font: 600 0.62rem/1 var(--mono); width: 1.15rem; height: 1.15rem; display: inline-grid; place-content: center; border-radius: 4px; color: var(--muted); background: #efe9db; }
-  .lrow .st.st-M { color: var(--amber); background: var(--amber-soft); }
-  .lrow .st.st-D { color: var(--red); background: var(--red-soft); }
-  .lrow .st.st-A { color: var(--green); background: var(--green-soft); }
-  .ledger-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.9rem; align-items: start; }
+  .lrow.click:hover { background: var(--color-head); }
+  .lrow .st { width: 1.15rem; height: 1.15rem; }
+  .ledger-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.1rem; align-items: start; }
   @media (max-width: 68rem) { .ledger-cols { grid-template-columns: 1fr; } }
-  .ledger-box { border: 1px solid var(--rule); border-radius: 10px; background: var(--card); overflow: hidden; }
+  .ledger-box { border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); overflow: hidden; box-shadow: var(--shadow-card); }
   .ledger-box > .box-title {
-    display: flex; align-items: baseline; gap: 0.5rem; padding: 0.5rem 0.85rem;
-    border-bottom: 1px solid var(--rule); background: var(--paper);
-    font: 600 0.6rem/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+    display: flex; align-items: baseline; gap: 0.5rem; padding: 0.6rem 0.9rem;
+    border-bottom: 2px solid var(--color-border); background: var(--color-head);
+    font: 600 0.66rem/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-secondary);
   }
-  .ledger-box > .box-title .count { margin-left: auto; color: var(--faint); letter-spacing: 0.06em; }
-  .ledger-empty { padding: 1.1rem 0.85rem; color: var(--muted); font-style: italic; font-size: 0.84rem; }
+  .ledger-box > .box-title .count { margin-left: auto; color: var(--color-faint); letter-spacing: 0; font-family: var(--font-mono); font-size: 0.62rem; text-transform: none; }
+  .ledger-empty { padding: 1.1rem 0.9rem; color: var(--color-secondary); font-size: 0.84rem; }
 
-  /* summary strip: stat blocks like a table's abstract line */
+  /* summary strip: the template's stat numbers, one line */
   .sumstrip { display: flex; gap: 1.6rem; flex-wrap: wrap; align-items: baseline; padding: 0.2rem 0.1rem 0.85rem; }
-  .stat .n { font: 700 1.45rem/1 var(--serif); }
-  .stat .l { font: 500 0.66rem/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-left: 0.35rem; }
-  .stat .n.red { color: var(--red); }
-  .stat .n.amber { color: var(--amber); }
-  .stat .n.green { color: var(--green); }
-  .sum-note { color: var(--muted); font-size: 0.82rem; font-style: italic; margin-left: auto; }
+  .stat .n { font-family: var(--font-serif); font-size: 1.5rem; font-weight: 700; line-height: 1; }
+  .stat .l { font: 600 0.6rem/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-secondary); margin-left: 0.35rem; }
+  .stat .n.red { color: var(--color-fail); }
+  .stat .n.amber { color: var(--color-warn); }
+  .stat .n.green { color: var(--color-success); }
 
-  /* changes tree (VS Code style, paper edition) */
-  .tree { border: 1px solid var(--rule); border-radius: 10px; background: var(--card); overflow: hidden; }
+  /* ════════════════════════════════════════════════════════════
+     CHANGES TREE (VS Code style, template edition)
+     ════════════════════════════════════════════════════════════ */
+  .tree { border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); overflow: hidden; }
   .tree-dirname {
     display: flex; align-items: center; gap: 0.4rem; width: 100%;
-    background: none; border: 0; border-radius: 0; padding: 0.3rem 0.7rem;
-    font: 500 0.72rem/1 var(--mono); color: var(--muted); letter-spacing: 0.04em;
-    text-transform: none; box-shadow: none;
+    background: none; border: 0; border-radius: 0; padding: 0.38rem 0.75rem; box-shadow: none;
+    font: 600 0.72rem/1 var(--font-sans); color: var(--color-secondary); letter-spacing: 0.02em;
+    text-transform: none;
   }
-  .tree-dirname:hover:not(:disabled) { background: var(--paper); color: var(--ink); }
-  .tree-dirname .tw { display: inline-block; transition: transform 0.15s; font-size: 0.6rem; }
+  .tree-dirname:hover:not(:disabled) { background: var(--color-head); color: var(--color-text); border: 0; box-shadow: none; transform: none; }
+  .tree-dirname .tw { display: inline-block; transition: transform 0.15s; font-size: 0.6rem; color: var(--color-faint); }
   .tree-dirname.closed .tw { transform: rotate(-90deg); }
   .tree-files { padding-bottom: 0.15rem; }
   .tree-files.closed { display: none; }
   .tree-file {
     display: flex; align-items: center; gap: 0.55rem; width: 100%;
-    background: none; border: 0; border-radius: 0; padding: 0.26rem 0.7rem 0.26rem 1.6rem;
-    font: 0.78rem/1.3 var(--mono); color: var(--ink); text-align: left; box-shadow: none;
+    background: none; border: 0; border-radius: 0; padding: 0.3rem 0.75rem 0.3rem 1.7rem;
+    font: 0.78rem/1.3 var(--font-mono); color: var(--color-text); text-align: left; box-shadow: none;
     text-transform: none; letter-spacing: 0;
   }
-  .tree-file:hover:not(:disabled) { background: var(--paper); }
-  .tree-file.sel { background: var(--red-soft); box-shadow: inset 2px 0 0 var(--red); }
+  .tree-file:hover:not(:disabled) { background: var(--color-head); border: 0; box-shadow: none; transform: none; color: var(--color-text); }
+  .tree-file.sel { background: var(--color-accent-soft); box-shadow: inset 2px 0 0 var(--color-accent); }
   .tree-file .tpath { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tree-file .tdelta { margin-left: auto; color: var(--faint); font-size: 0.7rem; flex: none; }
-  .st {
-    font: 600 0.68rem/1 var(--mono); flex: none; width: 1.25rem; height: 1.25rem;
-    display: inline-grid; place-content: center; border-radius: 4px;
-    color: var(--muted); background: #efe9db;
+  /* an image that resize_images actually downscaled — hover for the pixels */
+  .tree-file .tresize {
+    flex: none; font: 600 0.56rem/1 var(--font-sans); letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--color-accent-dark); background: var(--color-accent-light);
+    border-radius: 999px; padding: 0.2rem 0.42rem;
   }
-  .st.st-M { color: var(--amber); background: var(--amber-soft); }
-  .st.st-D { color: var(--red); background: var(--red-soft); }
-  .st.st-A { color: var(--green); background: var(--green-soft); }
-  .st.st-U { color: var(--faint); background: #efe9db; }
-  details.tree-unchanged { padding: 0.3rem 0.7rem; border-top: 1px dashed var(--rule-strong); }
+  .tree-file .tdelta { margin-left: auto; color: var(--color-faint); font-size: 0.7rem; flex: none; }
+  .st {
+    font: 600 0.68rem/1 var(--font-mono); flex: none; width: 1.25rem; height: 1.25rem;
+    display: inline-grid; place-content: center; border-radius: 4px;
+    color: var(--color-secondary); background: #f5f5f5;
+  }
+  .st.st-M { color: var(--color-warn-ink); background: var(--color-warn-soft); }
+  .st.st-D { color: var(--color-fail); background: var(--color-fail-soft); }
+  .st.st-A { color: var(--color-success); background: var(--color-success-soft); }
+  .st.st-U { color: var(--color-faint); background: #f5f5f5; }
+  /* renamed (arXiv space→underscore pass): a moved file, so a neutral chip */
+  .st.st-R { color: var(--color-secondary); background: #f0f0f0; box-shadow: inset 0 0 0 1px var(--color-border); }
+  details.tree-unchanged { padding: 0.35rem 0.75rem; border-top: 1px solid var(--color-border); }
   details.tree-unchanged summary { margin: 0; }
-  .tree-unchanged .tree-file { padding-left: 1.6rem; }
-  details.tree-unchanged .tree-file:hover { background: var(--paper); }
+  .tree-unchanged .tree-file { padding-left: 1.7rem; }
+  details.tree-unchanged .tree-file:hover { background: var(--color-head); }
 
   /* artifact row (tar archive) */
   .artifact {
-    margin-top: 0.8rem; border: 1px dashed var(--rule-strong); border-radius: 10px;
-    background: var(--card); padding: 0.55rem 0.8rem; font-size: 0.84rem;
+    margin-top: 0.8rem; border: 1px dashed var(--color-border); border-radius: var(--radius);
+    background: var(--color-surface); padding: 0.6rem 0.85rem; font-size: 0.84rem;
     display: flex; gap: 0.7rem; align-items: baseline; flex-wrap: wrap;
   }
   .artifact .st.st-A { transform: translateY(2px); }
-  .artifact .afiles { color: var(--muted); font: 0.72rem/1.6 var(--mono); flex-basis: 100%; }
 
-  /* --- the diff viewer (VS Code style) ------------------------------------ */
-  .diff { border: 1px solid var(--rule-strong); border-radius: 10px; background: var(--card); overflow: hidden; margin-top: 0.9rem; }
+  /* ════════════════════════════════════════════════════════════
+     THE DIFF VIEWER (VS Code style, template edition)
+     ════════════════════════════════════════════════════════════ */
+  .diff { border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); overflow: hidden; margin-top: 0.9rem; box-shadow: var(--shadow-card); }
   .diff-head {
     display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
-    padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--rule); background: #f8f5ee;
+    padding: 0.55rem 0.85rem; border-bottom: 1px solid var(--color-border); background: var(--color-head);
   }
-  .diff-head .dpath { font: 500 0.8rem/1.3 var(--mono); overflow-wrap: anywhere; }
-  .diff-head .dstat { font: 0.7rem/1.3 var(--mono); color: var(--muted); }
-  .diff-head .plus { color: var(--green); font-weight: 600; }
-  .diff-head .minus { color: var(--red); font-weight: 600; }
+  .diff-head .dpath { font: 500 0.8rem/1.3 var(--font-mono); overflow-wrap: anywhere; }
+  .diff-head .dstat { font: 0.7rem/1.3 var(--font-mono); color: var(--color-secondary); }
+  .diff-head .plus { color: var(--color-success); font-weight: 600; }
+  .diff-head .minus { color: var(--color-fail); font-weight: 600; }
   .diff-head .spacer { flex: 1; }
-  .segs { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 6px; overflow: hidden; }
-  .segs button { border: 0; border-radius: 0; padding: 0.3rem 0.6rem; font: 600 0.66rem/1 var(--mono); letter-spacing: 0.08em; }
-  .segs button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
-  .segs button[aria-pressed="false"] { background: var(--card); color: var(--muted); }
-  .segs button:hover:not([aria-pressed="true"]) { background: var(--paper); color: var(--ink); }
-  .dget { font: 500 0.7rem/1 var(--mono); letter-spacing: 0.06em; text-decoration: none; border-bottom: 1px dotted var(--red); }
-  .diff-note { padding: 1.6rem 1rem; text-align: center; font-style: italic; color: var(--muted); }
+  .segs { display: inline-flex; border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; background: var(--color-surface); }
+  .segs button { border: 0; border-radius: 0; padding: 0.32rem 0.65rem; font: 600 0.68rem/1 var(--font-sans); letter-spacing: 0.02em; box-shadow: none; }
+  .segs button + button { border-left: 1px solid var(--color-border); }
+  .segs button[aria-pressed="true"] { background: var(--color-accent); color: #fff; }
+  .segs button[aria-pressed="true"]:hover { border-color: transparent; color: #fff; box-shadow: none; transform: none; }
+  .segs button[aria-pressed="false"] { background: var(--color-surface); color: var(--color-secondary); }
+  .segs button:hover:not([aria-pressed="true"]) { background: var(--color-head); color: var(--color-text); border-color: var(--color-border); box-shadow: none; transform: none; }
+  .segs button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+  .dget { font: 500 0.72rem/1 var(--font-sans); letter-spacing: 0.02em; text-decoration: none; }
+  .dget:hover { text-decoration: underline; }
+  .diff-note { padding: 1.6rem 1rem; text-align: center; color: var(--color-secondary); }
 
-  .diff-body { font: 0.74rem/1.65 var(--mono); overflow-x: auto; }
-  .drow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-top: 1px solid #f1ecdf; }
+  .diff-body { font: 0.74rem/1.65 var(--font-mono); }
+  /* Code cells wrap: each split half is a viewport-width track, so a `pre`
+     line would simply paint over its neighbour (the tracks never grow and
+     no scrollbar can untangle that). overflow-wrap keeps even tab-free
+     marathon lines — minified .bst, long bbl — inside their column. */
+  .dcell code, .urow code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .drow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-top: 1px solid var(--color-row); }
   .drow:first-child { border-top: 0; }
-  .urow { display: grid; grid-template-columns: 3rem 3rem minmax(0, 1fr); border-top: 1px solid #f1ecdf; }
+  .urow { display: grid; grid-template-columns: 3rem 3rem minmax(0, 1fr); border-top: 1px solid var(--color-row); }
   .urow:first-child { border-top: 0; }
   .dcell { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr); min-width: 0; }
-  .dcell.left { border-right: 1px solid var(--rule); }
-  .dcell code { white-space: pre; padding: 0 0.7rem; min-width: 0; }
+  .dcell.left { border-right: 1px solid var(--color-row); }
+  .dcell code { padding: 0 0.7rem; min-width: 0; }
   .ln {
-    text-align: right; color: var(--faint); padding: 0 0.5rem 0 0.2rem; user-select: none;
-    border-right: 1px solid var(--rule); background: #f4f1e8; font-size: 0.66rem; line-height: inherit;
+    text-align: right; color: #b0b0b0; padding: 0 0.5rem 0 0.2rem; user-select: none;
+    border-right: 1px solid var(--color-row); background: #fafafa; font-size: 0.66rem; line-height: inherit;
     white-space: pre;
   }
   .ln .gm { font-style: normal; margin-right: 0.35rem; font-weight: 600; visibility: hidden; }
-  .drow.has-del .dcell.left .ln .gm, .urow.has-del .ln.old .gm { visibility: visible; color: var(--red); }
-  .drow.has-ins .dcell.right .ln .gm, .urow.has-ins .ln.new .gm { visibility: visible; color: var(--green); }
-  .drow.has-del .dcell.left, .urow.has-del { background: var(--red-soft); }
-  .drow.has-ins .dcell.right, .urow.has-ins { background: var(--green-soft); }
-  .drow.has-del .dcell.left .ln, .urow.has-del .ln.old { background: #f0d9d5; color: #9a5a52; }
-  .drow.has-ins .dcell.right .ln, .urow.has-ins .ln.new { background: #d5e6d5; color: #5a7a5e; }
-  .drow.has-del .dcell.left { box-shadow: inset 2px 0 0 #d9b3ad; }
-  .drow.has-ins .dcell.right { box-shadow: inset 2px 0 0 #b3cfb3; }
-  .dcell.filler { background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(29,26,21,0.045) 5px 10px); }
+  .drow.has-del .dcell.left .ln .gm, .urow.has-del .ln.old .gm { visibility: visible; color: var(--color-fail); }
+  .drow.has-ins .dcell.right .ln .gm, .urow.has-ins .ln.new .gm { visibility: visible; color: var(--color-success); }
+  .drow.has-del .dcell.left, .urow.has-del { background: var(--color-fail-soft); }
+  .drow.has-ins .dcell.right, .urow.has-ins { background: var(--color-success-soft); }
+  .drow.has-del .dcell.left .ln, .urow.has-del .ln.old { background: var(--color-fail-border); color: #b91c1c; }
+  .drow.has-ins .dcell.right .ln, .urow.has-ins .ln.new { background: var(--color-success-border); color: #15803d; }
+  .drow.has-del .dcell.left { box-shadow: inset 2px 0 0 var(--color-fail-border); }
+  .drow.has-ins .dcell.right { box-shadow: inset 2px 0 0 var(--color-success-border); }
+  .dcell.filler { background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(0, 0, 0, 0.035) 5px 10px); }
   .urow .ln.old { border-right: 0; }
-  .urow .ln.new { border-right: 1px solid var(--rule); }
-  mark.wdel { background: #f0c4bd; color: #58120c; border-radius: 2px; }
-  mark.wins { background: #bfe3c2; color: #0f3d1d; border-radius: 2px; }
-  .t-c { color: #9c4a3c; font-style: italic; }
-  .t-cmd { color: #176457; }
+  .urow .ln.new { border-right: 1px solid var(--color-row); }
+  mark.wdel { background: var(--color-fail-border); color: #7f1d1d; border-radius: 2px; }
+  mark.wins { background: var(--color-success-border); color: #14532d; border-radius: 2px; }
+  .t-c { color: #9ca3af; font-style: italic; }
+  .t-cmd { color: var(--color-accent-dark); }
 
   .dbar {
     display: block; width: 100%; border: 0; border-radius: 0;
-    padding: 0.28rem; text-align: center; background: #f4f1e8; color: var(--faint);
-    font: 500 0.68rem/1.5 var(--mono); letter-spacing: 0.05em; box-shadow: none;
-    border-top: 1px dashed var(--rule-strong); border-bottom: 1px dashed var(--rule-strong);
+    padding: 0.32rem; text-align: center; background: var(--color-head); color: var(--color-faint);
+    font: 500 0.68rem/1.5 var(--font-mono); letter-spacing: 0.02em; box-shadow: none;
+    border-top: 1px solid var(--color-row); border-bottom: 1px solid var(--color-row);
   }
-  .dbar:hover:not(:disabled) { background: var(--paper); color: var(--muted); }
+  .dbar:hover:not(:disabled) { background: var(--color-bg); color: var(--color-secondary); border: 0; border-top: 1px solid var(--color-row); border-bottom: 1px solid var(--color-row); box-shadow: none; transform: none; }
+  .dbar:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 
   details.tree-files:not([open]) summary .tw { transform: rotate(-90deg); }
 
-  iframe#pdfPane { width: 100%; height: 42rem; border: 1px solid var(--rule-strong); border-radius: 10px; background: #fff; }
+  iframe#pdfPane { width: 100%; height: 42rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: #fff; }
 
-  /* dev flow results */
-  ul#results { list-style: none; margin: 0.7rem 0 0; padding: 0; }
-  ul#results > li { border-top: 1px solid var(--rule); padding: 0.4rem 0; font-size: 0.8rem; font-family: var(--mono); display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
-  ul#results > li:first-child { border-top: 0; }
-  .chip { display: inline-block; border-radius: 999px; padding: 0.06rem 0.5rem; font-size: 0.66rem; font-weight: 600; font-family: var(--mono); flex: none; }
-  .chip.cleaned { background: var(--green-soft); color: var(--green); }
-  .chip.kept, .chip.output { background: #ece7d8; color: var(--muted); }
-  .chip.dropped, .chip.error { background: var(--red-soft); color: var(--red); }
-
-  /* --- processing log: terminal dock -------------------------------------- */
+  /* ════════════════════════════════════════════════════════════
+     PROCESSING LOG — dark dock, the template's modal toolbar ink
+     ════════════════════════════════════════════════════════════ */
   .logdock {
     position: sticky; bottom: 0.9rem; z-index: 30;
-    border-radius: 10px; border: 1px solid #14110d;
-    background: var(--term); color: var(--term-ink); padding: 0.55rem 0.8rem 0.65rem;
-    box-shadow: 0 -6px 30px -12px rgba(29,26,21,0.5), 0 10px 30px -18px rgba(29,26,21,0.55);
+    border-radius: var(--radius); border: 1px solid var(--term);
+    background: var(--term); color: var(--term-ink); padding: 0.6rem 0.85rem 0.7rem;
+    box-shadow: 0 -8px 30px -12px rgba(0, 0, 0, 0.35), 0 12px 30px -18px rgba(0, 0, 0, 0.4);
     margin-top: 1.4rem;
   }
   .logdock-head { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.45rem; }
   .logdock-head .sec-label { margin: 0; color: var(--term-dim); }
-  .logdock-head .sec-label .sec-num { color: #c86a5c; }
-  .logdock-head button { margin-left: auto; padding: 0.28rem 0.6rem; font-size: 0.62rem; background: transparent; border-color: #4a443a; color: var(--term-dim); }
-  .logdock-head button:hover:not(:disabled) { background: #322d25; color: var(--term-ink); }
+  .logdock-head .sec-label .sec-num { color: #93c5fd; }
+  /* collapsed by default: the head line plus the newest log line — the pane
+     is clamped to exactly one line (overflow hidden) and logLine's
+     follow-the-bottom rule keeps that one line current */
+  .logdock.collapsed #logPane { min-height: 0; max-height: 1.19rem; overflow: hidden; }
+  .logdock.collapsed .logdock-head { margin-bottom: 0.3rem; }
+  .logdock-head .panel-toggle {
+    margin-left: 0;  /* the head's own clear button owns the auto margin */
+    background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); color: #d4d4d4;
+  }
+  .logdock-head .panel-toggle:hover { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.4); color: #fff; }
+  .logdock-head button {
+    margin-left: auto; padding: 0.3rem 0.7rem; font-size: 0.66rem;
+    background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); color: #d4d4d4;
+  }
+  .logdock-head button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.4); color: #fff; box-shadow: none; }
   #logPane {
     margin: 0; min-height: 3.4rem; max-height: 12.5rem; overflow: auto;
-    font: 0.68rem/1.7 var(--mono); white-space: pre-wrap;
+    font: 0.68rem/1.75 var(--font-mono); white-space: pre-wrap;
   }
   .logline.verbose { color: var(--term-dim); }
   .logline.info { color: var(--term-ink); }
-  .logline.ok { color: #8fc49a; }
-  .logline.error { color: #e08a80; }
+  .logline.ok { color: #4ade80; }
+  .logline.error { color: #f87171; }
 
-  /* entrance choreography */
+  /* ════════════════════════════════════════════════════════════
+     ENTRANCE CHOREOGRAPHY — the template's fade-in, staggered
+     ════════════════════════════════════════════════════════════ */
   @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
-  .rail .panel:nth-child(1) { animation: rise 0.45s cubic-bezier(0.2,0.7,0.3,1) 0.05s backwards; }
-  .rail .panel:nth-child(2) { animation: rise 0.45s cubic-bezier(0.2,0.7,0.3,1) 0.12s backwards; }
-  .rail .panel:nth-child(3) { animation: rise 0.45s cubic-bezier(0.2,0.7,0.3,1) 0.19s backwards; }
-  .rail .panel:nth-child(n+4) { animation: rise 0.45s cubic-bezier(0.2,0.7,0.3,1) 0.26s backwards; }
-  .masthead, .mast-rules { animation: rise 0.5s cubic-bezier(0.2,0.7,0.3,1) backwards; }
-  .workspace { animation: rise 0.55s cubic-bezier(0.2,0.7,0.3,1) 0.2s backwards; }
+  header.hero > * { animation: rise 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+  header.hero > :nth-child(2) { animation-delay: 0.07s; }
+  header.hero > :nth-child(3) { animation-delay: 0.14s; }
+  .rail .panel:nth-child(1) { animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) 0.15s backwards; }
+  .rail .panel:nth-child(2) { animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) 0.22s backwards; }
+  .workspace { animation: rise 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) 0.2s backwards; }
+
+  /* ════════════════════════════════════════════════════════════
+     RESPONSIVE
+     ════════════════════════════════════════════════════════════ */
+  @media (max-width: 640px) {
+    header.hero { flex-direction: column; align-items: flex-start; padding: 14px 16px; }
+    header.hero .hero-right { align-items: flex-start; margin-left: 0; }
+    .btn-row, .chip-row { justify-content: flex-start; }
+    .page { padding: 1rem 0.75rem 1.75rem; }
+    .btn-row { gap: 8px; }
+    .btn { padding: 8px 14px; font-size: 13px; }
+    .figrow { grid-template-columns: repeat(2, 1fr); gap: 0.7rem; }
+    .fig { padding: 1rem 0.6rem; }
+    .fig .n { font-size: 1.6rem; }
+    .tabs { gap: 1rem; }
+    .tab { font-size: 0.78rem; }
+  }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-  <header class="masthead">
-    <div>
-      <div class="brand">alc-ng<span class="dot">.</span></div>
-      <div class="mast-sub">the arXiv submission cleaner, running in your browser — <code>wasm32-wasip1</code> cdylib + SwiftLaTeX pdfTeX / XeTeX.</div>
+  <header class="hero">
+    <div class="hero-left">
+      <div class="hero-badge">runs in your browser · no uploads</div>
+      <h1>alc-ng<span class="highlight">.</span></h1>
     </div>
-    <div class="mast-right">
-      <span class="chipstat" id="status">loading module …</span>
-      <span class="chipstat fmeta" id="engineStatus">engine not loaded</span>
+    <div class="hero-right">
+      <div class="btn-row">
+        <a class="btn" href="https://github.com/COMSYS/ALC-NG" target="_blank" rel="noopener">
+          <span class="icon"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></span>
+          <span>GitHub</span>
+        </a>
+        <a class="btn" href="https://arxiv.comsys.rwth-aachen.de/" target="_blank" rel="noopener">
+          <span class="icon"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3.5C7 2.6 5.6 2 4 2H2v11h2c1.6 0 3 .6 4 1.5 1-.9 2.4-1.5 4-1.5h2V2h-2c-1.6 0-3 .6-4 1.5Z"/><path d="M8 3.5V15"/></svg></span>
+          <span>Paper page</span>
+        </a>
+      </div>
+      <div class="chip-row">
+        <span class="chipstat" id="status">loading module …</span>
+        <span class="chipstat fmeta" id="engineStatus">engine not loaded</span>
+      </div>
     </div>
   </header>
-  <div class="mast-rules"></div>
+
+  <main class="page">
 
   <div class="cols">
     <aside class="rail">
-      <section class="panel">
-        <div class="sec-label"><span class="sec-num">01</span> submission</div>
-        <!-- React island: the controls below are Ant Design components, see
-             “UI island” near the end of this file. -->
-        <div id="controls" class="controls"></div>
+      <section class="panel" id="subPanel">
+        <div class="sec-label">
+          <span class="sec-num">01</span> submission
+          <button type="button" class="panel-toggle" id="subToggle" aria-expanded="true"
+                  aria-controls="subBody" title="Collapse this panel"></button>
+        </div>
+        <div class="panel-body" id="subBody">
+          <!-- React island: the controls below are Ant Design components, see
+               “UI island” near the end of this file. -->
+          <div id="controls" class="controls"></div>
+        </div>
+      </section>
+      <!-- The changes explorer lives here while the workspace shows only the
+           diff of the selected file; it appears with the first finished run. -->
+      <section class="panel" id="changesPanel" hidden>
+        <div class="sec-label"><span class="sec-num">02</span> changes</div>
+        <div class="sumstrip" id="reviewSummary"></div>
+        <div class="tree" id="treeList"></div>
+        <div id="artifactRow"></div>
       </section>
     </aside>
 
@@ -500,16 +786,18 @@
       </div>
 
       <div id="reviewPane">
+        <div id="runSteps" hidden></div>
         <div class="empty-note" id="reviewEmpty">
           <span class="big">§</span>
           Load a submission folder and run alc-ng. The cleaned tree is compared against
-          the original file by file — click any entry for a line-level diff.
+          the original file by file — the changes list in the sidebar opens any
+          entry here as a line-level diff.
         </div>
+        <!-- the run's success screen: replaces the empty note once a cleaning
+             finishes, and gives way to the diff when a file is picked -->
+        <div id="reviewDone" hidden></div>
         <div id="reviewContent" hidden>
-          <div class="sumstrip" id="reviewSummary"></div>
-          <div class="tree" id="treeList"></div>
           <div id="diffPane"></div>
-          <div id="artifactRow"></div>
         </div>
       </div>
       <div id="pdfTab" hidden>
@@ -525,13 +813,16 @@
     </div>
   </div>
 
-  <footer class="logdock">
+  <footer class="logdock collapsed">
     <div class="logdock-head">
-      <div class="sec-label"><span class="sec-num">02</span> processing log</div>
+      <div class="sec-label"><span class="sec-num">03</span> processing log</div>
+      <button type="button" class="panel-toggle" id="logToggle" aria-expanded="false"
+              aria-controls="logPane" title="Expand this log"></button>
       <button id="clearLogBtn">Clear</button>
     </div>
     <pre id="logPane" aria-live="polite"></pre>
   </footer>
+  </main>
 
 <script>
 "use strict";
@@ -546,16 +837,21 @@
 // only needs to be unpacked under wasm-test/fixtures/ and named here.
 // `pick`/`blurb` are what the sample picker in the sidebar shows.
 //
-// fixtures/bubeck is arXiv-2303.12712v1 unpacked, with one repair: its
+// fixtures/bubeck is arXiv-2303.12712v5 unpacked, with one repair: its
 // contents/3_code.tex includes figures/DV3_plot_{1,2,3}.png, which on disk are
 // dv3_plot_{1,2,3}.png. macOS resolves that, the engine's case-sensitive FS
 // (like arXiv's Linux) does not, so the three references were lower-cased.
+// The v5 minted cache (minted-cache/, frozen via frozencache=true) covers all
+// 29 minted chunks of this version, so the engine compiles it without Python
+// or shell-escape; v1 shipped a stale cache (29 listings, ~71 chunks) and
+// cannot compile from the cache at all.
 const SAMPLES = [
   { label: "tests/provided_fls", pick: "provided_fls", blurb: "fixture with a recorded .fls", src: "/tests/provided_fls", files: ["main.tex", "used.tex", "unused.tex", "main.fls"] },
   { label: "wasm-test/sample-nested", pick: "sample-nested", blurb: "nested includes, mkdir handling", src: "/wasm-test/sample-nested", files: ["main.tex", "used.tex", "sub/used2.tex", "sub/extra.tex", "main.fls"] },
   { label: "arXiv-math0303011v1", pick: "arXiv math0303011", blurb: "real submission, no .fls", dir: "/wasm-test/fixtures/math0303011" },
   { label: "wasm-test/sample-xelatex", pick: "sample-xelatex", blurb: "fontspec and images, XeLaTeX", src: "/wasm-test/sample-xelatex", files: ["main.tex", "used.tex", "unused.tex", "figures/square.png", "figures/unused.png"] },
-  { label: "bubeck", pick: "bubeck", blurb: "Sparks of AGI, 167 files (arXiv 2303.12712v1)", dir: "/wasm-test/fixtures/bubeck" },
+  { label: "bubeck", pick: "bubeck", blurb: "Sparks of AGI, 118 files (arXiv 2303.12712v5)", dir: "/wasm-test/fixtures/bubeck" },
+  { label: "wasm-test/fixtures/two-mains", pick: "two-mains", blurb: "two main files — the main-file checklist", dir: "/wasm-test/fixtures/two-mains" },
 ];
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -577,11 +873,11 @@ const ctrl = {
   running: false,      // an alc-ng run is in flight
   sample: null,        // index into SAMPLES of the loaded sample
   sampleLoading: false,
-  mainFiles: [],       // Select options built by refreshMainFiles()
-  mainFile: null,      // the picked main file, relative to the folder
+  mainFiles: [],       // checkbox list options built by refreshMainFiles()
+  mainSel: [],         // the checked main files, relative to the folder
   flags: {
     keepBib: false, cleanClasses: false, noZzrm: false, skipWatermark: false,
-    resizeImages: false, tar: true, force: false, compare: false,
+    resizeImages: false, tar: true, force: false, compare: true,
     imSize: 512, diffColor: "#ff0000", logLevel: "info", engine: "auto",
   },
 };
@@ -655,6 +951,210 @@ function setFolderStatus(msg, cls) {
   const tone = cls === "ok" ? "success" : cls === "err" ? "error" : "info";
   setCtrl({ status: msg ? { text: msg, tone } : null });
 }
+
+// --- run progress: the pipeline as a proof sheet of steps -------------------
+//
+// While a run is in flight, the stages report here and the stepper shows them
+// in the review pane, in place of the diff that will follow. Every method is
+// a no-op outside a run, so deep helpers (compileLatexPasses, the format-dump
+// build, the compare loop) may call in unconditionally; detail updates only
+// land on the step that is currently running. A finished run fades the sheet
+// out; a failed one stays, marking the step where the pipeline stopped.
+const RUN_STEPS = [
+  ["locate", "main file"],
+  ["engine", "engine"],
+  ["stage", "stage folder"],
+  ["compile", "compile"],
+  ["recorder", "recorder file"],
+  ["cleaner", "clean pipeline"],
+  ["review", "build review"],
+  ["compare", "pixel compare"],
+];
+const fmtDur = (ms) => (ms < 950 ? `${Math.max(0, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`);
+
+const steps = {
+  active: false,
+  current: null,   // key of the running step
+  t0: 0,
+  timer: null,
+  rows: new Map(),
+  panel() { return $("runSteps").firstElementChild; },
+  row(key) { return this.rows.get(key); },
+
+  begin(label) {
+    this.reset();
+    this.active = true;
+    this.t0 = performance.now();
+    const host = $("runSteps");
+    host.hidden = false;
+    // The sheet takes the workspace's main column for the run's duration: the
+    // previous run's diff and success screen go away (not wiped — a folder
+    // re-stage resets everything, here we just clear the stage). The review
+    // tab is where the sheet lives, so a run always brings it into view.
+    showTab("review");
+    $("reviewEmpty").hidden = true;
+    $("reviewDone").hidden = true;
+    $("reviewContent").hidden = true;
+    host.innerHTML = `
+      <div class="runsteps" role="status" aria-live="polite">
+        <div class="rs-head">
+          <div class="sec-label"><span class="sec-num">▶</span> run in progress</div>
+          <div class="rs-src" title="${esc(label)}">${esc(label)}</div>
+          <div class="rs-clock"><span class="rs-nums">0.0</span><small>elapsed</small></div>
+        </div>
+        <div class="rs-meter"><i></i></div>
+        ${RUN_STEPS.map(([key, name], i) => `
+          <div class="rs-step pending" data-step="${key}" style="--i:${i}">
+            <span class="rs-mark"></span>
+            <div>
+              <div class="rs-line">
+                <span class="rs-num">${String(i + 1).padStart(2, "0")}</span>
+                <span class="rs-name">${name}</span>
+                <span class="rs-lead"></span>
+                <span class="rs-time"></span>
+              </div>
+              <div class="rs-sub"></div>
+            </div>
+          </div>`).join("")}
+      </div>`;
+    this.rows = new Map([...host.querySelectorAll(".rs-step")].map((el) => [el.dataset.step, el]));
+    $("reviewEmpty").hidden = true;
+    $("reviewContent").hidden = true;
+    $("changesPanel").hidden = true;  // the tree from a previous run steps aside
+    showTab("review");
+    this.timer = setInterval(() => this.tick(), 200);
+  },
+
+  // mark the running step done, start `key`, optionally with a detail line
+  start(key, text) {
+    if (!this.active) return;
+    const row = this.row(key);
+    if (!row) return;
+    if (this.current !== key) {
+      if (this.current) this.complete(this.current);
+      row.classList.remove("pending", "skipped");
+      row.classList.add("running");
+      row.dataset.t0 = String(performance.now());
+      this.current = key;
+    }
+    if (text !== undefined) this.detail(key, text);
+    this.meter();
+  },
+
+  // live text under the running step; ignored for every other step
+  detail(key, text) {
+    if (!this.active || this.current !== key) return;
+    this.row(key).querySelector(".rs-sub").textContent = text;
+  },
+
+  complete(key) {
+    const row = this.row(key);
+    if (!row || !row.classList.contains("running")) return;
+    row.classList.remove("running");
+    row.classList.add("done");
+    row.querySelector(".rs-time").textContent = fmtDur(performance.now() - Number(row.dataset.t0));
+    if (this.current === key) this.current = null;
+  },
+
+  done(key, text) {
+    if (!this.active) return;
+    if (this.current !== key) this.start(key);
+    if (text !== undefined) this.detail(key, text);
+    this.complete(key);
+    this.meter();
+  },
+
+  skip(key) {
+    if (!this.active) return;
+    if (this.current === key) this.complete(key);
+    const row = this.row(key);
+    if (!row) return;
+    row.classList.remove("pending", "running");
+    row.classList.add("skipped");
+    row.querySelector(".rs-time").textContent = "off";
+    this.meter();
+  },
+
+  // a finished run: everything resolved, then the sheet gives way to the diff
+  finish() {
+    if (!this.active) return;
+    this.active = false;
+    clearInterval(this.timer);
+    this.complete(this.current);
+    for (const [, row] of this.rows) {
+      if (row.classList.contains("pending")) {
+        row.classList.remove("pending");
+        row.classList.add("done");
+      }
+    }
+    this.meter();
+    const panel = this.panel();
+    // Hand the workspace over only once the sheet has completely given way —
+    // first the leave-fade (rs-gone), then the unmount — so the success
+    // screen never animates in underneath the dying progress view.
+    setTimeout(() => {
+      panel?.classList.add("rs-gone");
+      setTimeout(() => {
+        if (this.active) return;  // a re-run grabbed the sheet before the fade ended
+        $("runSteps").hidden = true;
+        const done = $("reviewDone");
+        if (done.firstElementChild && $("reviewContent").hidden) {
+          done.hidden = false;
+          showTab("review");
+        }
+      }, 500);
+    }, 450);
+  },
+
+  // a failed run: the sheet stays as a post-mortem of where it stopped
+  fail(text) {
+    if (!this.active) return;
+    this.active = false;
+    clearInterval(this.timer);
+    const panel = this.panel();
+    if (!panel) return;
+    if (this.current) {
+      const row = this.row(this.current);
+      row.classList.remove("running");
+      row.classList.add("failed");
+      row.querySelector(".rs-time").textContent = fmtDur(performance.now() - Number(row.dataset.t0));
+      this.current = null;
+    }
+    const note = document.createElement("div");
+    note.className = "rs-note";
+    note.innerHTML = `<b>!</b> ${esc(text)} <span class="rs-hint">— see the processing log below.</span>`;
+    panel.appendChild(note);
+    this.meter();
+  },
+
+  tick() {
+    const panel = this.panel();
+    if (!panel) return;
+    const now = performance.now();
+    panel.querySelector(".rs-nums").textContent = ((now - this.t0) / 1000).toFixed(1);
+    if (this.current) {
+      const row = this.row(this.current);
+      row.querySelector(".rs-time").textContent = fmtDur(now - Number(row.dataset.t0));
+    }
+  },
+
+  meter() {
+    const rows = [...this.rows.values()];
+    const resolved = rows.filter((r) => r.classList.contains("done") || r.classList.contains("skipped") || r.classList.contains("failed")).length;
+    const bar = this.panel()?.querySelector(".rs-meter i");
+    if (bar) bar.style.width = `${(resolved / Math.max(1, rows.length)) * 100}%`;
+  },
+
+  reset() {
+    this.active = false;
+    clearInterval(this.timer);
+    this.current = null;
+    this.rows = new Map();
+    const host = $("runSteps");
+    host.hidden = true;
+    host.textContent = "";
+  },
+};
 
 // --- module loading (snippet mode: main thread, stubbed WASI) ----------------
 
@@ -750,6 +1250,17 @@ function setEngineStatus(msg, cls) {
   const el = $("engineStatus");
   el.textContent = msg;
   el.className = `chipstat fmeta${cls ? ` ${cls}` : ""}`;
+}
+
+// A failed compile leaves this chip reading "compile failed — …" for a
+// document that is no longer loaded. A fresh folder selection re-truths it:
+// a compile failure says nothing about the engine worker, which is still
+// warm and ready; only an engine that is (re)loading or was never loaded
+// gets anything but the ready state here.
+function refreshEngineChip() {
+  if (texReady()) setEngineStatus(`${engineSpec().label} engine ready`, "ok");
+  else if (!texWorker) setEngineStatus("engine not loaded");
+  // else: mid-load — its own progress or error text still applies.
 }
 
 // Spawns the worker of `engine` ("pdftex" | "xetex"), replacing the current
@@ -896,6 +1407,19 @@ function showTab(name) {
   }
 }
 
+// --- the collapsible submission panel -----------------------------------------
+//
+// A run needs the controls only before it starts: once compile and clean have
+// succeeded, the panel folds away by itself and the rail shows the changes
+// tree (a failed run folds it back open — the status alert is in there). The
+// body merely goes hidden, so the React island survives every collapse.
+function setSubmissionOpen(open) {
+  $("subPanel").classList.toggle("collapsed", !open);
+  const toggle = $("subToggle");
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.title = open ? "Collapse this panel" : "Expand this panel";
+}
+
 // --- folder selection ---------------------------------------------------------
 
 // Builds the folder file map from a folder selection (or any list of File
@@ -916,29 +1440,23 @@ async function setFolder(fileList, label) {
   const sampleIndex = SAMPLES.findIndex((s) => s.label === label);
   setCtrl({ folder: { label, count: files.size }, sample: sampleIndex < 0 ? null : sampleIndex });
 
+  setSubmissionOpen(true);  // a fresh selection is handled with the controls open
   resetReview();
+  refreshEngineChip();  // stop blaming the new selection for the old folder's compile
   let totalKB = 0;
   for (const f of files.values()) totalKB += f.size;
-  logInfo(`folder "${label}": ${files.size} file(s), ${fmtKB(totalKB)} total, recorder file(s): ${flsFiles.length}`);
+  logInfo(`folder "${label}": ${files.size} file(s), ${fmtKB(totalKB)} total`);
   for (const rel of files.keys()) logv(`  ${rel} (${fmtKB(files.get(rel).size)})`);
 
   if (files.size === 0) {
     setFolderStatus("The selected folder is empty.", "err");
-    setCtrl({ mainFiles: [], mainFile: null });
+    setCtrl({ mainFiles: [], mainSel: [] });
     return;
   }
   if ((await refreshMainFiles()) === 0) return;  // the reason is already on the status line
-  if (flsFiles.length === 0) {
-    // Fresh arXiv sources have no recorder file — Run alc-ng compiles first
-    // and synthesizes one from the engine's file access log.
-    setFolderStatus(
-      `${files.size} file(s) in "${label}" (no .fls — "Run alc-ng" compiles first).`,
-      "ok",
-    );
-    return;
-  }
-
-  setFolderStatus(`${files.size} file(s); recorder file: ${flsFiles.join(", ")}.`, "ok");
+  // Run alc-ng always compiles first and derives the recorder from the
+  // engine's access log, so a submitted .fls is no longer worth a note.
+  setFolderStatus(`${files.size} file(s) in "${label}".`, "ok");
 }
 
 // Ant Design's Upload hands every file of the picked folder to beforeUpload
@@ -964,8 +1482,10 @@ function stageFolderFile(file) {
 // Drops the current selection, leaving the flags as they are.
 function clearFolder() {
   folder = null;
-  setCtrl({ folder: null, mainFiles: [], mainFile: null, status: IDLE_STATUS, sample: null });
+  setCtrl({ folder: null, mainFiles: [], mainSel: [], status: IDLE_STATUS, sample: null });
+  setSubmissionOpen(true);
   resetReview();
+  refreshEngineChip();
   logInfo("folder selection cleared");
 }
 
@@ -973,7 +1493,7 @@ function clearFolder() {
 // submissions carry spaces and other surprises in their names ("Section 2/").
 const encPath = (path) => path.split("/").map(encodeURIComponent).join("/");
 
-// Folders are listed by the dev server (serve.py's /tree/), so a fixture needs
+// Folders are listed by the dev server (its /tree/ endpoint), so a fixture needs
 // one line in SAMPLES rather than a transcription of its whole file tree.
 async function sampleListing(dir) {
   const response = await fetch(`/tree${encPath(dir)}`);
@@ -1056,13 +1576,13 @@ async function mainFileCandidates() {
   return found.sort((a, b) => rank(a) - rank(b));
 }
 
-// Fills the main-file picker with the candidates of the current folder and
+// Fills the main-file checklist with the candidates of the current folder and
 // preselects the best one. Returns how many there were.
 async function refreshMainFiles() {
   const candidates = await mainFileCandidates();
   setCtrl({
     mainFiles: candidates.map(({ rel, cls }) => ({ value: rel, label: `${rel} (${cls})` })),
-    mainFile: candidates[0]?.rel ?? null,
+    mainSel: candidates[0]?.rel ? [candidates[0].rel] : [],
   });
   if (candidates.length === 0) {
     setFolderStatus("No .tex file with a \\documentclass in this folder.", "err");
@@ -1075,11 +1595,12 @@ async function refreshMainFiles() {
   return candidates.length;
 }
 
-// The main file the user picked (see refreshMainFiles).
-async function findMainFile() {
-  const rel = ctrl.mainFile;
-  if (!rel) throw new Error("no .tex file with \\documentclass found");
-  return rel;
+// The mains the user checked — a single candidate runs unlisted, several are
+// checked off and all are cleaned around (native alc-ng's --main-files list).
+async function findMainFiles() {
+  const sel = (ctrl.mainSel ?? []).filter((rel) => folder?.files.has(rel));
+  if (sel.length === 0) throw new Error("no main file selected");
+  return sel;
 }
 
 // latexmk's rerun loop: SwiftLaTeX's compilelatex is a single TeX pass plus
@@ -1092,6 +1613,7 @@ async function compileLatexPasses(main, what) {
   const stem = main.replace(/\.[^./]*$/, "");
   let previous = await auxSnapshot(stem);
   for (let pass = 1; ; pass++) {
+    steps.detail("compile", `pass ${pass}/${MAX_PASSES} running …`);
     let result;
     try {
       result = await texCall({ cmd: "compilelatex" }, ["compile"]);
@@ -1141,6 +1663,30 @@ function setEngineMainFile(rel) {
 // the LaTeX format itself from the local TeX Live (`compileformat`, i.e.
 // `*pdflatex.ini` / `*xelatex.ini`) and we seed the result back into its
 // kpathsea hook under the name the engine looks up.
+//
+// Two caches, cheapest first: this worker's memory, IndexedDB (this browser),
+// then the dev server's `wasm-test/fmt-cache/`. The server copy is baked into
+// the image at build time (wasm-test/build-fmt.cjs) and served read-only — a
+// browser never writes there, and users are not trusted to. A dump is only
+// valid for the engine build that wrote it, so the URL carries the versioned
+// `fmtKey`; if the served dump fails to load, this session builds its own.
+let serverFmtBad = false;  // a cached copy failed to load — rebuild instead of reusing it
+
+const fmtServerUrl = (spec) =>
+  `/fmt/${encodeURIComponent(spec.fmtKey)}/${encodeURIComponent(spec.fmtName)}`;
+
+async function fetchServerFmt(spec) {
+  if (serverFmtBad) return null;
+  try {
+    const resp = await fetch(fmtServerUrl(spec));
+    if (!resp.ok) return null;
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    return bytes.length >= 1024 ? bytes : null;  // a real dump is megabytes
+  } catch {
+    return null;  // page opened without the dev server: build locally
+  }
+}
+
 async function provideFormatDump() {
   if (texWorker.fmtBytes !== undefined) { logv("format dump already seeded for this session"); return texWorker.fmtBytes; }
   const spec = engineSpec();
@@ -1150,11 +1696,27 @@ async function provideFormatDump() {
   if (stored) {
     texWorker.fmtBytes = stored;
     logInfo(`restored ${spec.label} format dump from IndexedDB (${fmtKB(stored.length)}) — skipping the build`);
+    steps.detail("stage", `format dump restored from IndexedDB (${fmtKB(stored.length)})`);
     await seedFormatDump(stored);
     return stored;
   }
 
+  // A browser that has never built one asks the server first — this is what
+  // saves the multi-minute INITEX build on a fresh profile.
+  steps.detail("stage", "checking the server's format-dump cache …");
+  const remote = await fetchServerFmt(spec);
+  if (remote) {
+    texWorker.fmtBytes = remote;
+    await saveFmt(spec.fmtKey, remote);
+    logOk(`restored ${spec.label} format dump from the server cache (${fmtKB(remote.length)}) — skipping the build`);
+    steps.detail("stage", `format dump from the server cache (${fmtKB(remote.length)})`);
+    await seedFormatDump(remote);
+    setEngineStatus(`${spec.label} engine ready`, "ok");
+    return remote;
+  }
+
   logInfo(`building the ${spec.label} LaTeX format dump with the engine (once, ~a few minutes — INITEX loads the full LaTeX2e kernel + hyphenation patterns)`);
+  steps.detail("stage", `building the ${spec.label} LaTeX format dump (once, a few minutes)`);
   setEngineStatus(`building ${spec.label} LaTeX format dump with the engine (once) …`);
   try {
     const result = await texCall({ cmd: "compileformat" }, ["compile"]);
@@ -1250,6 +1812,9 @@ async function loadFmt(key) {
 }
 
 async function dropFmt(key) {
+  // The dump on hand is unusable (a "format file" error), so distrust the
+  // server copy too: the rebuild below replaces both with a working dump.
+  serverFmtBad = true;
   try { await fmtStore("readwrite", (store) => store.delete(key)); } catch (err) {}
 }
 
@@ -1334,7 +1899,8 @@ async function logEngineTeXLog(main) {
 // file, compiles it with the SwiftLaTeX engine, shows the PDF, and drains
 // the engine's file access log split into submission-relative inputs and
 // outputs. Returns { failed } when the compile itself did not succeed.
-async function compileFolderInEngine() {
+async function compileFolderInEngine(mains) {
+  steps.start("stage", "flushing previous artifacts …");
   await texCall({ cmd: "flushcache" }, null);  // remove artifacts of previous runs
   logv("[page] /work flushed");
   await provideFormatDump();
@@ -1343,6 +1909,7 @@ async function compileFolderInEngine() {
   await drainEngineOpenLog();
 
   // mkdir once per directory: the worker treats re-creation as a failure.
+  steps.detail("stage", `staging ${folder.files.size} file(s) → engine memfs …`);
   let written = 0;
   const madeDirs = new Set();
   const staged = [];  // also handed to dvipdfmx after a XeTeX compile
@@ -1362,63 +1929,89 @@ async function compileFolderInEngine() {
     logv(`[engine] fs write ${rel} (${fmtKB(bytes.byteLength)})`);
   }
   logv(`[page] folder written to engine memfs: ${folder.files.size} file(s), ${fmtKB(written)}`);
-
-  const main = await findMainFile();
-  logInfo(`compiling "${main}" with SwiftLaTeX ${engineSpec().label} (tex files served via /texlive/)`);
+  // Every checked main compiles, and the used-file basis unions their access
+  // logs (native alc-ng cleans around all of --main-files at once). The
+  // first main that compiles is the run's primary: its PDF goes to the pdf
+  // tab and the pixel compare, like a single-main run.
   const tCompile = performance.now();
-  await setEngineMainFile(main);
-  const result = await compileLatexPasses(main, "compile");
-  const compileMs = (performance.now() - tCompile).toFixed(0);
-
-  if (result.result !== "ok" || result.pdf === undefined) {
-    if (/format file/.test(String(result.log ?? ""))) await dropFmt(engineSpec().fmtKey);
-    logErr(`compile failed (status ${result.status}): ${String(result.log ?? "").slice(-160)}`);
-    logEngineLog(result.log);
-    await logEngineTeXLog(main);
-    setEngineStatus(`compile failed (status ${result.status}) — log tail: ${String(result.log ?? "").slice(-160)}`, "err");
-    return { failed: true, main };
-  }
-
-  let pdf = new Uint8Array(result.pdf);
-  logOk(`compile done in ${compileMs} ms: ${engineSpec().xdv ? "xdv" : "pdf"} ${fmtKB(pdf.length)}, log ${String(result.log ?? "").length} chars`);
-  if (engineSpec().xdv) {
-    pdf = await xdvToPdf(staged, main, pdf);
-    if (!pdf) {
-      setEngineStatus("dvipdfmx failed — see the processing log", "err");
-      return { failed: true, main };
+  steps.start("compile");
+  const inputs = new Set(), outputs = new Set();
+  let primary = null, pdf = null, log = "", primaryLog = "", firstError = null;
+  for (const main of mains) {
+    const what = mains.length === 1 ? "compile" : `compile ${main}`;
+    logInfo(`${what} with SwiftLaTeX ${engineSpec().label} (tex files served via /texlive/)`);
+    await setEngineMainFile(main);
+    const result = await compileLatexPasses(main, what);
+    log = String(result.log ?? "");
+    if (result.result !== "ok" || result.pdf === undefined) {
+      const more = mains.length > 1;
+      logErr(`${what} failed (status ${result.status})${more ? " — trying the remaining main file(s)" : ""}: ${log.slice(-160)}`);
+      if (!firstError) {
+        firstError = { main, status: result.status, log };
+        logEngineLog(log);
+      }
+      steps.detail("compile", `${baseOf(main)} failed${more ? " — continuing …" : ""}`);
+      continue;
     }
+
+    let mainPdf = new Uint8Array(result.pdf);
+    logOk(`${what} done: ${engineSpec().xdv ? "xdv" : "pdf"} ${fmtKB(mainPdf.length)}, log ${log.length} chars`);
+    if (engineSpec().xdv) {
+      mainPdf = await xdvToPdf(staged, main, mainPdf);
+      if (!mainPdf) {
+        logErr(`dvipdfmx failed for ${main}${mains.length > 1 ? " — trying the remaining main file(s)" : ""}`);
+        firstError ??= { main, status: "dvipdfmx", log };
+        continue;
+      }
+    }
+    if (!primary) { primary = main; primaryLog = log; }
+    pdf ??= mainPdf;
+
+    // The engine's access log is the used-file basis: every open the compile
+    // (and bibtex) performed landed in the worker's syscall layer, and
+    // `openlog` drains it. Read opens mark inputs, write-only opens outputs.
+    steps.start("recorder", main === mains[0] ? "draining the engine access log …" : `${baseOf(main)} — draining the access log …`);
+    const accesses = await drainEngineOpenLog();
+    const passInputs = new Set(), passOutputs = new Set();
+    for (const entry of accesses) {
+      const rel = normalizeAccessPath(entry.p, dirOf(main));
+      if (rel === null) continue;  // absolute path (kpathsea cache etc.)
+      if (entry.m === 1) passOutputs.add(rel);  // O_WRONLY
+      else passInputs.add(rel);
+    }
+    // Files the engine both read and wrote across passes (e.g. the .aux) are
+    // compile artifacts, not inputs. The .bbl is the exception: BibTeX writes
+    // it and the next TeX pass reads it, and latexmk's final pass records it
+    // as an INPUT only — native alc-ng keeps those.
+    for (const rel of passOutputs) {
+      if (/\.bbl$/i.test(rel) && passInputs.has(rel)) passOutputs.delete(rel);
+      else passInputs.delete(rel);
+    }
+    logInfo(`engine access log (${what}): ${accesses.length} open(s) → ${passInputs.size} input(s), ${passOutputs.size} output(s)`);
+    steps.detail("recorder", `${accesses.length} open(s) → ${passInputs.size} input(s), ${passOutputs.size} output(s)`);
+    for (const rel of passInputs) { logv(`  input: ${rel}`); inputs.add(rel); }
+    for (const rel of passOutputs) { logv(`  output: ${rel}`); outputs.add(rel); }
   }
 
-  // Show the compiled PDF in the workspace's pdf tab.
+  if (!primary) {
+    // nothing compiled: report the first failure, like a single-main run did
+    const err = firstError ?? { main: mains[0], status: "?", log: "" };
+    if (/format file/.test(err.log)) await dropFmt(engineSpec().fmtKey);
+    setEngineStatus(`compile failed (status ${err.status}) — log tail: ${String(err.log).slice(-160)}`, "err");
+    await logEngineTeXLog(err.main);
+    return { failed: true, main: err.main };
+  }
+  const compileMs = (performance.now() - tCompile).toFixed(0);
+  if (mains.length > 1) logInfo(`compiled ${mains.length} main file(s); the recorder unions their access logs`);
+  steps.detail("compile", `pdf ${fmtKB(pdf.length)} · ${compileMs} ms`);
+
+  // Show the compiled PDF in the workspace's pdf tab (the primary's).
   const pdfUrl = URL.createObjectURL(new Blob([pdf], { type: "application/pdf" }));
   const pane = $("pdfPane");
   pane.src = pdfUrl;
   $("tabPdfBtn").disabled = false;
 
-  // The engine's access log is the used-file basis: every open the compile
-  // (and bibtex) performed landed in the worker's syscall layer, and
-  // `openlog` drains it. Read opens mark inputs, write-only opens outputs.
-  const accesses = await drainEngineOpenLog();
-  const inputs = new Set(), outputs = new Set();
-  for (const entry of accesses) {
-    const rel = normalizeAccessPath(entry.p, dirOf(main));
-    if (rel === null) continue;  // absolute path (kpathsea cache etc.)
-    if (entry.m === 1) outputs.add(rel);  // O_WRONLY
-    else inputs.add(rel);
-  }
-  // Files the engine both read and wrote across passes (e.g. the .aux) are
-  // compile artifacts, not inputs. The .bbl is the exception: BibTeX writes
-  // it and the next TeX pass reads it, and latexmk's final pass records it
-  // as an INPUT only — native alc-ng keeps those.
-  for (const rel of outputs) {
-    if (/\.bbl$/i.test(rel) && inputs.has(rel)) outputs.delete(rel);
-    else inputs.delete(rel);
-  }
-  logInfo(`engine access log: ${accesses.length} open(s) → ${inputs.size} input(s), ${outputs.size} output(s)`);
-  for (const rel of inputs) logv(`  input: ${rel}`);
-  for (const rel of outputs) logv(`  output: ${rel}`);
-
-  return { failed: false, main, compileMs, log: String(result.log ?? ""), inputs, outputs, pdf };
+  return { failed: false, main: primary, mains, compileMs, log: primaryLog || log, inputs, outputs, pdf };
 }
 
 // --- XDV → PDF (dvipdfmx) ------------------------------------------------------
@@ -1513,6 +2106,37 @@ function flsFromAccessLog(run) {
   for (const rel of run.inputs) lines.push(`INPUT ./${rel}`);
   for (const rel of run.outputs) lines.push(`OUTPUT ./${rel}`);
   return `${lines.join("\n")}\n`;
+}
+
+// The wasm stand-in for native's `latexmk -C` baseline clean (latexmk_clean
+// in submission.rs): remove the files the compile left in /work so the
+// pipeline can never count them as used sources. Native captures its
+// baseline file list right after that clean, so an .aux — shipped by the
+// author or rewritten by TeX, and always listed in the recorder file —
+// simply does not exist when the cleaner looks; without this pass the page
+// would copy it into the cleaned tree. `run.outputs` is exactly that set:
+// every file TeX/BibTeX opened for writing, whether it predated the compile
+// or not (a .bbl a later pass re-read has already moved into `inputs` and
+// stays, as on native). Only the PDF pane and the compare would ever miss
+// main.pdf, and both keep it from the compile response, not from the FS.
+async function cleanCompileArtifacts(run, main) {
+  let doomed = [...run.outputs];
+  if (doomed.length === 0) {
+    // compile-log fallback (empty access log): at least remove the main
+    // file's own artifacts by name.
+    const dir = dirOf(main) ? `${dirOf(main)}/` : "";
+    const stem = baseOf(main).replace(/\.[^.]*$/, "");
+    doomed = ["aux", "bbl", "blg", "log", "out", "toc", "pdf"].map((ext) => `${dir}${stem}.${ext}`);
+  }
+  let removed = 0;
+  for (const rel of doomed) {
+    // The rel keys are /work-relative; the engine's cwd is the compile
+    // directory, so hand alcng_rm the absolute FS path. Missing files just
+    // answer removed:false.
+    const reply = await texCall({ cmd: "alcng_rm", path: `/work/${rel}` }, ["alcng_rm"]);
+    if (reply.removed) removed += 1;
+  }
+  logInfo(`latexmk -C stand-in: ${removed}/${doomed.length} compile artifact(s) removed from the engine FS`);
 }
 
 // --- compare flag (pixel-perfect PDF comparison) --------------------------------
@@ -1703,10 +2327,13 @@ function resetCompare() {
 async function runCompare(cfg, run) {
   resetCompare();
   const summary = $("compareSummary"), grid = $("compareGrid");
-  const finish = (html, outcome, cls) => {
+  // The comparison runs behind the progress sheet: the workspace stays on the
+  // review tab so the compare step and its live page-by-page detail remain
+  // visible. The finished results wait on their tab, and the success screen
+  // states the verdict.
+  const finish = (html, outcome) => {
     summary.innerHTML = html;
     $("tabCompareBtn").disabled = false;
-    showTab("compare");
     return outcome;
   };
   const t0 = performance.now();
@@ -1714,15 +2341,16 @@ async function runCompare(cfg, run) {
   try {
     const color = parseHexColor(ctrl.flags.diffColor);
     summary.innerHTML = '<span class="cmp-note">comparing …</span>';
-    $("tabCompareBtn").disabled = false;
-    showTab("compare");
 
+    steps.detail("compare", "recompiling the cleaned folder …");
     const cleanedPdf = await compileCleanedInEngine(cfg, run.main);
     if (!cleanedPdf) {
       logErr("compare: the cleaned main file did not compile");
-      return finish(`<span class="bad">The cleaned version of ${esc(run.main)} failed to compile — see the processing log.</span>`, "cleaned version failed to compile");
+      return finish(`<span class="bad">The cleaned version of ${esc(run.main)} failed to compile — see the processing log.</span>`,
+        { state: "failed", text: "the cleaned version did not compile" });
     }
 
+    steps.detail("compare", "opening both PDFs (pdfium) …");
     const M = await loadPdfium();
     originalDoc = pdfiumOpen(M, run.pdf);
     cleanedDoc = pdfiumOpen(M, cleanedPdf);
@@ -1732,6 +2360,7 @@ async function runCompare(cfg, run) {
     const pageCount = Math.max(originalDoc.count, cleanedDoc.count);
     for (let i = 0; i < pageCount; i++) {
       setFolderStatus(`Comparing PDFs — page ${i + 1}/${pageCount} …`, "ok");
+      steps.detail("compare", `page ${i + 1}/${pageCount}`);
       await new Promise((r) => setTimeout(r, 0));  // let the status paint
       const left = i < originalDoc.count ? pdfiumRenderPage(M, originalDoc, i) : null;
       const right = i < cleanedDoc.count ? pdfiumRenderPage(M, cleanedDoc, i) : null;
@@ -1762,7 +2391,7 @@ async function runCompare(cfg, run) {
       return finish(
         `<span class="ok">The cleaned submission has no differences from the source. They are pixel-identical.</span> `
         + `<span class="cmp-note">${esc(run.main)} · ${pageCount} page(s) · ${ms} ms</span>`,
-        "pixel-identical",
+        { state: "ok", text: "pixel-identical", pages: pageCount, ms },
       );
     }
     for (const d of differing) {
@@ -1781,11 +2410,12 @@ async function runCompare(cfg, run) {
     return finish(
       `<span class="bad">${esc(run.main)} has ${differing.length} differing page${differing.length === 1 ? "" : "s"} (of ${pageCount}).</span> `
       + `<span class="cmp-note">${ms} ms</span>`,
-      `${differing.length} differing page(s)`,
+      { state: "differs", text: `${differing.length} differing page(s)`, differing: differing.length, pages: pageCount, ms },
     );
   } catch (err) {
     logErr(`compare failed: ${err.message ?? err}`);
-    return finish(`<span class="bad">Compare failed: ${esc(String(err.message ?? err))}</span>`, "failed");
+    return finish(`<span class="bad">Compare failed: ${esc(String(err.message ?? err))}</span>`,
+      { state: "failed", text: "the comparison failed" });
   } finally {
     originalDoc?.close();
     cleanedDoc?.close();
@@ -1849,6 +2479,7 @@ async function ensureWorkerAlcModule() {
   if (workerModuleLoaded) return;
   const t0 = performance.now();
   logInfo("fetching alc_ng.wasm for the engine worker …");
+  steps.detail("cleaner", "fetching alc_ng.wasm …");
   const resp = await fetch(WASM_PATH);
   if (!resp.ok) throw new Error(`wasm fetch failed: HTTP ${resp.status}`);
   const buf = await resp.arrayBuffer();
@@ -1858,6 +2489,7 @@ async function ensureWorkerAlcModule() {
   workerModuleLoaded = true;
   if (trace) logInfo("WASI call tracing enabled (?wasitrace=1)");
   logOk(`alc_ng module live in engine worker (${(reply.exports ?? []).length} exports)`);
+  steps.detail("cleaner", `module live (${fmtKB(buf.byteLength)} wasm)`);
 }
 
 async function runAlcNg() {
@@ -1866,17 +2498,25 @@ async function runAlcNg() {
   setCtrl({ running: true });
   resetPdfPane();
   setFolderStatus("Running alc-ng …");
+  steps.begin(folder.label);
   try {
     logInfo(`alc-ng run on "${folder.label}"`);
     const t0 = performance.now();
-    const main = await findMainFile();
-    cfg.user_provided_main_files = [main];  // the page compiles exactly this one
-    const { engine, why } = await chooseEngine(main);
+    steps.start("locate");
+    const mains = await findMainFiles();
+    cfg.user_provided_main_files = mains;  // native option: cleans around every checked main
+    steps.detail("locate", mains.join(", "));
+    steps.start("engine", "choosing engine …");
+    const { engine, why } = await chooseEngine(mains[0]);
     logInfo(`engine: ${ENGINES[engine].label} (${why})`);
-    if (!texReady() || texWorker.engine !== engine) await loadEngine(engine);
+    if (!texReady() || texWorker.engine !== engine) {
+      steps.detail("engine", `cold start — ${ENGINES[engine].label}`);
+      await loadEngine(engine);
+    }
     if (!texReady()) throw new Error("engine unavailable");
+    steps.detail("engine", `${ENGINES[engine].label} (${why})`);
 
-    const run = await compileFolderInEngine();
+    const run = await compileFolderInEngine(mains);
     if (run.failed) throw new Error("compile failed — see the processing log");
 
     let flsText;
@@ -1885,10 +2525,18 @@ async function runAlcNg() {
       logInfo(`recorder file from engine access log: ${run.inputs.size} INPUT, ${run.outputs.size} OUTPUT line(s)`);
     } else {
       logErr("engine access log empty — falling back to compile-log synthesis");
+      steps.detail("recorder", "access log empty — synthesizing from the compile log");
       flsText = synthesizeFlsFromLog(run.log);
     }
+    // Baseline like native's `latexmk -C`: the artifacts go before the
+    // recorder file is written, so the pipeline sees the tree as it stood
+    // before compiling.
+    steps.detail("recorder", "cleaning compile artifacts (latexmk -C stand-in) …");
+    await cleanCompileArtifacts(run, run.main);
     await texCall({ cmd: "writefile", url: "alc-ng-main.fls", src: enc.encode(flsText) }, ["writefile"]);
+    steps.detail("recorder", `${run.inputs.size} INPUT, ${run.outputs.size} OUTPUT → alc-ng-main.fls`);
 
+    steps.start("cleaner");
     await ensureWorkerAlcModule();
     await texCall({ cmd: "alcng_rm", path: cfg.target }, ["alcng_rm"]);
     if (typeof cfg.tar === "string" && cfg.tar !== "-") {
@@ -1896,16 +2544,28 @@ async function runAlcNg() {
     }
 
     setFolderStatus("running pipeline in wasm module …");
+    steps.detail("cleaner", "alc_ng_run in wasm …");
     const reply = await texCall({ cmd: "alcng_run", json: JSON.stringify(cfg) }, ["alcng_run"]);
     const result = JSON.parse(reply.json);
     if (!result.ok) throw new Error(result.error);
+    steps.start("review");
     await buildReview(cfg, performance.now() - t0, run);
     if (ctrl.flags.compare) {
+      steps.start("compare");
       const note = ctrl.status?.text ?? "";
       setFolderStatus(`${note} Comparing PDFs …`, "ok");
-      const outcome = await runCompare(cfg, run);
-      setFolderStatus(`${note} Compare: ${outcome}`, "ok");
+      const compare = await runCompare(cfg, run);
+      setFolderStatus(`${note} Compare: ${compare.text}`, compare.state === "ok" ? "ok" : "err");
+      steps.done("compare", compare.text);
+      currentReview.compare = compare;
+      renderDone();  // the success screen states the verdict too
+    } else {
+      steps.skip("compare");
     }
+    steps.finish();
+    // A successful run is the review's moment: fold the controls away and let
+    // the changes tree own the rail (nothing else touches the submission).
+    setSubmissionOpen(false);
   } catch (err) {
     const detail = err.engineData?.error ?? err.message ?? String(err);
     logErr(`alc-ng run failed: ${detail}`);
@@ -1913,6 +2573,8 @@ async function runAlcNg() {
     breadcrumb("RUNERR", detail);
     // A wasm trap leaves the loaded module unusable; force a reload.
     if (/unreachable|RuntimeError|proc_exit/.test(detail)) workerModuleLoaded = false;
+    steps.fail(detail);
+    setSubmissionOpen(true);  // the status alert lives in that panel
   }
   setCtrl({ running: false });
 }
@@ -1930,9 +2592,13 @@ const DIFF_MAX_BYTES = 400000;   // above this, treat as opaque
 let currentReview = null;
 
 function resetReview() {
+  steps.reset();
   currentReview = null;
   $("reviewEmpty").hidden = false;
   $("reviewContent").hidden = true;
+  $("reviewDone").hidden = true;
+  $("reviewDone").textContent = "";
+  $("changesPanel").hidden = true;
   $("reviewSummary").textContent = "";
   $("treeList").textContent = "";
   $("diffPane").textContent = "";
@@ -1961,29 +2627,51 @@ async function cleanedBytes(path) {
   return new Uint8Array(msg.data);
 }
 
-// Gunzip the archive and walk its 512-byte tar headers. Returns
-// { entries: [{name, size, dir}] } — logged and shown inline on the review.
-async function readTarContents(path) {
-  const { data } = await texCall({ cmd: "alcng_read", path }, ["alcng_read"]);
-  const gz = new Blob([data]).stream().pipeThrough(new DecompressionStream("gzip"));
-  const tar = new Uint8Array(await new Response(gz).arrayBuffer());
-  const field = (h, off, len) =>
-    new TextDecoder().decode(h.subarray(off, off + len)).replace(/\0.*$/s, "");
-  const entries = [];
-  for (let off = 0; off + 512 <= tar.length;) {
-    const h = tar.subarray(off, off + 512);
-    if (h.every((b) => b === 0)) break;  // end-of-archive marker
-    const name = field(h, 0, 100), size = parseInt(field(h, 124, 12).trim() || "0", 8);
-    const type = field(h, 156, 1) || "0";
-    if (type !== "L") entries.push({ name, size, dir: type === "5" });
-    off += 512 + Math.ceil(size / 512) * 512;
+// --- resized images ----------------------------------------------------------
+//
+// resize_images rewrites a raster image in place (same name, new pixel size),
+// so a size delta alone cannot tell a downscale from a re-encode. Both sides
+// are decoded in the page — createImageBitmap reads dimensions without
+// touching the canvas — and a file whose dimensions changed is marked so the
+// changes tree can say "resized" instead of leaving it as another "M".
+
+const RASTER_IMAGE_RE = /\.(png|jpe?g|gif|tiff?|bmp|webp|avif)$/i;
+
+async function imageDimensions(blob) {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    const dims = { w: bitmap.width, h: bitmap.height };
+    bitmap.close?.();
+    return dims;
+  } catch {
+    return null;  // not a format this browser decodes — no claim either way
   }
-  logInfo(`tar archive ${path}: ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`);
-  for (const e of entries) logv(`  tar: ${e.name} (${e.dir ? "dir" : fmtSize(e.size)})`);
-  return entries;
 }
 
+async function markResizedImages(changes) {
+  const candidates = changes.filter((c) => c.status === "M" && c.origFile && c.outPath && RASTER_IMAGE_RE.test(c.rel));
+  let resized = 0;
+  for (const c of candidates) {
+    const before = await imageDimensions(c.origFile);
+    if (!before) continue;
+    const after = await imageDimensions(new Blob([await cleanedBytes(c.outPath)]));
+    if (!after) continue;
+    if (after.w !== before.w || after.h !== before.h) {
+      c.resized = { before, after };
+      resized += 1;
+    }
+  }
+  if (resized > 0) {
+    logInfo(`resize_images: ${resized} of ${candidates.length} changed image(s) downscaled (${ctrl.flags.imSize} px target)`);
+  } else if (candidates.length > 0) {
+    logv(`resize_images: none of the ${candidates.length} changed image(s) changed dimensions`);
+  }
+}
+
+const dimsLabel = (d) => `${d.w}×${d.h}`;
+
 async function buildReview(cfg, totalMs, run) {
+  steps.detail("review", "reading the cleaned tree …");
   const listed = await texCall({ cmd: "alcng_list", path: cfg.target }, ["alcng_list"]);
   const entries = listed.entries ?? [];
 
@@ -1995,9 +2683,10 @@ async function buildReview(cfg, totalMs, run) {
   }
 
   const rels = [...new Set([...folder.files.keys(), ...cleaned.keys()])].sort();
-  const review = { stats: { M: 0, D: 0, A: 0, U: 0 }, changes: [], unchanged: [], archive: null };
+  const review = { stats: { M: 0, D: 0, A: 0, R: 0, U: 0 }, changes: [], unchanged: [], archive: null };
 
-  for (const rel of rels) {
+  for (const [i, rel] of rels.entries()) {
+    if (i % 16 === 0) steps.detail("review", `comparing trees — file ${i}/${rels.length} …`);
     const orig = folder.files.get(rel) ?? null;
     const out = cleaned.get(rel) ?? null;
     const change = { rel, origFile: orig, outPath: out?.path ?? null, origSize: orig?.size ?? null, outSize: out?.size ?? null, status: null, origText: null, newText: null };
@@ -2021,14 +2710,43 @@ async function buildReview(cfg, totalMs, run) {
     (change.status === "U" ? review.unchanged : review.changes).push(change);
   }
 
+  // arXiv upload rename (native file_renames.rs): with tar configured the
+  // cleaner writes "Section 2/x.png" to "Section_2/x.png" in the cleaned
+  // tree and rewrites the references to match — unless the underscore path
+  // is already taken, which is why such an added entry can only ever be the
+  // cleaner renaming its spaced twin. Fold each dropped+appeared pair into a
+  // single "R" rename row instead of an alarming delete above an add.
+  const addedByRel = new Map(review.changes.filter((c) => c.status === "A").map((c) => [c.rel, c]));
+  const twins = new Set();
+  for (const c of review.changes) {
+    if (c.status !== "D" || !c.rel.includes(" ")) continue;
+    const twin = addedByRel.get(c.rel.replace(/ /g, "_"));
+    if (!twin || twins.has(twin)) continue;
+    twins.add(twin);
+    c.status = "R";
+    c.renamedFrom = c.rel;
+    c.rel = twin.rel;
+    c.outPath = twin.outPath;
+    c.outSize = twin.outSize;
+    review.stats.D -= 1;
+    review.stats.A -= 1;
+    review.stats.R += 1;
+  }
+  if (twins.size) review.changes = review.changes.filter((c) => !twins.has(c));
+
+  // With resize_images on, a changed image may have been downscaled rather
+  // than merely re-encoded. The file tree says so, which needs the actual
+  // pixel dimensions on both sides.
+  if (cfg.resize_images) {
+    steps.detail("review", "measuring resized images …");
+    await markResizedImages(review.changes);
+  }
+
   if (typeof cfg.tar === "string" && cfg.tar !== "-") {
     try {
       const t = await texCall({ cmd: "alcng_list", path: cfg.tar }, ["alcng_list"]);
       const a = (t.entries ?? [])[0];
-      if (a) {
-        const contents = await readTarContents(cfg.tar).catch(() => []);
-        review.archive = { path: a.path, size: a.size, contents };
-      }
+      if (a) review.archive = { path: a.path, size: a.size };
     } catch (err) {
       logv(`no tar archive found at ${cfg.tar}`);
     }
@@ -2038,10 +2756,11 @@ async function buildReview(cfg, totalMs, run) {
   renderReview();
   logOk(`alc-ng pipeline done in ${(totalMs / 1000).toFixed(1)} s: ${entries.length} output file(s)`);
   const s = review.stats;
+  steps.detail("review", `${s.M} modified, ${s.D} dropped, ${s.R} renamed, ${s.A} added, ${s.U} unchanged`);
   setFolderStatus(
     `Done: ${entries.length} cleaned file(s) (${fmtSize([...cleaned.values()].reduce((n, e) => n + e.size, 0))})`
     + `${review.archive ? ` + tar archive (${fmtSize(review.archive.size)})` : ""}`
-    + ` — ${s.M} modified, ${s.D} dropped, ${s.A} added, ${s.U} unchanged.`,
+    + ` — ${s.M} modified, ${s.D} dropped, ${s.R} renamed, ${s.A} added, ${s.U} unchanged.`,
     "ok",
   );
 }
@@ -2061,8 +2780,8 @@ const KIND_BY_EXT = {
   pygtex: "minted cache", pyg: "minted cache", pygstyle: "minted cache",
 };
 const KIND_TONE = {
-  "tex sources": "var(--ink)", figures: "var(--amber)", "minted cache": "var(--red)",
-  bibliography: "var(--green)", "styles & classes": "var(--muted)", other: "var(--faint)",
+  "tex sources": "var(--color-text)", figures: "var(--color-warn)", "minted cache": "var(--color-accent)",
+  bibliography: "var(--color-success)", "styles & classes": "var(--color-secondary)", other: "var(--color-faint)",
 };
 
 function kindOf(rel) {
@@ -2215,10 +2934,10 @@ function renderStats() {
 
   const pct = stats.origBytes > 0 ? (stats.savedBytes / stats.origBytes) * 100 : 0;
   const figs = statEl("div", "figrow");
-  figs.appendChild(figureCard("hero", pct.toFixed(pct < 10 ? 1 : 0), "%", "smaller",
+  figs.appendChild(figureCard("lead", pct.toFixed(pct < 10 ? 1 : 0), "%", "smaller",
     `${fmtSize(stats.origBytes)} → ${fmtSize(stats.cleanedBytes)} (${fmtDelta(stats.origBytes, stats.cleanedBytes)})`));
   figs.appendChild(figureCard("warn", String(stats.stats.D), "", "files dropped",
-    `${stats.stats.M} modified · ${stats.stats.A} added`));
+    `${stats.stats.M} modified · ${stats.stats.A} added${stats.stats.R ? ` · ${stats.stats.R} renamed` : ""}`));
   figs.appendChild(figureCard("good", String(stats.stats.U), "", "files untouched",
     `${stats.origN} → ${stats.outN} in the tree`));
   figs.appendChild(figureCard("", (stats.totalMs / 1000).toFixed(1), "s", "pipeline",
@@ -2237,7 +2956,7 @@ function renderStats() {
       num: String(k.outN),
       bytes: k.removed > 0 ? `−${fmtSize(k.removed)}` : k.removed < 0 ? `+${fmtSize(-k.removed)}` : "±0",
       bar: k.removed > 0 ? k.removed / kindMax : 0,
-      tone: KIND_TONE[k.kind] ?? "var(--red)",
+      tone: KIND_TONE[k.kind] ?? "var(--color-accent)",
       delay: i * 40,
     }));
   });
@@ -2276,10 +2995,10 @@ function renderStats() {
 }
 
 function renderReview() {
-  const { review, cfg, totalMs } = currentReview;
+  const { review, totalMs } = currentReview;
   const s = review.stats;
   $("reviewEmpty").hidden = true;
-  $("reviewContent").hidden = false;
+  $("changesPanel").hidden = false;  // the rail now carries the explorer
 
   const sum = $("reviewSummary");
   sum.textContent = "";
@@ -2292,25 +3011,115 @@ function renderReview() {
   stat(s.M, "modified", s.M ? "amber" : "");
   stat(s.D, "dropped", s.D ? "red" : "");
   stat(s.A, "added", s.A ? "green" : "");
+  stat(s.R, "renamed", s.R ? "green" : "");
   stat(s.U, "unchanged");
   const pipe = document.createElement("div");
   pipe.className = "stat";
   pipe.innerHTML = `<span class="n">${(totalMs / 1000).toFixed(1)} s</span><span class="l">pipeline</span>`;
   sum.appendChild(pipe);
-  const note = document.createElement("div");
-  note.className = "sum-note";
-  note.textContent = `original "${folder?.label ?? "…"}" → cleaned ${cfg.target}` + (review.archive ? ` · archive ${fmtSize(review.archive.size)}` : "");
-  sum.appendChild(note);
 
   renderTree();
   renderArtifact();
   renderStats();
-  // Open the most interesting file: first modified, then dropped, then added.
+  renderDone();
+}
+
+// The run's success screen, occupying the review tab's main column: a few
+// headline figures, the pixel compare verdict when that option was on, and
+// the archive download. It builds over the same numbers as the statistics
+// tab (computeStats re-derives them from the already-read review), so the
+// two views never disagree.
+//
+// The pane is only *built* here, and stays hidden: steps.finish() reveals it
+// once the progress sheet has completely faded out, and a diff opened in the
+// meantime keeps it hidden until the ← summary link brings it back.
+function renderDone() {
+  const pane = $("reviewDone");
+  pane.textContent = "";
+  if (!currentReview) { pane.hidden = true; return; }
+  const { review, totalMs } = currentReview;
+  const s = review.stats;
+  const st = computeStats(review, totalMs);
+  const pct = st.origBytes > 0 ? (st.savedBytes / st.origBytes) * 100 : 0;
+
+  const card = document.createElement("section");
+  card.className = "done-card";
+  card.appendChild(statEl("div", "done-mark", "✓"));
+  const title = document.createElement("h2");
+  title.className = "done-title";
+  title.textContent = "Clean finished";
+  card.appendChild(title);
+
+  const cmp = currentReview.compare;
+  if (cmp) {
+    const line = document.createElement("div");
+    line.className = `done-compare ${cmp.state === "ok" ? "ok" : "bad"}`;
+    if (cmp.state === "ok") {
+      line.innerHTML = `<b>✓ Pixel-perfect.</b> The cleaned PDF renders pixel-identical to the original.`
+        + `<span class="cmp-note">${cmp.pages} page(s) · ${cmp.ms} ms` 
+        + (currentReview.run.mains?.length > 1 ? ` · compared: ${esc(currentReview.run.main)}` : "") + `</span>`;
+    } else if (cmp.state === "differs") {
+      line.innerHTML = `<b>✗ ${cmp.differing} of ${cmp.pages} page(s) differ.</b> The cleaned PDF is not pixel-identical to the original.`;
+      const link = document.createElement("a");
+      link.className = "dget";
+      link.href = "#";
+      link.textContent = "show the comparison →";
+      link.addEventListener("click", (ev) => { ev.preventDefault(); showTab("compare"); });
+      line.appendChild(link);
+    } else {
+      line.innerHTML = `<b>✗ Pixel comparison incomplete.</b> ${esc(cmp.text)} — see the processing log.`;
+    }
+    card.appendChild(line);
+  }
+
+  const figs = statEl("div", "figrow");
+  figs.appendChild(figureCard("lead", pct.toFixed(pct < 10 ? 1 : 0), "%", "smaller",
+    `${fmtSize(st.origBytes)} → ${fmtSize(st.cleanedBytes)} (${fmtDelta(st.origBytes, st.cleanedBytes)})`));
+  figs.appendChild(figureCard("warn", String(s.D), "", "files dropped",
+    `${s.M} modified · ${s.A} added${s.R ? ` · ${s.R} renamed` : ""}`));
+  figs.appendChild(figureCard("", (totalMs / 1000).toFixed(1), "s", "pipeline",
+    st.archive ? `archive ${fmtSize(st.archive.size)}` : "no archive"));
+  card.appendChild(figs);
+
+  const acts = document.createElement("div");
+  acts.className = "done-actions";
+  if (review.archive) {
+    const dl = document.createElement("button");
+    dl.type = "button";
+    dl.className = "primary";
+    dl.textContent = `↓ Download ${review.archive.path.split("/").pop()} · ${fmtSize(review.archive.size)}`;
+    dl.addEventListener("click", () => downloadArchive());
+    acts.appendChild(dl);
+  }
+  // The button that used to open by itself: the most interesting file, first
+  // modified, then dropped, then added, then renamed.
   const first = review.changes.find((c) => c.status === "M")
     ?? review.changes.find((c) => c.status === "D")
-    ?? review.changes.find((c) => c.status === "A");
-  if (first) openDiff(first);
-  else $("diffPane").textContent = "";
+    ?? review.changes.find((c) => c.status === "A")
+    ?? review.changes.find((c) => c.status === "R");
+  if (first) {
+    const reviewBtn = document.createElement("button");
+    reviewBtn.type = "button";
+    reviewBtn.textContent = "Review the changes";
+    reviewBtn.addEventListener("click", () => openDiff(first));
+    acts.appendChild(reviewBtn);
+  }
+  card.appendChild(acts);
+  const hint = document.createElement("p");
+  hint.className = "done-hint";
+  hint.textContent = review.archive
+    ? "pick any file in the changes list to open its line diff · the full ledger sits on the statistics tab"
+    : "no archive this run — enable the tar option to get a ready-to-upload cleaned.tar.gz";
+  card.appendChild(hint);
+
+  pane.appendChild(card);
+}
+
+// Back from the diff to the success screen (the diff header's ← summary).
+function showDone() {
+  if (!currentReview) return;
+  $("reviewDone").hidden = false;
+  $("reviewContent").hidden = true;
 }
 
 // --- changes tree -------------------------------------------------------------
@@ -2333,6 +3142,7 @@ function renderTree() {
     b.type = "button";
     b.className = "tree-file";
     b.dataset.rel = c.rel;
+    if (c.renamedFrom) b.title = `renamed: ${c.renamedFrom} → ${c.rel}`;
     const st = document.createElement("span");
     st.className = `st st-${c.status}`;
     st.textContent = c.status;
@@ -2342,14 +3152,27 @@ function renderTree() {
     path.className = "tpath";
     path.textContent = name;
     b.appendChild(path);
+    if (c.resized) {  // resize_images downscaled this image
+      const rz = document.createElement("span");
+      rz.className = "tresize";
+      rz.textContent = "resized";
+      rz.title = `downscaled by resize_images: ${dimsLabel(c.resized.before)} → ${dimsLabel(c.resized.after)} px`;
+      b.appendChild(rz);
+      b.title = b.title ? `${b.title} · ${rz.title}` : rz.title;
+    }
     const delta = document.createElement("span");
     delta.className = "tdelta";
     delta.textContent =
       c.status === "D" ? fmtSize(c.origSize)
       : c.status === "A" ? fmtSize(c.outSize)
+      : c.status === "R" ? (dirOf(c.renamedFrom) === dirOf(c.rel)
+          ? `from ${baseOf(c.renamedFrom)}`   // only the file name changed
+          : `from ${dirOf(c.renamedFrom)}/`)  // folder rename — say where
       : `${fmtSize(c.origSize ?? 0)} → ${fmtSize(c.outSize ?? 0)}`;
     b.appendChild(delta);
-    b.addEventListener("click", () => openDiff(c));
+    // The tree lives in the rail now, so a click must also pull the workspace
+    // back to the tab where the diff lands.
+    b.addEventListener("click", () => { showTab("review"); openDiff(c); });
     return b;
   };
 
@@ -2391,6 +3214,20 @@ function renderTree() {
   }
 }
 
+// Hand the tarball to the browser: pulled out of the engine's memfs on
+// demand. Shared by the artifact row in the rail and the success screen.
+async function downloadArchive() {
+  const a = currentReview?.review.archive;
+  if (!a) return;
+  const bytes = await cleanedBytes(a.path);
+  const url = URL.createObjectURL(new Blob([bytes]));
+  const tmp = document.createElement("a");
+  tmp.href = url;
+  tmp.download = a.path.split("/").pop();
+  tmp.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 function renderArtifact() {
   const { review } = currentReview;
   const row = $("artifactRow");
@@ -2412,28 +3249,18 @@ function renderArtifact() {
   const link = document.createElement("a");
   link.href = "#";
   link.textContent = "download";
-  link.addEventListener("click", async (ev) => {
-    ev.preventDefault();
-    const bytes = await cleanedBytes(a.path);
-    const url = URL.createObjectURL(new Blob([bytes]));
-    const tmp = document.createElement("a");
-    tmp.href = url;
-    tmp.download = a.path.split("/").pop();
-    tmp.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-  });
+  link.addEventListener("click", (ev) => { ev.preventDefault(); downloadArchive(); });
   row.appendChild(link);
-  if (a.contents?.length) {
-    const files = document.createElement("span");
-    files.className = "afiles";
-    files.textContent = "contains: " + a.contents.map((c) => `${c.name}${c.dir ? "/" : ` (${fmtSize(c.size)})`}`).join(" · ");
-    row.appendChild(files);
-  }
 }
 
 // --- the diff viewer ------------------------------------------------------------
 
 const esc = (s) => s.replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+
+// Path label in diff headers: a renamed entry names both sides of the move.
+const diffPathLabel = (e) => (e?.renamedFrom
+  ? `${e.renamedFrom} → ${e.rel}`
+  : e?.meta?.rel ?? e?.rel ?? "");
 
 const diffState = { mode: null, entry: null, rows: null, aLines: null, bLines: null, expanded: new Set(), allExpanded: false, counts: null };
 
@@ -2686,7 +3513,8 @@ function renderDiffBody() {
   const segs = diffState.allExpanded
     ? (rows.length ? [{ t: "rows", from: 0, to: rows.length - 1 }] : [])
     : hunkSegments(rows);
-  if (!segs) return `<div class="diff-note">byte-identical — no line changes</div>`;
+  const sameNote = diffState.entry?.status === "R" ? "renamed only — content byte-identical" : "byte-identical — no line changes";
+  if (!segs) return `<div class="diff-note">${sameNote}</div>`;
   let html = "";
   for (const seg of segs) {
     if (seg.t === "rows") html += renderRowsHtml(seg.from, seg.to);
@@ -2699,7 +3527,7 @@ function renderDiffBody() {
       }
     }
   }
-  return html || `<div class="diff-note">byte-identical — nothing to show</div>`;
+  return html || `<div class="diff-note">${diffState.entry?.status === "R" ? "renamed only — nothing to show" : "byte-identical — nothing to show"}</div>`;
 }
 
 function renderDiffHeader() {
@@ -2711,7 +3539,7 @@ function renderDiffHeader() {
   const dl = e?.outPath
     ? `<a class="dget" href="#" data-dl="${esc(e.outPath)}" data-name="${esc(e.rel.split("/").pop())}">download cleaned</a>`
     : "";
-  return `<div class="diff-head">${badge}<span class="dpath">${esc(e?.meta?.rel ?? e?.rel ?? "")}</span>${stat}<span class="spacer"></span>`
+  return `<div class="diff-head"><button type="button" class="dback" data-summary>← summary</button>${badge}<span class="dpath">${esc(diffPathLabel(e))}</span>${stat}<span class="spacer"></span>`
     + `<div class="segs"><button data-mode="sbs" aria-pressed="${diffState.mode === "sbs"}">split</button>`
     + `<button data-mode="uni" aria-pressed="${diffState.mode === "uni"}">unified</button></div>`
     + `<button type="button" class="secondary" data-expand>${diffState.allExpanded ? "collapse" : "expand all"}</button>${dl}</div>`;
@@ -2749,6 +3577,9 @@ function prepareDiff(entry, oldText, newText, modeOverride) {
 }
 
 async function openDiff(change) {
+  // a diff pushes the success screen aside; ← summary brings it back
+  $("reviewDone").hidden = true;
+  $("reviewContent").hidden = false;
   // mark selection
   for (const el of document.querySelectorAll(".tree-file.sel")) el.classList.remove("sel");
   const btn = document.querySelector(`.tree-file[data-rel="${CSS.escape(change.rel)}"]`);
@@ -2799,14 +3630,16 @@ function renderBinaryNote(change) {
   const parts = [];
   if (change.origSize !== null) parts.push(`original ${fmtSize(change.origSize)}`);
   if (change.outSize !== null) parts.push(`cleaned ${fmtSize(change.outSize)}`);
-  pane.innerHTML = `<div class="diff"><div class="diff-head"><span class="st st-${change.status}">${change.status}</span>`
-    + `<span class="dpath">${esc(change.rel)}</span><span class="dstat">binary · ${parts.join(" → ")}</span><span class="spacer"></span>`
+  if (change.resized) parts.push(`resized ${dimsLabel(change.resized.before)} → ${dimsLabel(change.resized.after)} px`);
+  pane.innerHTML = `<div class="diff"><div class="diff-head"><button type="button" class="dback" data-summary>← summary</button><span class="st st-${change.status}">${change.status}</span>`
+    + `<span class="dpath">${esc(diffPathLabel(change))}</span><span class="dstat">binary · ${parts.join(" → ")}</span><span class="spacer"></span>`
     + (change.outPath ? `<a class="dget" href="#" data-dl="${esc(change.outPath)}" data-name="${esc(change.rel.split("/").pop())}">download cleaned</a>` : "")
     + `</div><div class="diff-note">binary file — no line diff</div></div>`;
 }
 
-// one delegated listener handles bars, mode toggles, expand-all and downloads
+// one delegated listener handles the summary trip, bars, mode toggles, expand-all and downloads
 $("diffPane").addEventListener("click", async (ev) => {
+  if (ev.target.closest("[data-summary]")) { showDone(); return; }
   const bar = ev.target.closest(".dbar");
   if (bar) {
     diffState.expanded.add(`${bar.dataset.from}-${bar.dataset.to}`);
@@ -2843,7 +3676,7 @@ $("diffPane").addEventListener("click", async (ev) => {
 // The submission panel is Ant Design: an Upload.Dragger that takes a whole
 // folder, a picker for the bundled samples, Select / Checkbox / InputNumber /
 // ColorPicker for the pipeline's native options, and the run button. The
-// ConfigProvider theme maps antd's tokens onto this page's paper palette, and
+// ConfigProvider theme maps antd's tokens onto this page's template palette, and
 // the “UI island” CSS block handles what antd has no token for.
 //
 // Nothing else on the page is React: the island writes through setCtrl() and
@@ -2861,18 +3694,19 @@ $("diffPane").addEventListener("click", async (ev) => {
   const h = window.React.createElement;
 
   // antd's tokens are RGB, so they are spelled out from the same palette the
-  // CSS above uses (--paper, --red, --green, --amber, --ink, --rule-*).
+  // CSS above uses (--color-accent, --color-success, --color-fail, --color-warn,
+  // --color-text, --color-border).
   const theme = {
     token: {
-      fontFamily: "var(--mono)",
+      fontFamily: "var(--font-sans)",
       fontSize: 13, fontSizeSM: 12,
-      borderRadius: 6, controlHeight: 30, controlHeightSM: 26, controlHeightLG: 40,
-      colorPrimary: "#a81b1b", colorLink: "#7e1414", colorTextBase: "#1d1a15",
-      colorBgContainer: "#ffffff", colorBorder: "#d2c9b5", colorBorderSecondary: "#e4ddcd",
-      colorInfo: "#6f685b", colorInfoBg: "#f2eee4", colorInfoBorder: "#e0d9c9",
-      colorSuccess: "#2d6a40", colorSuccessBg: "#e7f2e7", colorSuccessBorder: "#c9dcc9",
-      colorError: "#a81b1b", colorErrorBg: "#f7e5e2", colorErrorBorder: "#e8cbc4",
-      colorWarning: "#8a6410", colorWarningBg: "#f6eeda", colorWarningBorder: "#e5d5b0",
+      borderRadius: 8, borderRadiusSM: 6, controlHeight: 32, controlHeightSM: 26, controlHeightLG: 44,
+      colorPrimary: "#2563eb", colorLink: "#1d4ed8", colorTextBase: "#1a1a1a",
+      colorBgContainer: "#ffffff", colorBorder: "#d4d4d4", colorBorderSecondary: "#e5e5e5",
+      colorInfo: "#2563eb", colorInfoBg: "#eff6ff", colorInfoBorder: "#bfdbfe",
+      colorSuccess: "#059669", colorSuccessBg: "#f0fdf4", colorSuccessBorder: "#bbf7d0",
+      colorError: "#dc2626", colorErrorBg: "#fef2f2", colorErrorBorder: "#fecaca",
+      colorWarning: "#d97706", colorWarningBg: "#fffbeb", colorWarningBorder: "#fde68a",
     },
   };
 
@@ -2919,7 +3753,7 @@ $("diffPane").addEventListener("click", async (ev) => {
     const c = useCtrl();
     const f = c.flags;
     const set = (key, value) => setCtrl({ flags: { ...ctrl.flags, [key]: value } });
-    const canRun = !!c.folder && !!c.mainFile && !c.running && !c.sampleLoading;
+    const canRun = !!c.folder && (c.mainSel?.length ?? 0) > 0 && !c.running && !c.sampleLoading;
 
     return h(ConfigProvider, { theme },
       h(Upload.Dragger, {
@@ -2962,11 +3796,19 @@ $("diffPane").addEventListener("click", async (ev) => {
       }),
 
       c.folder && h(React.Fragment, null,
-        h(Field, { label: "main file", tip: "The engine compiles it in its own directory, like latexmk -cd, and alc-ng cleans around it." },
-          h(Select, {
-            style: { width: "100%" }, size: "small", popupMatchSelectWidth: false,
-            value: c.mainFile ?? undefined, options: c.mainFiles, placeholder: "no main file found",
-            onChange: (rel) => setCtrl({ mainFile: rel }),
+        // One main file needs no control at all — it just is the main file.
+        // Several candidates: a checklist, mapping native alc-ng's
+        // --main-files list (the run cleans around every checked main).
+        c.mainFiles.length > 1 && h(Field, {
+          label: "main files",
+          tip: "alc-ng cleans around every checked main file (its native --main-files list). The first one compiles for the preview and pixel compare.",
+          value: `${c.mainSel?.length ?? 0} of ${c.mainFiles.length}`,
+        },
+          h(Checkbox.Group, {
+            className: "mainList",
+            value: c.mainSel ?? [],
+            options: c.mainFiles.map((o) => ({ value: o.value, label: o.label })),
+            onChange: (vals) => setCtrl({ mainSel: vals }),
           })),
         h(Collapse, {
           className: "flags", ghost: true, defaultActiveKey: [],
@@ -2975,8 +3817,16 @@ $("diffPane").addEventListener("click", async (ev) => {
             label: "native options",
             children: h(React.Fragment, null,
               h("div", { className: "ctlGrid" }, CHECKS.map(([key, name, tip]) =>
-                h(Checkbox, { key, checked: f[key], onChange: (ev) => set(key, ev.target.checked) },
-                  h(Tooltip, { title: tip, placement: "top", mouseEnterDelay: 0.25 }, h("span", null, name))))),
+                // the switch and its (i) sit apart, so clicking the hint never
+                // toggles the flag
+                h("div", { className: "flagRow", key },
+                  h(Checkbox, { checked: f[key], onChange: (ev) => set(key, ev.target.checked) },
+                    h("span", null, name)),
+                  h(Tooltip, { title: tip, placement: "top", mouseEnterDelay: 0.2 },
+                    h("span", {
+                      className: "ctlHint flagHint", tabIndex: 0, "aria-label": tip,
+                      dangerouslySetInnerHTML: { __html: INFO_SVG },
+                    }))))),
               h("div", { className: "ctlLabel flagsSub" }, "with values"),
               h("div", { className: "ctlGrid" },
                 h(Field, { label: "im_size", tip: "Longest side of a resized image, in pixels; fine-tune to get as close to 10 MB as possible." },
@@ -3000,12 +3850,7 @@ $("diffPane").addEventListener("click", async (ev) => {
       h(Button, {
         type: "primary", size: "large", block: true,
         disabled: !canRun, loading: c.running, onClick: () => runAlcNg(),
-      }, "Run alc-ng"),
-
-      h("div", { className: "ctlFoot" },
-        h("code", null, "keep_bib"), " keeps ", h("code", null, ".bib"), "; ",
-        h("code", null, "clean_classes"), " also cleans ", h("code", null, ".sty/.cls"), "; ",
-        h("code", null, "strip_exif"), " needs exiftool and is unavailable in wasm."));
+      }, "Run alc-ng"));
   }
 
   window.ReactDOM.createRoot(host).render(h(Panel, null));
@@ -3017,6 +3862,15 @@ $("clearLogBtn").addEventListener("click", () => {
   $("logPane").textContent = "";
   logInfo("log cleared");
 });
+$("logToggle").addEventListener("click", () => {
+  const dock = document.querySelector(".logdock");
+  const expanded = dock.classList.toggle("collapsed") === false;
+  const btn = $("logToggle");
+  btn.setAttribute("aria-expanded", String(expanded));
+  btn.title = expanded ? "Collapse this log" : "Expand this log";
+  if (!expanded) $("logPane").scrollTop = $("logPane").scrollHeight;
+});
+$("subToggle").addEventListener("click", () => setSubmissionOpen($("subPanel").classList.contains("collapsed")));
 $("tabReviewBtn").addEventListener("click", () => showTab("review"));
 $("tabPdfBtn").addEventListener("click", () => showTab("pdf"));
 $("tabCompareBtn").addEventListener("click", () => showTab("compare"));

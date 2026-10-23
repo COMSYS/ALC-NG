@@ -1,0 +1,36 @@
+% Font-map fallbacks for the wasm engine (appended by the dev server to every
+% `<engine>/11/<name>.map` answer — pdfTeX honours the last entry, so these
+% win over the map the cache was warmed with).
+%
+% Why: the TeX Live that warmed the cache has no cm-super, and this wasm
+% engine has no mktexpk and no reachable mirror to rasterize with — every
+% bitmap-only CM font dies with "bad pk file, expected pre" as soon as it
+% ships (arXiv 2303.12712 hits cmttb10 on its first bold typewriter keyword
+% inside a minted listing). Map each to the closest cached Type 1, reusing
+% encoding vectors the base map already defines (CMTT12, CMMI10, CMBX10 are
+% defined above line 4100 of the cached map, and we are appended after it).
+% The pfb targets below (cmtt12, cmmi10, cmbx10) are verified present in the
+% texlive-cache volume; unverified targets would 301 and fail noisily.
+
+% bold typewriter — bitmap-only without cm-super
+cmttb8 CMTT12 <cmtt12.pfb
+cmttb9 CMTT12 <cmtt12.pfb
+cmttb10 CMTT12 <cmtt12.pfb
+cmttb12 CMTT12 <cmtt12.pfb
+% light typewriter and sans typewriter — likewise bitmap-only
+cmtl9 CMTT12 <cmtt12.pfb
+cmtl10 CMTT12 <cmtt12.pfb
+cmtss8 CMTT12 <cmtt12.pfb
+cmtss9 CMTT12 <cmtt12.pfb
+cmtss10 CMTT12 <cmtt12.pfb
+% bold math italic — bitmap-only; slanted bold — upright approximation
+cmmib8 CMMI10 <cmmi10.pfb
+cmmib9 CMMI10 <cmmi10.pfb
+cmmib10 CMMI10 <cmmi10.pfb
+cmbxsl10 CMBX10 <cmbx10.pfb
+% typewriter sizes whose own pfb is not in the cache either — the base map
+% points cmtt8/cmtt9 at cmtt10.pfb and cmtt10 at its own missing pfb; every
+% one of those 301s. Route all cached tt sizes at the cached cmtt12.pfb.
+cmtt8 CMTT12 <cmtt12.pfb
+cmtt9 CMTT12 <cmtt12.pfb
+cmtt10 CMTT12 <cmtt12.pfb

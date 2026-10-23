@@ -13,4 +13,5 @@ test_output
 output*
 input
 wasm-test/texlive-cache
-wasm-test/fixtures
+wasm-test/server/target
+wasm-test/fmt-cache

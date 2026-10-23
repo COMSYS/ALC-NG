@@ -1,19 +1,27 @@
-# Serves the wasm test page (wasm-test/index.html) together with the TeX Live
-# proxy of wasm-test/serve.py.
+# Serves the wasm test page (wasm-test/index.html) together with the axum dev
+# server wasm-test/server — the Rust port of the old serve.py.
 #
 #   docker build -f Dockerfile.wasm -t alc-ng-wasm .
 #   docker run --rm -p 8000:8000 alc-ng-wasm
-#   open http://localhost:8000/wasm-test/
+#   open http://localhost:8000/
 #
 # The patched SwiftLaTeX engines in wasm-test/swiftlatex are gitignored, so
 # they must be present in the build context (see wasm-test/swiftlatex/README.md).
+#
+# TeX Live: the runtime is the full TeX Live image, so the server's kpsewhich
+# resolves the entire distribution — the page needs no local TeX installation
+# and hosts no packages.
 
 # --- alc-ng as wasm32-wasip1 cdylib ----------------------------------------
 FROM rust:1 AS wasm-build
 
 ARG WASI_SDK_VERSION=34
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+# libclang: tree-sitter's build script runs bindgen on the host (the
+# wasm-target C compilation itself uses the wasi-sdk clang below).
+# nodejs: tree-sitter-latex's build script generates its parser from
+# grammar.js with tree-sitter-cli, which spawns node.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libclang-dev nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # tree-sitter's C sources need a wasm-capable clang and a WASI sysroot.
@@ -36,6 +44,28 @@ COPY external ./external
 
 RUN cargo build --target wasm32-wasip1 --lib --release
 
+# --- wasm dev server: static files + /tree/ + kpsewhich TeX Live proxy -------
+# Built against musl so the static binary drops into the TeX Live image
+# regardless of that image's glibc.
+FROM rust:1 AS server-build
+
+RUN rustup target add x86_64-unknown-linux-musl \
+    && apt-get update && apt-get install -y --no-install-recommends musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY wasm-test/server ./server
+WORKDIR /server
+RUN cargo build --release --target x86_64-unknown-linux-musl
+
+# --- UI runtime (React + Ant Design UMD bundles, pinned versions) ----------
+# The page loads these from wasm-test/vendor/ (gitignored) and only falls back
+# to jsDelivr in the browser; vendoring at build time keeps it self-contained.
+FROM alpine:3 AS ui-vendor
+
+RUN apk add --no-cache curl
+COPY wasm-test/fetch-ui-deps.sh /tmp/fetch-ui-deps.sh
+RUN sh /tmp/fetch-ui-deps.sh
+
 # --- pdfium (wasm) for the page's compare option ---------------------------
 FROM alpine:3 AS pdfium
 
@@ -43,25 +73,58 @@ RUN apk add --no-cache curl
 WORKDIR /pdfium
 RUN curl -sSfL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-wasm.tgz | tar xz
 
-# --- runtime: TeX Live (for kpsewhich) + serve.py --------------------------
-FROM texlive/texlive:latest AS runtime
+# --- LaTeX format dumps -----------------------------------------------------
+# A .fmt is engine-build specific, so TeX Live's native pdflatex.fmt is useless
+# here: both dumps are built by the wasm engines themselves, headlessly.
+# wasm-test/build-fmt.cjs drives the worker glue under node and fetches every
+# TeX file from the dev server (kpsewhich), exactly like the page would; the
+# result is baked into the image. Nothing is ever uploaded at runtime.
+FROM texlive/texlive:latest-full AS fmt-build
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# serve.py serves this directory as the site root and keeps its per-URL
-# TeX Live cache in wasm-test/texlive-cache.
+COPY --from=server-build /server/target/x86_64-unknown-linux-musl/release/wasm-serve /usr/local/bin/
+
+WORKDIR /srv
+COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
+COPY wasm-test/build-fmt.cjs ./build-fmt.cjs
+
+RUN (SERVE_HOST=127.0.0.1 wasm-serve 8100 >/tmp/serve.log 2>&1 &) \
+    && sleep 2 \
+    && node build-fmt.cjs ./wasm-test/swiftlatex swiftlatexpdftex.js http://127.0.0.1:8100/texlive/ \
+         wasm-test/fmt-cache/alc_ng_swiftlatexpdftex_fmt_v1__swiftlatexpdftex.fmt \
+    && node build-fmt.cjs ./wasm-test/swiftlatex swiftlatexxetex.js http://127.0.0.1:8100/texlive/ \
+         wasm-test/fmt-cache/alc_ng_swiftlatexxetex_fmt_v1__swiftlatexxetex.fmt \
+    && ls -l wasm-test/fmt-cache
+
+# --- runtime: TeX Live full (the packages kpsewhich answers with) -----------
+FROM texlive/texlive:latest-full AS runtime
+
+# The dev server serves this directory as the site root and keeps its
+# per-URL TeX Live cache in wasm-test/texlive-cache.
 WORKDIR /srv
 COPY --from=wasm-build /app/target/wasm32-wasip1/release/alc_ng.wasm ./target/wasm32-wasip1/release/alc_ng.wasm
+COPY --from=server-build /server/target/x86_64-unknown-linux-musl/release/wasm-serve /usr/local/bin/
 COPY --from=pdfium /pdfium ./wasm-test/pdfium
-COPY wasm-test/index.html wasm-test/serve.py ./wasm-test/
+COPY wasm-test/index.html ./wasm-test/
+COPY --from=ui-vendor /tmp/vendor ./wasm-test/vendor
 COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
+COPY --from=fmt-build /srv/wasm-test/fmt-cache ./wasm-test/fmt-cache
+COPY wasm-test/texlive-extras ./wasm-test/texlive-extras
 COPY wasm-test/sample-nested ./wasm-test/sample-nested
 COPY wasm-test/sample-xelatex ./wasm-test/sample-xelatex
+# Real arXiv sources for the page's sample picker (gitignored — wildcard so a
+# fresh checkout without fixtures/ still builds; COPY skips a no-match glob).
+# Wildcard sources contribute their *contents*, so the destination is the
+# fixtures dir itself.
+COPY wasm-test/fixtures* ./wasm-test/fixtures/
+COPY tests/provided_fls ./tests/provided_fls
 
 ENV SERVE_HOST=0.0.0.0
 EXPOSE 8000
 VOLUME /srv/wasm-test/texlive-cache
 
-ENTRYPOINT ["python3", "-I", "wasm-test/serve.py"]
+ENTRYPOINT ["wasm-serve"]
 CMD ["8000"]

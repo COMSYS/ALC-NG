@@ -57,6 +57,38 @@ SEED_NEW = (
     + SEED_OLD
 )
 
+# patch 7: pathed lookups get Web2C's .tex fallback and a case-insensitive
+# fallback. TeX does not append .tex to a name that already contains a dot
+# (\\input{contents/4.2_datasets} is searched as typed), but native Web2C then
+# retries with .tex appended; this engine's kpathsea does not, and its JS hook
+# refuses any name with a slash, so every dotted-stem input in a subdirectory
+# (`4.2_datasets.tex`, …) came back "not found". Nor does the engine's fs know
+# about case: sources written on macOS happily include `DV3_plot_1.png` where
+# disk says `dv3_plot_1.png` (arXiv 2303.12712 is the repro for both). The
+# hook now answers pathed names itself, verbatim first (exact path, then
+# `.tex`), and only then walks the path case-insensitively — logging a notice
+# whenever it lands on a name that differs in case, so the mismatch stays
+# visible instead of being silently papered over.
+KPSE_OLD = 'if(reqname.includes("/")){return 0}const cacheKey=format+"/"+reqname;'
+KPSE_NEW = (
+    'if(reqname.includes("/")){'
+    'const findci=function(rel){let dir="/";'
+    'for(const seg of(rel.startsWith("/")?rel:FS.cwd()+"/"+rel).split("/").filter(Boolean)){'
+    "let hit=null;"
+    "try{for(const n of FS.readdir(dir)){if(n===seg){hit=n;break}"
+    "if(!hit&&n.toLowerCase()===seg.toLowerCase()){hit=n}}}catch(e){return null}"
+    'if(!hit)return null;dir=dir==="/"?dir+hit:dir+"/"+hit}'
+    "return FS.analyzePath(dir).exists?dir:null};"
+    'for(const cand of[reqname,reqname+".tex"]){'
+    'const p=cand.startsWith("/")?cand:FS.cwd()+"/"+cand;'
+    'if(FS.analyzePath(p).exists){return allocate(intArrayFromString(p),"i8",ALLOC_NORMAL)}}'
+    'for(const cand of[reqname,reqname+".tex"]){'
+    "const p=findci(cand);"
+    'if(p){console.log("[alc-ng] case-insensitive match: "+reqname+" -> "+p);'
+    'return allocate(intArrayFromString(p),"i8",ALLOC_NORMAL)}}'
+    'return 0}const cacheKey=format+"/"+reqname;'
+)
+
 # patch 4: record every open, so the page can build the used-file list from it.
 OPEN_OLD = "try{var pathname=SYSCALLS.getStr(path);"
 OPEN_NEW = OPEN_OLD + "(self.openLog||(self.openLog=[])).push({p:pathname,m:flags&3});"
@@ -114,6 +146,7 @@ def worker(name, patches, cd_routine, sidecar):
 HOST_COMMANDS = [
     (MKDIR_OLD, MKDIR_NEW),
     (DISPATCH_OLD, DISPATCH_NEW),
+    (KPSE_OLD, KPSE_NEW),
     (SEED_OLD, SEED_NEW),
     (OPEN_OLD, OPEN_NEW),
 ]

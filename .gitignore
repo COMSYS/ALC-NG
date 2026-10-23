@@ -20,7 +20,10 @@
 !/wasm-test/swiftlatex/README.md
 !/wasm-test/swiftlatex/alc-wasi.js
 /wasm-test/texlive-cache
+/wasm-test/server/target
 /wasm-test/fixtures
 /wasm-test/pdfium/*
 !/wasm-test/pdfium/README.md
 /wasm-test/vendor
+/wasm-test/fmt-cache
+/wasm-test/__pycache__
