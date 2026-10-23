@@ -127,21 +127,6 @@
   }
   .btn .icon { display: inline-flex; font-size: 16px; }
 
-  /* runtime state chips — the hero's “live stats line” */
-  .chip-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-  .chipstat {
-    display: inline-flex; align-items: center; gap: 0.45rem;
-    font: 500 0.72rem/1 var(--font-mono); letter-spacing: 0.02em;
-    border: 1px solid var(--color-border); border-radius: 999px;
-    padding: 0.38rem 0.75rem; background: var(--color-surface); color: var(--color-secondary);
-    max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    box-shadow: var(--shadow-card);
-  }
-  .chipstat::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--color-faint); flex: none; }
-  .chipstat.ok::before { background: var(--color-success); }
-  .chipstat.err::before { background: var(--color-fail); }
-  .chipstat.fmeta { font-size: 0.66rem; color: var(--color-faint); }
-
   /* ════════════════════════════════════════════════════════════
      LAYOUT — template container width
      ════════════════════════════════════════════════════════════ */
@@ -724,7 +709,7 @@
   @media (max-width: 640px) {
     header.hero { flex-direction: column; align-items: flex-start; padding: 14px 16px; }
     header.hero .hero-right { align-items: flex-start; margin-left: 0; }
-    .btn-row, .chip-row { justify-content: flex-start; }
+    .btn-row { justify-content: flex-start; }
     .page { padding: 1rem 0.75rem 1.75rem; }
     .btn-row { gap: 8px; }
     .btn { padding: 8px 14px; font-size: 13px; }
@@ -753,10 +738,6 @@
           <span class="icon"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3.5C7 2.6 5.6 2 4 2H2v11h2c1.6 0 3 .6 4 1.5 1-.9 2.4-1.5 4-1.5h2V2h-2c-1.6 0-3 .6-4 1.5Z"/><path d="M8 3.5V15"/></svg></span>
           <span>Paper page</span>
         </a>
-      </div>
-      <div class="chip-row">
-        <span class="chipstat" id="status">idle — loads on Run</span>
-        <span class="chipstat fmeta" id="engineStatus">engine not loaded</span>
       </div>
     </div>
   </header>
@@ -877,7 +858,6 @@ const SAMPLES = [
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 const $ = (id) => document.getElementById(id);
-let alcExports = null;
 let folder = null;  // { files: Map<relPath, File>, label }
 
 // --- UI store -----------------------------------------------------------------
@@ -959,12 +939,6 @@ const logErr = (text) => logLine(text, "error");
 const fmtKB = (n) => `${(n / 1024).toFixed(1)} KB`;
 const fmtSize = (n) => (n < 1024 ? `${n} B` : fmtKB(n));
 const fmtDelta = (a, b) => (b === a ? "±0 B" : `${b > a ? "+" : "−"}${fmtSize(Math.abs(b - a))}`);
-
-function setStatus(msg, cls) {
-  const el = $("status");
-  el.textContent = msg;
-  el.className = `chipstat${cls ? ` ${cls}` : ""}`;
-}
 
 // The panel's status line — an alert whose tone follows the message, rendered
 // by the island. Every pipeline step reports through here.
@@ -1186,12 +1160,13 @@ const steps = {
   },
 };
 
-// --- module loading (snippet mode: main thread, stubbed WASI) ----------------
+// --- wasm bytes --------------------------------------------------------------
 
 const WASM_PATH = "/target/wasm32-wasip1/release/alc_ng.wasm";
 
-// The multi-MB module bytes, fetched and timed. Both consumers — the
-// main-thread module and the engine worker's copy — share this fetch.
+// The multi-MB module bytes, fetched and timed for the engine worker's
+// alcng_load (ensureWorkerAlcModule) — the page never instantiates the module
+// itself; the worker is its only runtime.
 async function fetchWasmBytes() {
   const t0 = performance.now();
   const response = await fetch(WASM_PATH);
@@ -1199,49 +1174,6 @@ async function fetchWasmBytes() {
   const bytes = await response.arrayBuffer();
   logInfo(`wasm fetch: ${fmtKB(bytes.byteLength)} in ${(performance.now() - t0).toFixed(0)} ms`);
   return bytes;
-}
-
-async function loadModule() {
-  setStatus("Loading …");
-  try {
-    const bytes = await fetchWasmBytes();
-
-    // The wasip1 cdylib imports a handful of WASI functions it never calls
-    // on the exported code path (no I/O happens). Stub them all with a
-    // function returning 0 (= errno SUCCESS).
-    const t1 = performance.now();
-    const module = await WebAssembly.compile(bytes);
-    const imports = {};
-    let importNames = [];
-    for (const imp of WebAssembly.Module.imports(module)) {
-      if (imp.kind !== "function") throw new Error(`unsupported import kind: ${imp.kind} ${imp.module}.${imp.name}`);
-      (imports[imp.module] ??= {})[imp.name] = () => 0;
-      importNames.push(`${imp.module}.${imp.name}`);
-    }
-    logv(`wasi imports stubbed (${importNames.length}): ${importNames.join(", ")}`);
-    const instance = await WebAssembly.instantiate(module, imports);
-    alcExports = instance.exports;
-
-    // WASI reactor initialization, if present.
-    if (alcExports._initialize) {
-      alcExports._initialize();
-      logv("wasi reactor initialized (_initialize)");
-    }
-
-    const version = readString(alcExports.alc_ng_version());
-    logOk(`module ready: alc-ng ${version}, ${Object.keys(alcExports).length} exports, ${(performance.now() - t1).toFixed(0)} ms`);
-    setStatus(`alc-ng ${version} ready`, "ok");
-  } catch (err) {
-    logErr(`module load failed: ${err.message}`);
-    setStatus(`Error: ${err.message}`, "err");
-  }
-}
-
-function readString(ptr) {
-  const mem = new Uint8Array(alcExports.memory.buffer);
-  let end = ptr;
-  while (mem[end] !== 0) end++;
-  return dec.decode(mem.slice(ptr, end));  // slice(): safe even if memory grows later
 }
 
 // --- SwiftLaTeX engine (drives the engine worker directly) ------------------
@@ -1282,30 +1214,12 @@ function texReady() {
 
 const engineSpec = () => ENGINES[texWorker?.engine ?? "pdftex"];
 
-function setEngineStatus(msg, cls) {
-  const el = $("engineStatus");
-  el.textContent = msg;
-  el.className = `chipstat fmeta${cls ? ` ${cls}` : ""}`;
-}
-
-// A failed compile leaves this chip reading "compile failed — …" for a
-// document that is no longer loaded. A fresh folder selection re-truths it:
-// a compile failure says nothing about the engine worker, which is still
-// warm and ready; only an engine that is (re)loading or was never loaded
-// gets anything but the ready state here.
-function refreshEngineChip() {
-  if (texReady()) setEngineStatus(`${engineSpec().label} engine ready`, "ok");
-  else if (!texWorker) setEngineStatus("engine not loaded");
-  // else: mid-load — its own progress or error text still applies.
-}
-
 // Spawns the worker of `engine` ("pdftex" | "xetex"), replacing the current
 // one. The alc_ng module lives inside the engine worker, so a switch also
 // drops it (ensureWorkerAlcModule loads it again). The dvipdfmx worker rides
 // the same lifecycle — it exists only to convert this engine's XDV output.
 async function loadEngine(engine = "pdftex") {
   const spec = ENGINES[engine];
-  setEngineStatus(`loading ${spec.label} engine …`);
   resetPdfPane();
   if (texWorker) {
     texWorker.worker.terminate();
@@ -1330,11 +1244,9 @@ async function loadEngine(engine = "pdftex") {
     worker.postMessage({ cmd: "settexliveurl", url: "/texlive/" });
     logOk(`${spec.label} engine ready in ${(performance.now() - t0).toFixed(0)} ms`);
     texWorker.ready = true;
-    setEngineStatus(`${spec.label} engine ready`, "ok");
   } catch (err) {
     logErr(`engine load failed: ${err.message}`);
     texWorker = null;
-    setEngineStatus(`engine failed to load: ${err.message ?? err}`, "err");
   }
 }
 
@@ -1507,7 +1419,6 @@ async function setFolder(fileList, label) {
 
   setSubmissionOpen(true);  // a fresh selection is handled with the controls open
   resetReview();
-  refreshEngineChip();  // stop blaming the new selection for the old folder's compile
   let totalKB = 0;
   for (const f of files.values()) totalKB += f.size;
   logInfo(`folder "${label}": ${files.size} file(s), ${fmtKB(totalKB)} total`);
@@ -1550,7 +1461,6 @@ function clearFolder() {
   setCtrl({ folder: null, mainFiles: [], mainSel: [], status: IDLE_STATUS, sample: null });
   setSubmissionOpen(true);
   resetReview();
-  refreshEngineChip();
   logInfo("folder selection cleared");
 }
 
@@ -1780,15 +1690,13 @@ async function provideFormatDump() {
   if (texWorker.fmtBytes !== undefined) { logv("format dump already seeded for this session"); return texWorker.fmtBytes; }
   const spec = engineSpec();
 
-  // One dump from one source: remember it for the session, cache it, seed
-  // the engine's kpathsea hook, and report the engine ready. `note` is the
-  // log line naming the source.
-  async function adoptFormatDump(dump, note, { level = "ok", cache = true, ready = true } = {}) {
+  // One dump from one source: remember it for the session, cache it and seed
+  // the engine's kpathsea hook. `note` is the log line naming the source.
+  async function adoptFormatDump(dump, note, { level = "ok", cache = true } = {}) {
     texWorker.fmtBytes = dump;
     if (cache) await saveFmt(spec.fmtKey, dump);
     ({ ok: logOk, info: logInfo })[level](note);
     await seedFormatDump(dump);
-    if (ready) setEngineStatus(`${spec.label} engine ready`, "ok");
     return dump;
   }
 
@@ -1799,7 +1707,7 @@ async function provideFormatDump() {
     return adoptFormatDump(
       stored,
       `restored ${spec.label} format dump from IndexedDB (${fmtKB(stored.length)}) — skipping the build`,
-      { level: "info", cache: false, ready: false },
+      { level: "info", cache: false },
     );
   }
 
@@ -1814,7 +1722,6 @@ async function provideFormatDump() {
 
   logInfo(`building the ${spec.label} LaTeX format dump with the engine (once, ~a few minutes — INITEX loads the full LaTeX2e kernel + hyphenation patterns)`);
   steps.detail("stage", `building the ${spec.label} LaTeX format dump (once, a few minutes)`);
-  setEngineStatus(`building ${spec.label} LaTeX format dump with the engine (once) …`);
   try {
     const result = await texCall({ cmd: "compileformat" }, ["compile"]);
     if (result.result === "ok" && result.pdf !== undefined) {
@@ -2085,7 +1992,7 @@ async function compileFolderInEngine(mains) {
     // nothing compiled: report the first failure, like a single-main run did
     const err = firstError ?? { main: mains[0], status: "?", log: "" };
     if (/format file/.test(err.log)) await dropFmt(engineSpec().fmtKey);
-    setEngineStatus(`compile failed (status ${err.status}) — log tail: ${failTail(err.log)}`, "err");
+    logErr(`compile of ${err.main} failed (status ${err.status}) — TeX log tail below`);
     await logEngineTeXLog(err.main);
     return { failed: true, main: err.main };
   }
@@ -2559,10 +2466,6 @@ async function ensureWorkerAlcModule() {
   if (trace) logInfo("WASI call tracing enabled (?wasitrace=1)");
   logOk(`alc_ng module live in engine worker (${(reply.exports ?? []).length} exports)`);
   steps.detail("cleaner", `module live (${fmtKB(buf.byteLength)} wasm)`);
-  // The chip module piggybacks on the now cached bytes — the same URL with a
-  // warm HTTP cache, so no second download, only a local compile — and the
-  // header gets its real version instead of staying idle.
-  if (!alcExports) loadModule();
 }
 
 async function runAlcNg() {
@@ -3943,14 +3846,10 @@ const sampleParam = new URLSearchParams(location.search).get("sample");
 if (sampleParam !== null && SAMPLES[Number(sampleParam)]) loadSampleFolder(Number(sampleParam));
 // Lazy boot: a first load never fetches more than the page itself — the run
 // cold-starts the engine worker (runAlcNg → loadEngine) and pulls the wasm
-// module into it on demand (ensureWorkerAlcModule). The header chips tell the
-// idle truth until then, and the version readout piggybacks on the first run.
-// This keeps a first mobile visit page-sized instead of ~11 MB. `?preload=1`
-// restores the eager boot for sessions that measure load times.
-if (new URLSearchParams(location.search).has("preload")) {
-  loadEngine();
-  loadModule();
-}
+// module into it on demand (ensureWorkerAlcModule). This keeps a first mobile
+// visit page-sized instead of ~11 MB. `?preload=1` warms the engine worker at
+// load for sessions that measure compile times.
+if (new URLSearchParams(location.search).has("preload")) loadEngine();
 </script>
 </body>
 </html>
