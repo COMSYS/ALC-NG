@@ -1187,14 +1187,49 @@ const steps = {
 
 const WASM_PATH = "/target/wasm32-wasip1/release/alc_ng.wasm";
 
+// GET with download progress: `onProgress(loadedBytes, totalBytes)` fires
+// whenever the whole percentage moves (totalBytes is 0 when the server sent
+// no Content-Length, then every event reports the running size). XHR,
+// because fetch exposes no receive progress. Rejects on network trouble and
+// on non-2xx, so await-style callers keep the old `!response.ok` semantics.
+function fetchWithProgress(url, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", url);
+    xhr.responseType = "arraybuffer";
+    let lastPct = -1;
+    xhr.onprogress = (ev) => {
+      const total = ev.lengthComputable ? ev.total : 0;
+      const pct = total > 0 ? Math.floor((ev.loaded / total) * 100) : -1;
+      if (pct === lastPct) return;
+      lastPct = pct;
+      onProgress(ev.loaded, total);
+    };
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve(xhr.response)
+        : reject(new Error(`HTTP ${xhr.status} ${xhr.statusText}`));
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.send();
+  });
+}
+
+// Percent once the total is known, transferred bytes while it is not.
+const dlNote = (loaded, total) =>
+  total > 0 ? `${Math.floor((loaded / total) * 100)} %` : fmtSize(loaded);
+
 // The multi-MB module bytes, fetched and timed for the engine worker's
 // alcng_load (ensureWorkerAlcModule) — the page never instantiates the module
 // itself; the worker is its only runtime.
 async function fetchWasmBytes() {
   const t0 = performance.now();
-  const response = await fetch(WASM_PATH);
-  if (!response.ok) throw new Error(`alc_ng.wasm fetch failed: ${response.status} ${response.statusText}`);
-  const bytes = await response.arrayBuffer();
+  let bytes;
+  try {
+    bytes = await fetchWithProgress(WASM_PATH, (loaded, total) =>
+      steps.detail("cleaner", `fetching alc_ng.wasm … ${dlNote(loaded, total)}`));
+  } catch (err) {
+    throw new Error(`alc_ng.wasm fetch failed: ${err.message}`);
+  }
   logInfo(`wasm fetch: ${fmtKB(bytes.byteLength)} in ${(performance.now() - t0).toFixed(0)} ms`);
   return bytes;
 }
@@ -1705,12 +1740,12 @@ const fmtServerUrl = (spec) =>
 async function fetchServerFmt(spec) {
   if (serverFmtBad) return null;
   try {
-    const resp = await fetch(fmtServerUrl(spec));
-    if (!resp.ok) return null;
-    const bytes = new Uint8Array(await resp.arrayBuffer());
-    return bytes.length >= 1024 ? bytes : null;  // a real dump is megabytes
+    // the dump is 17–28 MB — show the percentage on the stage step
+    const buf = await fetchWithProgress(fmtServerUrl(spec), (loaded, total) =>
+      steps.detail("stage", `downloading ${spec.label} format dump … ${dlNote(loaded, total)}`));
+    return buf.byteLength >= 1024 ? new Uint8Array(buf) : null;  // a real dump is megabytes
   } catch {
-    return null;  // page opened without the dev server: build locally
+    return null;  // 404, or the page opened without the dev server: build locally
   }
 }
 
