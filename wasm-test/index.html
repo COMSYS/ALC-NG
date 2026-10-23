@@ -1205,10 +1205,19 @@ function fetchWithProgress(url, onProgress) {
       lastPct = pct;
       onProgress(ev.loaded, total);
     };
-    xhr.onload = () =>
-      xhr.status >= 200 && xhr.status < 300
-        ? resolve(xhr.response)
-        : reject(new Error(`HTTP ${xhr.status} ${xhr.statusText}`));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`HTTP ${xhr.status} ${xhr.statusText}`));
+        return;
+      }
+      // progress events are coalesced and there is no guaranteed final one —
+      // emit the full count so the caller's percentage never sticks short of
+      // 100 % (a cache-served body delivers few events then jumps straight
+      // to load, leaving the line frozen mid-count while the next phase runs)
+      const n = xhr.response ? xhr.response.byteLength : 0;
+      if (n > 0) onProgress(n, n);
+      resolve(xhr.response);
+    };
     xhr.onerror = () => reject(new Error("network error"));
     xhr.send();
   });
@@ -2523,6 +2532,9 @@ async function ensureWorkerAlcModule() {
   logInfo("fetching alc_ng.wasm for the engine worker …");
   steps.detail("cleaner", "fetching alc_ng.wasm …");
   const buf = await fetchWasmBytes();
+  // from here on nothing streams: the bytes go to the worker, which spends
+  // the actual seconds validating and instantiating the module — say so
+  steps.detail("cleaner", "instantiating alc_ng module …");
   const trace = new URLSearchParams(location.search).has("wasitrace");
   const reply = await texCall({ cmd: "alcng_load", wasm: buf, trace }, ["alcng_load"]);
   workerModuleLoaded = true;
