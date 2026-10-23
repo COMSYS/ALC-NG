@@ -45,6 +45,12 @@
 //! is populated at image build time (wasm-test/build-fmt.cjs) and served
 //! read-only here. There is deliberately no upload route: a client-written
 //! dump would be served to every browser.
+//!
+//! Cache policy: everything answers `no-cache` except plain TeX Live
+//! packages — those bytes are frozen with the image, so their 200s carry a
+//! one-day window and browser caches (and every re-run of a page session)
+//! skip re-downloading the package set. Map files and format dumps opt out;
+//! see `TEXLIVE_CACHE` and `get_fmt`.
 
 use std::{
     env, fs, io,
@@ -201,34 +207,54 @@ async fn bind(host: &str, port: u16) -> Result<tokio::net::TcpListener> {
     Ok(listener)
 }
 
-/// All routes plus the static fallback, everything answering no-cache:
-/// a test server, so edits to the page and the patched engine workers take
-/// effect after a normal reload.
+/// The blanket `Cache-Control` for the page, its files and everything whose
+/// answer is not frozen with the image (dumps, negatives, errors).
+const NO_CACHE: &str = "no-cache";
+
+/// Freshness window for TeX Live package bytes: they change only when a new
+/// image is deployed, so one day after a deploy is the worst a browser can
+/// keep an outdated file. Map files are excluded — `extend_map` below mixes
+/// in the tracked texlive-extras/ overrides, so their bytes are not purely
+/// frozen with the image.
+const TEXLIVE_CACHE: &str = "public, max-age=86400";
+
+/// All routes plus the static fallback.
+///
+/// The page, its files and the listings answer no-cache — a test server, so
+/// edits take effect after a normal reload — while the engine's TeX Live
+/// routes set their own `Cache-Control` per response (see `TEXLIVE_CACHE`),
+/// which is why they cannot sit behind the blanket layer.
 fn build_router(app: Arc<App>) -> Router {
     let no_cache = SetResponseHeaderLayer::overriding(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache"),
+        HeaderValue::from_static(NO_CACHE),
     );
     let static_files = ServiceBuilder::new()
         .layer(no_cache.clone())
         .service(ServeDir::new(&app.root));
-    Router::new()
+    // Engine content, outside the no-cache layer: every response from
+    // here states its cacheability itself.
+    let engine_files = Router::new()
         .route(
             "/texlive/{*rel}",
             get(texlive).route_layer(middleware::from_fn_with_state(app.clone(), log_texlive)),
         )
-        .route("/tree/{*dir}", get(tree))
         // Prebuilt LaTeX format dumps (read-only): the page fetches one
         // before it considers building the format itself, so a fresh
         // browser skips the multi-minute INITEX run.
-        .route("/fmt/{key}/{name}", get(get_fmt))
-        // The bench page lives at the site root; the former /wasm-test/
-        // location forwards there. The files under wasm-test/ themselves
-        // keep being served by the static fallback.
+        .route("/fmt/{key}/{name}", get(get_fmt));
+    // The bench page lives at the site root; the former /wasm-test/
+    // location forwards there. The files under wasm-test/ themselves
+    // keep being served by the static fallback.
+    let pages = Router::new()
+        .route("/tree/{*dir}", get(tree))
         .route("/", get(index))
         .route("/wasm-test", get(moved_to_root))
         .route("/wasm-test/", get(moved_to_root))
-        .layer(no_cache)
+        .layer(no_cache);
+    Router::new()
+        .merge(engine_files)
+        .merge(pages)
         .fallback_service(static_files)
         .with_state(app)
 }
@@ -251,7 +277,7 @@ async fn main() -> Result<()> {
 }
 
 /// The bench page at the site root: read at request time, so edits show up
-/// after a plain reload (the whole server answers with no-cache anyway).
+/// after a plain reload (the page and its files answer no-cache anyway).
 async fn index(State(app): State<Arc<App>>) -> Response {
     match tokio::fs::read(app.root.join("wasm-test/index.html")).await {
         Ok(html) => Response::builder()
@@ -277,23 +303,28 @@ async fn moved_to_root() -> Response {
 }
 
 /// A prebuilt format dump, or 404 so the page builds one itself.
+///
+/// The dump stays `no-cache`: a fresh browser fetches it at most once —
+/// success then stores it in IndexedDB — and the URL key is a
+/// hand-maintained string rather than a content hash, so a freshness
+/// window could serve a dump from before an engine rebuild. Even fully
+/// uncached it costs at most one download per browser.
 async fn get_fmt(
     State(app): State<Arc<App>>,
     UrlPath((key, name)): UrlPath<(String, String)>,
 ) -> Response {
     let Some(path) = fmt_cache_path(&app, &key, &name) else {
-        return (StatusCode::NOT_FOUND, "unknown format dump").into_response();
+        return no_cache_error(StatusCode::NOT_FOUND, "unknown format dump".into());
     };
     match tokio::fs::read(&path).await {
-        Ok(data) => octet_stream(data, &[]),
+        Ok(data) => octet_stream(data, NO_CACHE, &[]),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            (StatusCode::NOT_FOUND, "no dump cached yet").into_response()
+            no_cache_error(StatusCode::NOT_FOUND, "no dump cached yet".into())
         }
-        Err(err) => (
+        Err(err) => no_cache_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("reading format dump: {err}"),
-        )
-            .into_response(),
+        ),
     }
 }
 
@@ -313,15 +344,17 @@ async fn texlive(State(app): State<Arc<App>>, UrlPath(rel): UrlPath<String>) -> 
         // headers — keep them stable per request so repeated fetches rewrite
         // the same file.
         Ok(Some((data, fileid))) => {
-            octet_stream(data, &[("fileid", fileid.clone()), ("pkid", fileid)])
+            // Maps stay out of the freshness window: their bytes mix in the
+            // tracked texlive-extras/ overrides, not only the frozen image.
+            let cache = if is_map_request(&rel) { NO_CACHE } else { TEXLIVE_CACHE };
+            octet_stream(data, cache, &[("fileid", fileid.clone()), ("pkid", fileid)])
         }
         Ok(None) => proxy_not_found(),
         // proxy trouble: report as upstream error
-        Err(err) => (
+        Err(err) => no_cache_error(
             StatusCode::BAD_GATEWAY,
             format!("texlive proxy failed: {err:#}"),
-        )
-            .into_response(),
+        ),
     }
 }
 
@@ -358,10 +391,13 @@ async fn serve_texlive(app: &App, rel: &str) -> Result<Option<(Vec<u8>, String)>
     Ok(None)
 }
 
-/// An octet-stream 200 with a Content-Length plus any extra headers.
-fn octet_stream(data: Vec<u8>, extra: &[(&'static str, String)]) -> Response {
+/// An octet-stream 200 with a Content-Length and an explicit Cache-Control
+/// (these routes sit outside the blanket no-cache layer, so every answer
+/// states its own freshness), plus any extra headers.
+fn octet_stream(data: Vec<u8>, cache_control: &'static str, extra: &[(&'static str, String)]) -> Response {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
+        .header(header::CACHE_CONTROL, HeaderValue::from_static(cache_control))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, data.len().to_string());
     for (name, value) in extra {
@@ -372,12 +408,26 @@ fn octet_stream(data: Vec<u8>, extra: &[(&'static str, String)]) -> Response {
         .expect("a decimal length and static names are always valid headers")
 }
 
+/// A failed answer that forbids caching: browsers fresh-cache 404s
+/// heuristically, and "no such file" must never outlive the fix that made
+/// it true (a package installed, a dump baked by the next image build).
+fn no_cache_error(status: StatusCode, message: String) -> Response {
+    (
+        status,
+        [(header::CACHE_CONTROL, HeaderValue::from_static(NO_CACHE))],
+        message,
+    )
+        .into_response()
+}
+
 /// Reply 301, the mirror protocol's "file does not exist" marker: the engine
 /// worker caches negatives only for 301, so a plain 404 would be re-requested
-/// (and re-paid) every time.
+/// (and re-paid) every time. No-cache as in `no_cache_error` — the 301 must
+/// not be remembered past the moment the file appears.
 fn proxy_not_found() -> Response {
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
+        .header(header::CACHE_CONTROL, HeaderValue::from_static(NO_CACHE))
         .body(Body::empty())
         .unwrap()
 }
@@ -416,15 +466,24 @@ async fn write_cache(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// `<engine>/11/<name>.map` — the requests whose answer `extend_map` below
+/// builds from cache file plus texlive-extras/ overrides, and which the
+/// TeX Live freshness window therefore skips. dvipdfmx's `/tex/<fileid>`
+/// round-trips never carry maps (fonts only), so deciding on the raw URL
+/// matches what `extend_map` will see for the resolved request.
+fn is_map_request(rel: &str) -> bool {
+    let parts: Vec<&str> = rel.split('/').collect();
+    parts.len() == 3 && parts[1] == "11" && parts[2].ends_with(".map")
+}
+
 /// Map responses get the tracked fallback lines (texlive-extras/<name>)
 /// appended. pdfTeX reads the map last-entry-wins, so appends override
 /// the cache's stale entries without rewriting the cache itself.
 async fn extend_map(app: &App, rel: &str, mut data: Vec<u8>) -> Result<Vec<u8>> {
-    let parts: Vec<&str> = rel.split('/').collect();
-    if parts.len() != 3 || parts[1] != "11" || !parts[2].ends_with(".map") {
+    if !is_map_request(rel) {
         return Ok(data);
     }
-    let extra = app.extras.join(parts[2]);
+    let extra = app.extras.join(rel.rsplit('/').next().unwrap_or_default());
     if !is_file(&extra).await {
         return Ok(data);
     }
@@ -654,6 +713,20 @@ fn collect_files(target: &Path, dir: &Path, files: &mut Vec<String>) -> io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The TeX Live freshness window keys off this predicate: real map
+    /// requests yes, everything else — dvipdfmx's extensionless or
+    /// font-extension fileid round-trips, plain package requests, PK — no.
+    #[test]
+    fn map_request_predicate() {
+        assert!(is_map_request("pdftex/11/pdftex.map"));
+        assert!(is_map_request("xetex/11/xetex.map"));
+        assert!(!is_map_request("xetex/11/0123abcd4567ef89")); // fileid
+        assert!(!is_map_request("xetex/11/0123abcd4567ef89.otf")); // round-trip
+        assert!(!is_map_request("pdftex/3/cmr10"));
+        assert!(!is_map_request("pdftex/pk/600/x"));
+        assert!(!is_map_request("pdftex/11/pdftex.map/x"));
+    }
 
     /// The engine's fallback lookups depend on this table staying exactly as
     /// kpse_file_format_type defines it — every id and both accessors.
