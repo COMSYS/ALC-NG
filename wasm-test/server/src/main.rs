@@ -73,34 +73,39 @@ use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 const KPSEWHICH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// kpathsea format ids (kpse_file_format_type) of requests that arrive
-/// without an extension, mapped to the extension to try first.
+/// without an extension: the extension to try first and/or the format name
+/// `kpsewhich -format=` accepts as a last resort. One row per id so both
+/// fallbacks are visible together — an id supported on only one fallback
+/// (e.g. `11`/map) is intentional, not a missing entry.
+const KPSE_FORMATS: &[(&str, Option<&'static str>, Option<&'static str>)] = &[
+    ("3", Some(".tfm"), None),
+    ("6", Some(".bib"), None),
+    ("7", Some(".bst"), None),
+    ("11", None, Some("map")),
+    ("32", Some(".pfb"), Some("type1 fonts")),
+    ("33", Some(".vf"), None),
+    ("36", Some(".ttf"), Some("truetype fonts")),
+    ("41", None, Some("misc fonts")),
+    ("44", Some(".enc"), Some("enc files")),
+    ("45", None, Some("cmap files")),
+    ("46", None, Some("subfont definition files")),
+    ("47", Some(".otf"), Some("opentype fonts")),
+];
+
+/// The extension to try first for a format id.
 fn format_ext(fmt: &str) -> Option<&'static str> {
-    Some(match fmt {
-        "3" => ".tfm",
-        "6" => ".bib",
-        "7" => ".bst",
-        "32" => ".pfb",
-        "33" => ".vf",
-        "36" => ".ttf",
-        "44" => ".enc",
-        "47" => ".otf",
-        _ => return None,
-    })
+    KPSE_FORMATS
+        .iter()
+        .find(|(id, ..)| *id == fmt)
+        .and_then(|(_, ext, _)| *ext)
 }
 
-/// ... and to the format name kpsewhich `-format=` takes, as a last resort.
+/// ... and the format name kpsewhich `-format=` takes, as a last resort.
 fn format_name(fmt: &str) -> Option<&'static str> {
-    Some(match fmt {
-        "11" => "map",
-        "32" => "type1 fonts",
-        "36" => "truetype fonts",
-        "41" => "misc fonts",
-        "44" => "enc files",
-        "45" => "cmap files",
-        "46" => "subfont definition files",
-        "47" => "opentype fonts",
-        _ => return None,
-    })
+    KPSE_FORMATS
+        .iter()
+        .find(|(id, ..)| *id == fmt)
+        .and_then(|(_, _, name)| *name)
 }
 
 /// Whether the host actually has `kpsewhich`; probed once, lazily.
@@ -154,8 +159,9 @@ fn fmt_cache_path(app: &App, key: &str, name: &str) -> Option<PathBuf> {
     (name_ok && key_ok).then(|| app.fmt_cache.join(format!("{key}__{name}")))
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Port, serve host, and configured state from the CLI argument and the
+/// `SERVE_*` environment variables (see the module documentation).
+fn configure() -> Result<(u16, String, Arc<App>)> {
     let port: u16 = env::args()
         .nth(1)
         .map(|arg| arg.parse())
@@ -175,13 +181,62 @@ async fn main() -> Result<()> {
         fileids: root.join("wasm-test/texlive-cache/fileids"),
         extras: root.join("wasm-test/texlive-extras"),
         fmt_cache: root.join("wasm-test/fmt-cache"),
-        root: root.clone(),
+        root,
         verbose: env::var_os("SERVE_VERBOSE").is_some_and(|v| !v.is_empty()),
     });
     fs::create_dir_all(&app.fmt_cache)
         .with_context(|| format!("creating format cache dir {}", app.fmt_cache.display()))?;
+    Ok((port, host, app))
+}
 
-    println!("Serving {} on http://localhost:{port}", root.display());
+/// Bind `host:port` — a bare IP directly, anything else (e.g. "localhost")
+/// after resolution.
+async fn bind(host: &str, port: u16) -> Result<tokio::net::TcpListener> {
+    let addr = format!("{host}:{port}");
+    let listener = match addr.parse::<std::net::SocketAddr>() {
+        Ok(socket) => tokio::net::TcpListener::bind(socket).await,
+        Err(_) => tokio::net::TcpListener::bind((host, port)).await,
+    }
+    .with_context(|| format!("cannot serve on {addr} (SERVE_HOST={host})"))?;
+    Ok(listener)
+}
+
+/// All routes plus the static fallback, everything answering no-cache:
+/// a test server, so edits to the page and the patched engine workers take
+/// effect after a normal reload.
+fn build_router(app: Arc<App>) -> Router {
+    let no_cache = SetResponseHeaderLayer::overriding(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    );
+    let static_files = ServiceBuilder::new()
+        .layer(no_cache.clone())
+        .service(ServeDir::new(&app.root));
+    Router::new()
+        .route(
+            "/texlive/{*rel}",
+            get(texlive).route_layer(middleware::from_fn_with_state(app.clone(), log_texlive)),
+        )
+        .route("/tree/{*dir}", get(tree))
+        // Prebuilt LaTeX format dumps (read-only): the page fetches one
+        // before it considers building the format itself, so a fresh
+        // browser skips the multi-minute INITEX run.
+        .route("/fmt/{key}/{name}", get(get_fmt))
+        // The bench page lives at the site root; the former /wasm-test/
+        // location forwards there. The files under wasm-test/ themselves
+        // keep being served by the static fallback.
+        .route("/", get(index))
+        .route("/wasm-test", get(moved_to_root))
+        .route("/wasm-test/", get(moved_to_root))
+        .layer(no_cache)
+        .fallback_service(static_files)
+        .with_state(app)
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let (port, host, app) = configure()?;
+    println!("Serving {} on http://localhost:{port}", app.root.display());
     println!(
         "texlive proxy: cache -> kpsewhich{} (mirror offline)",
         if kpsewhich_available() {
@@ -190,46 +245,8 @@ async fn main() -> Result<()> {
             " NOT FOUND"
         }
     );
-
-    // Test server: always revalidate, so edits to the page and the patched
-    // engine workers take effect after a normal reload.
-    let no_cache = SetResponseHeaderLayer::overriding(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache"),
-    );
-    let static_files = ServiceBuilder::new()
-        .layer(no_cache.clone())
-        .service(ServeDir::new(&app.root));
-    // A bare IP binds directly; anything else (e.g. "localhost") resolves first.
-    let addr = format!("{host}:{port}");
-    let listener = match addr.parse::<std::net::SocketAddr>() {
-        Ok(socket) => tokio::net::TcpListener::bind(socket).await,
-        Err(_) => tokio::net::TcpListener::bind((host.as_str(), port)).await,
-    }
-    .with_context(|| format!("cannot serve on {addr} (SERVE_HOST={host})"))?;
-    axum::serve(
-        listener,
-        Router::new()
-            .route(
-                "/texlive/{*rel}",
-                get(texlive).route_layer(middleware::from_fn_with_state(app.clone(), log_texlive)),
-            )
-            .route("/tree/{*dir}", get(tree))
-            // Prebuilt LaTeX format dumps (read-only): the page fetches one
-            // before it considers building the format itself, so a fresh
-            // browser skips the multi-minute INITEX run.
-            .route("/fmt/{key}/{name}", get(get_fmt))
-            // The bench page lives at the site root; the former /wasm-test/
-            // location forwards there. The files under wasm-test/ themselves
-            // keep being served by the static fallback.
-            .route("/", get(index))
-            .route("/wasm-test", get(moved_to_root))
-            .route("/wasm-test/", get(moved_to_root))
-            .layer(no_cache)
-            .fallback_service(static_files)
-            .with_state(app),
-    )
-    .await?;
+    let listener = bind(&host, port).await?;
+    axum::serve(listener, build_router(app)).await?;
     Ok(())
 }
 
@@ -632,4 +649,39 @@ fn collect_files(target: &Path, dir: &Path, files: &mut Vec<String>) -> io::Resu
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The engine's fallback lookups depend on this table staying exactly as
+    /// kpse_file_format_type defines it — every id and both accessors.
+    #[test]
+    fn kpse_format_table() {
+        let expected = [
+            ("3", Some(".tfm"), None),
+            ("6", Some(".bib"), None),
+            ("7", Some(".bst"), None),
+            ("11", None, Some("map")),
+            ("32", Some(".pfb"), Some("type1 fonts")),
+            ("33", Some(".vf"), None),
+            ("36", Some(".ttf"), Some("truetype fonts")),
+            ("41", None, Some("misc fonts")),
+            ("44", Some(".enc"), Some("enc files")),
+            ("45", None, Some("cmap files")),
+            ("46", None, Some("subfont definition files")),
+            ("47", Some(".otf"), Some("opentype fonts")),
+        ];
+        for (id, ext, name) in expected {
+            assert_eq!(format_ext(id), ext, "extension for format {id}");
+            assert_eq!(format_name(id), name, "format name for {id}");
+        }
+        // Unknown ids miss on both fallbacks; "pk" is handled before the
+        // table and must not appear in it.
+        for id in ["pk", "999", "", "0"] {
+            assert_eq!(format_ext(id), None, "no extension for {id:?}");
+            assert_eq!(format_name(id), None, "no format name for {id:?}");
+        }
+    }
 }
