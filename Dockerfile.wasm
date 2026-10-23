@@ -121,6 +121,7 @@ COPY wasm-test/sample-xelatex ./wasm-test/sample-xelatex
 # fixtures dir itself.
 COPY wasm-test/fixtures* ./wasm-test/fixtures/
 COPY tests/provided_fls ./tests/provided_fls
+COPY tests/appendix ./tests/appendix
 
 ENV SERVE_HOST=0.0.0.0
 EXPOSE 8000

@@ -848,12 +848,8 @@
 // or shell-escape; v1 shipped a stale cache (29 listings, ~71 chunks) and
 // cannot compile from the cache at all.
 const SAMPLES = [
-  { label: "tests/provided_fls", pick: "provided_fls", blurb: "fixture with a recorded .fls", dir: "/tests/provided_fls", files: ["main.tex", "used.tex", "unused.tex", "main.fls"] },
-  { label: "wasm-test/sample-nested", pick: "sample-nested", blurb: "nested includes, mkdir handling", dir: "/wasm-test/sample-nested", files: ["main.tex", "used.tex", "sub/used2.tex", "sub/extra.tex", "main.fls"] },
-  { label: "arXiv-math0303011v1", pick: "arXiv math0303011", blurb: "real submission, no .fls", dir: "/wasm-test/fixtures/math0303011" },
-  { label: "wasm-test/sample-xelatex", pick: "sample-xelatex", blurb: "fontspec and images, XeLaTeX", dir: "/wasm-test/sample-xelatex", files: ["main.tex", "used.tex", "unused.tex", "figures/square.png", "figures/unused.png"] },
   { label: "bubeck", pick: "bubeck", blurb: "Sparks of AGI, 118 files (arXiv 2303.12712v5)", dir: "/wasm-test/fixtures/bubeck" },
-  { label: "wasm-test/fixtures/two-mains", pick: "two-mains", blurb: "two main files — the main-file checklist", dir: "/wasm-test/fixtures/two-mains" },
+  { label: "tests/appendix", pick: "appendix", blurb: "comment-removal cases, paper.tex + example.bib", dir: "/tests/appendix", files: ["paper.tex", "example.bib"] },
 ];
 
 const enc = new TextEncoder(), dec = new TextDecoder();
