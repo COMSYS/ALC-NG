@@ -24,6 +24,5 @@
 /wasm-test/fixtures
 /wasm-test/pdfium/*
 !/wasm-test/pdfium/README.md
-/wasm-test/vendor
 /wasm-test/fmt-cache
 /wasm-test/__pycache__

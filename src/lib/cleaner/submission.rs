@@ -314,17 +314,23 @@ impl Submission {
 
     /// Returns a set of main source files to compile.
     ///
-    /// If a `00Readme` was successfully parsed (`zzrm` is `Some`),
-    /// its top‑level files are used as the main files. Otherwise,
-    /// the set of possible main files discovered earlier is returned.
+    /// If a `00Readme` was successfully parsed (`zzrm` is `Some`) and declares
+    /// top‑level files, these are used as the main files. Otherwise, the set of
+    /// possible main files discovered earlier is returned.
     pub fn get_mains(&self) -> HashSet<SourceFile> {
-        // If a 00Readme exists, use its declared top‑level files.
+        // If a 00Readme declares top‑level files, use them.
         if let Some(zzrm) = &self.zzrm {
-            zzrm.top_level_files(&self.cache_path)
-        } else {
-            // No 00Readme, fall back to the previously found possible mains.
-            self.possible_main_files.clone()
+            let top_level_files = zzrm.top_level_files(&self.cache_path);
+            if !top_level_files.is_empty() {
+                return top_level_files;
+            }
+            // As on arXiv, a 00Readme without toplevelfile entries (e.g. one that
+            // only sets `nostamp`) does not override the main file detection.
+            trace!("00Readme declares no top-level files, using the detected main files");
         }
+
+        // Fall back to the previously found possible mains.
+        self.possible_main_files.clone()
     }
 
     /// Creates a temporary cache of the project by copying all input files into

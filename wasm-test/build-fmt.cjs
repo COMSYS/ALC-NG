@@ -23,6 +23,8 @@ if (!glueArg || !glueJs || !endpoint || !outFile) {
 // absolute before anything chdirs: later lookups must not depend on the cwd
 const glueDir = path.resolve(glueArg);
 const outPath = path.resolve(outFile);
+// The server is read-only and creates no directories, so make the target's.
+fs.mkdirSync(path.dirname(outPath), { recursive: true });
 
 // --- worker scope -----------------------------------------------------------
 globalThis.self = globalThis;

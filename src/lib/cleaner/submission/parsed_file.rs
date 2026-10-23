@@ -29,6 +29,52 @@ use tree_sitter::{Node, Parser, Tree};
 /// Extensions of LaTeX class and package files, which are only cleaned with `clean_classes`.
 const CLASS_EXTENSIONS: [&str; 8] = ["sty", "cls", "dtx", "bbx", "cbx", "ins", "def", "clo"];
 
+/// Environments whose body is an alignment, with the number of mandatory arguments
+/// (e.g. width and column specification) that follow `\begin{...}`.
+const ALIGNMENT_ENVIRONMENTS: [(&str, usize); 18] = [
+    ("tabular", 1),
+    ("tabular*", 2),
+    ("tabularx", 2),
+    ("tabulary", 2),
+    ("array", 1),
+    ("longtable", 1),
+    ("supertabular", 1),
+    ("supertabular*", 2),
+    ("mpsupertabular", 1),
+    ("mpsupertabular*", 2),
+    ("xtabular", 1),
+    ("xtabular*", 2),
+    ("NiceTabular", 1),
+    ("NiceTabular*", 2),
+    ("NiceArray", 1),
+    ("tblr", 1),
+    ("longtblr", 1),
+    ("talltblr", 1),
+];
+
+/// Commands that end an alignment row or are placed between rows, so a new cell starts after them.
+const ALIGNMENT_ROW_COMMANDS: [&[u8]; 19] = [
+    br"\\",
+    br"\tabularnewline",
+    br"\cr",
+    br"\crcr",
+    br"\noalign",
+    br"\hline",
+    br"\cline",
+    br"\hhline",
+    br"\toprule",
+    br"\midrule",
+    br"\bottomrule",
+    br"\cmidrule",
+    br"\morecmidrules",
+    br"\specialrule",
+    br"\addlinespace",
+    br"\endhead",
+    br"\endfirsthead",
+    br"\endfoot",
+    br"\endlastfoot",
+];
+
 /// All common file‑extensions for image formats supported by the image crate.
 pub const IMAGE_EXTENSIONS: &[&str] = &[
     "avif", "bmp", "dib", "dds", "exr", "ff", "gif", "hdr", "ico", "jpg", "jpeg", "jpe", "png",
@@ -1096,7 +1142,9 @@ impl<'a> ContentStripper<'a> {
 
                     // In math mode, spaces are ignored but an empty group is an atom that changes
                     // the spacing (e.g. turns a unary minus into a binary one), so delete the invocation.
-                    if is_in_math_mode(&node) {
+                    // The same holds at the start of an alignment cell, where an empty group would
+                    // break a following `\hline` or `\multicolumn`.
+                    if is_in_math_mode(&node) || self.is_at_alignment_cell_start(&node) {
                         // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
                         let fullline = self.is_fullline(&node);
 
@@ -1301,6 +1349,98 @@ impl<'a> ContentStripper<'a> {
             .is_some_and(|&b| is_newline(b));
 
         newline_before && newline_after
+    }
+
+    /// Returns `true` if the node starts a cell of an alignment such as `tabular`.
+    ///
+    /// At the start of a cell, TeX expands macros to look for `\noalign` (e.g. `\hline`)
+    /// or `\omit` (e.g. `\multicolumn`) and skips spaces. An invocation of a comment command
+    /// expands to nothing there, whereas an empty group starts the cell: a following `\hline`
+    /// fails with "Misplaced \noalign" and a following `\end{tabular}` adds an empty row.
+    fn is_at_alignment_cell_start(&self, node: &Node<'a>) -> bool {
+        // Only invocations directly in the body of the alignment, not in a nested group
+        let mut environment = node.parent();
+        while let Some(parent) = environment.filter(|p| p.kind() == "text") {
+            environment = parent.parent();
+        }
+        let Some(begin) = environment
+            .filter(|e| e.kind() == "generic_environment")
+            .and_then(|e| e.child_by_field_name("begin"))
+        else {
+            return false;
+        };
+
+        let Some(arity) = begin.child_by_field_name("name").and_then(|name| {
+            let name = self.content[name.byte_range()]
+                .strip_prefix(b"{")
+                .and_then(|n| n.strip_suffix(b"}"))?
+                .trim_ascii();
+            ALIGNMENT_ENVIRONMENTS
+                .iter()
+                .find(|(env, _)| env.as_bytes() == name)
+                .map(|&(_, arity)| arity)
+        }) else {
+            return false;
+        };
+
+        let Some(previous) = self.previous_token(node) else {
+            return false;
+        };
+
+        // The arguments of \begin, e.g. the column specification, precede the first cell
+        if previous.end_byte() <= alignment_preamble_end(self.content, begin.end_byte(), arity) {
+            return true;
+        }
+
+        match previous.kind() {
+            "delimiter" => &self.content[previous.byte_range()] == b"&",
+            "generic_command" => previous
+                .child_by_field_name("command")
+                .is_some_and(|command| {
+                    let name = &self.content[command.byte_range()];
+                    let name = name.strip_suffix(b"*").unwrap_or(name);
+                    ALIGNMENT_ROW_COMMANDS.contains(&name)
+                }),
+            _ => false,
+        }
+    }
+
+    /// Returns the closest node in front of `node` within its environment body,
+    /// skipping comments and invocations of comment commands, which vanish from the output.
+    fn previous_token(&self, node: &Node<'a>) -> Option<Node<'a>> {
+        let mut current = *node;
+
+        loop {
+            let Some(mut previous) = current.prev_sibling() else {
+                // The first word of a text continues whatever is in front of the text
+                current = current.parent().filter(|p| p.kind() == "text")?;
+                continue;
+            };
+
+            // Continue with the last word of a preceding text
+            while previous.kind() == "text"
+                && let Some(last) =
+                    previous.child((previous.child_count() as u32).saturating_sub(1))
+            {
+                previous = last;
+            }
+
+            current = previous;
+
+            let vanishes = match previous.kind() {
+                "line_comment" | "block_comment" | "comment_environment" => true,
+                "generic_command" => previous.child_by_field_name("command").is_some_and(|c| {
+                    let name = &self.content[c.byte_range()];
+                    self.command_definitions.contains(name)
+                        || self.long_command_definitions.contains(name)
+                }),
+                _ => false,
+            };
+
+            if !vanishes {
+                return Some(previous);
+            }
+        }
     }
 
     /// Extracts the whitespace that appears between the previous sibling node
@@ -1727,6 +1867,13 @@ impl<'a> ContentStripper<'a> {
         }
         let name = name.as_slice();
 
+        // Delimited parameters (e.g. `\def\ignore#1\endignore{}`) take text up to their
+        // delimiter, which is not part of the invocation's node. Deleting the invocation
+        // would thus leave that text behind, so these definitions are kept.
+        let has_delimited_parameters = node
+            .children_by_field_name("args", &mut node.walk())
+            .any(|arg| arg.kind() != "placeholder");
+
         let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
 
         // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
@@ -1744,6 +1891,7 @@ impl<'a> ContentStripper<'a> {
         if is_empty(&cleaned_impl_tree.root_node())
             && !self.directives.keep_comments
             && name.starts_with(b"\\")
+            && !has_delimited_parameters
         {
             // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
             if long {
@@ -1918,6 +2066,66 @@ fn is_in_math_mode(node: &Node) -> bool {
     }
 
     false
+}
+
+/// Returns the end of the arguments that follow `\begin{...}` of an alignment environment,
+/// i.e. of optional `[...]` arguments and the `arity` mandatory `{...}` arguments.
+fn alignment_preamble_end(content: &[u8], start: usize, arity: usize) -> usize {
+    let mut pos = start;
+    let mut mandatory = 0;
+
+    while mandatory < arity {
+        // Skip whitespace and comments between the arguments
+        while let Some(&b) = content.get(pos) {
+            if b.is_ascii_whitespace() {
+                pos += 1;
+            } else if b == b'%' {
+                while content.get(pos).is_some_and(|&b| !is_newline(b)) {
+                    pos += 1;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let (open, close) = match content.get(pos) {
+            Some(b'[') => (b'[', b']'),
+            Some(b'{') => (b'{', b'}'),
+            _ => break,
+        };
+        let Some(end) = group_end(content, pos, open, close) else {
+            break;
+        };
+
+        if open == b'{' {
+            mandatory += 1;
+        }
+        pos = end;
+    }
+
+    pos
+}
+
+/// Returns the position after the group opened at `start`, considering nested and escaped delimiters.
+fn group_end(content: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut pos = start;
+
+    while let Some(&b) = content.get(pos) {
+        if b == b'\\' {
+            pos += 1;
+        } else if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(pos + 1);
+            }
+        }
+        pos += 1;
+    }
+
+    None
 }
 
 /// Returns `true` for spaces and tabs.

@@ -15,3 +15,5 @@ input
 wasm-test/texlive-cache
 wasm-test/server/target
 wasm-test/fmt-cache
+web/node_modules
+web/dist

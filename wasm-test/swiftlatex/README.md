@@ -34,14 +34,15 @@ back — native alc-ng keeps a `.bbl` the final pass reads.
 the XDV in a separate dvipdfmx worker (`compilepdf`) to get the PDF. XeTeX
 writes the cache path of every OpenType font it loaded (`/tex/<fileid>`) into
 the XDV; dvipdfmx asks for `xetex/<format>/<fileid>.otf`, which the dev
-server maps back through `texlive-cache/fileids/`. Fonts are found by kpathsea only
+server decodes back into the original request (the fileid encodes it, so the
+server stores nothing). Fonts are found by kpathsea only
 (no fontconfig): `\setmainfont{texgyreheros-regular.otf}` works, system font
 names do not. The page picks the engine per run (the `engine` flag; `auto`
 reads a top-level `00README` and looks for fontspec, unicode-math,
 polyglossia, xeCJK, …).
 
 `PdfTeXEngine.js` is no longer used by the test page; the page drives the
-worker protocol directly (see the protocol notes in `index.html`, and the
+worker protocol directly (see the protocol notes in `web/shared/lib/engine.ts`, and the
 `texlive` wire protocol documented in `wasm-test/server/src/main.rs`).
 
 **The patches** — invented on `swiftlatexpdftex.js`, which is why they are
@@ -142,4 +143,5 @@ server:
         http://127.0.0.1:8000/texlive/ \
         wasm-test/fmt-cache/alc_ng_swiftlatexpdftex_fmt_v1__swiftlatexpdftex.fmt
 
-`wasm-test/texlive-cache/` is the proxy's fetch cache (gitignored).
+The dev server never writes to disk: it remembers resolved TeX Live paths in
+memory only.

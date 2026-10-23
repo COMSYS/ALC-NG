@@ -1,8 +1,8 @@
-# Serves the wasm test page (wasm-test/index.html) together with the axum dev
-# server wasm-test/server — the Rust port of the old serve.py.
+# Serves the alc-ng web app (web/, built with Vite) from the axum server in
+# wasm-test/server, which also backs the engines' TeX Live requests.
 #
 #   docker build -f Dockerfile.wasm -t alc-ng-wasm .
-#   docker run --rm -p 8000:8000 alc-ng-wasm
+#   docker run --rm --read-only -p 8000:8000 alc-ng-wasm
 #   open http://localhost:8000/
 #
 # The patched SwiftLaTeX engines in wasm-test/swiftlatex are gitignored, so
@@ -46,32 +46,52 @@ RUN cargo build --target wasm32-wasip1 --lib --release
 
 # --- wasm dev server: static files + /tree/ + kpsewhich TeX Live proxy -------
 # Built against musl so the static binary drops into the TeX Live image
-# regardless of that image's glibc.
+# regardless of that image's glibc. The musl target follows the build
+# platform (x86_64 or aarch64), like the TeX Live image it runs in; the
+# binary is copied to a fixed path so later stages need not know the triple.
 FROM rust:1 AS server-build
 
-RUN rustup target add x86_64-unknown-linux-musl \
-    && apt-get update && apt-get install -y --no-install-recommends musl-tools \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    rustup target add "$(uname -m)-unknown-linux-musl"; \
+    apt-get update && apt-get install -y --no-install-recommends musl-tools; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY wasm-test/server ./server
 WORKDIR /server
-RUN cargo build --release --target x86_64-unknown-linux-musl
+RUN set -eux; \
+    target="$(uname -m)-unknown-linux-musl"; \
+    cargo build --release --target "$target"; \
+    cp "target/$target/release/wasm-serve" /server/wasm-serve
 
-# --- UI runtime (React + Ant Design UMD bundles, pinned versions) ----------
-# The page loads these from wasm-test/vendor/ (gitignored) and only falls back
-# to jsDelivr in the browser; vendoring at build time keeps it self-contained.
-FROM alpine:3 AS ui-vendor
+# --- the web app (web/, Vite + React) ---------------------------------------
+# Node 24 still ships corepack, which installs the pnpm version package.json
+# pins; the lockfile is frozen so the image builds what the repository tested.
+FROM node:24-alpine AS web-build
 
-RUN apk add --no-cache curl
-COPY wasm-test/fetch-ui-deps.sh /tmp/fetch-ui-deps.sh
-RUN sh /tmp/fetch-ui-deps.sh
+RUN corepack enable
+WORKDIR /web
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web ./
+RUN pnpm build
 
 # --- pdfium (wasm) for the page's compare option ---------------------------
+# Pinned to the release the page is tested with: its JS API and archive layout
+# can change between releases. Update the version and checksum together (the
+# checksum is the asset's sha256 digest on the GitHub release page).
 FROM alpine:3 AS pdfium
+
+ARG PDFIUM_VERSION=8111
+ARG PDFIUM_SHA256=ed8ee2e70c628a4bd261fade8e381079aca250aeb5b1f3192c59682f8441fdcd
 
 RUN apk add --no-cache curl
 WORKDIR /pdfium
-RUN curl -sSfL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-wasm.tgz | tar xz
+RUN set -eux; \
+    curl -sSfL -o /tmp/pdfium-wasm.tgz \
+        "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${PDFIUM_VERSION}/pdfium-wasm.tgz"; \
+    echo "${PDFIUM_SHA256}  /tmp/pdfium-wasm.tgz" | sha256sum -c -; \
+    tar xzf /tmp/pdfium-wasm.tgz; \
+    rm /tmp/pdfium-wasm.tgz
 
 # --- LaTeX format dumps -----------------------------------------------------
 # A .fmt is engine-build specific, so TeX Live's native pdflatex.fmt is useless
@@ -85,7 +105,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=server-build /server/target/x86_64-unknown-linux-musl/release/wasm-serve /usr/local/bin/
+COPY --from=server-build /server/wasm-serve /usr/local/bin/
 
 WORKDIR /srv
 COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
@@ -102,14 +122,13 @@ RUN (SERVE_HOST=127.0.0.1 wasm-serve 8100 >/tmp/serve.log 2>&1 &) \
 # --- runtime: TeX Live full (the packages kpsewhich answers with) -----------
 FROM texlive/texlive:latest-full AS runtime
 
-# The dev server serves this directory as the site root and keeps its
-# per-URL TeX Live cache in wasm-test/texlive-cache.
+# The dev server serves this directory as the site root, read-only: it never
+# writes to disk, so the container can run with --read-only.
 WORKDIR /srv
 COPY --from=wasm-build /app/target/wasm32-wasip1/release/alc_ng.wasm ./target/wasm32-wasip1/release/alc_ng.wasm
-COPY --from=server-build /server/target/x86_64-unknown-linux-musl/release/wasm-serve /usr/local/bin/
+COPY --from=server-build /server/wasm-serve /usr/local/bin/
 COPY --from=pdfium /pdfium ./wasm-test/pdfium
-COPY wasm-test/index.html ./wasm-test/
-COPY --from=ui-vendor /tmp/vendor ./wasm-test/vendor
+COPY --from=web-build /web/dist ./web/dist
 COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
 COPY --from=fmt-build /srv/wasm-test/fmt-cache ./wasm-test/fmt-cache
 COPY wasm-test/texlive-extras ./wasm-test/texlive-extras
@@ -124,7 +143,6 @@ COPY tests/appendix ./tests/appendix
 
 ENV SERVE_HOST=0.0.0.0
 EXPOSE 8000
-VOLUME /srv/wasm-test/texlive-cache
 
 ENTRYPOINT ["wasm-serve"]
 CMD ["8000"]

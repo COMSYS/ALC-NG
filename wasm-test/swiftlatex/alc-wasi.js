@@ -11,8 +11,12 @@
  *   alcng_rm   {path}        remove a file or directory tree
  *
  * Notes on the WASI surface:
- * - Preopens: fd 3 = "/", fd 4 = "." (Emscripten's cwd). wasi-libc resolves
- *   all paths through these.
+ * - Preopen: only fd 3 = "/"; wasi-libc resolves all paths through it. There
+ *   is deliberately no preopen for Emscripten's cwd: wasi-libc records a
+ *   preopen's name once, while the engine glue chdirs into the main file's
+ *   folder on every compile, so a later run would resolve `/work/...` against
+ *   a different directory than the one the name claims. The page passes
+ *   absolute paths only.
  * - This Emscripten build's FS throws its own errno dialect (observed:
  *   44 = ENOENT, 20 = EEXIST, 54 = ENOTDIR), so existence and type checks
  *   are done up front via FS.analyzePath and only unexpected errors go
@@ -29,9 +33,8 @@ var AlcWasi = (() => {
 
   const te = new TextDecoder("utf-8", { fatal: false });
 
-  // WASI-visible file descriptors. 0/1/2 are stdio, 3/4 the preopens.
+  // WASI-visible file descriptors. 0/1/2 are stdio, 3 the preopen.
   const PREOPEN_ROOT = 3;
-  const PREOPEN_CWD = 4;
   const fds = new Map(); // fd -> {stream, path, dir, append}
   let nextFd = 100;
   const stdioPending = {};  // fd -> partial line not yet terminated by "\n"
@@ -97,7 +100,7 @@ var AlcWasi = (() => {
 
   function fdDir(fd) {
     if (fd === PREOPEN_ROOT) return "/";
-    if (fd === PREOPEN_CWD || fd === -100 /* AT_FDCWD */) return fsCwd();
+    if (fd === -100 /* AT_FDCWD */) return fsCwd();
     const entry = fds.get(fd);
     return entry ? entry.dir : undefined;
   }
@@ -212,7 +215,7 @@ var AlcWasi = (() => {
     },
 
     fd_close(fd) {
-      if (fd <= 4) return E.SUCCESS;   // stdio and the preopens stay open
+      if (fd <= PREOPEN_ROOT) return E.SUCCESS;   // stdio and the preopen stay open
       const entry = fds.get(fd);
       if (!entry) return E.EBADF;
       fds.delete(fd);
@@ -401,24 +404,17 @@ var AlcWasi = (() => {
       return E.SUCCESS;
     },
 
+    // wasi-libc enumerates preopens from fd 3 up to the first EBADF.
     fd_prestat_get(fd, out) {
-      const name = fd === PREOPEN_ROOT ? "/" : fd === PREOPEN_CWD ? fsCwd() : null;
-      if (name === null) return E.EBADF;
-      // WASI preopen names are byte strings, not UTF-16 strings: the cwd may
-      // contain non-ASCII directories, where name.length differs from the
-      // encoded byte length wasi-libc allocates for fd_prestat_dir_name.
-      const bytes = new TextEncoder().encode(name);
-      wU8(out, 0);                  // tag: directory
-      wU32(out + 4, bytes.length);  // name length in bytes
+      if (fd !== PREOPEN_ROOT) return E.EBADF;
+      wU8(out, 0);       // tag: directory
+      wU32(out + 4, 1);  // name length in bytes ("/")
       return E.SUCCESS;
     },
 
     fd_prestat_dir_name(fd, pathPtr, pathLen) {
-      // The cwd preopen is reported with its absolute path (not ".") so that
-      // every dirfd resolves against an unambiguous absolute base.
-      const name = fd === PREOPEN_ROOT ? "/" : fd === PREOPEN_CWD ? fsCwd() : null;
-      if (name === null) return E.EBADF;
-      const bytes = new TextEncoder().encode(name);
+      if (fd !== PREOPEN_ROOT) return E.EBADF;
+      const bytes = new TextEncoder().encode("/");
       if (bytes.length > pathLen) return E.EINVAL;
       u8arr(pathPtr, bytes.length).set(bytes);
       return E.SUCCESS;
@@ -525,10 +521,9 @@ var AlcWasi = (() => {
     // Emscripten's MEMFS does not necessarily carry a /tmp; the pipeline's
     // temp-dir handling expects one (TMPDIR=/tmp).
     try { FS.mkdir("/tmp"); } catch (e) {}
-    // The preopens must exist in the fd table so that fd_fdstat_get (and
-    // friends) treat fd 3/4 as the directories wasi-libc believes them to be.
+    // The preopen must exist in the fd table so that fd_fdstat_get (and
+    // friends) treat fd 3 as the directory wasi-libc believes it to be.
     fds.set(PREOPEN_ROOT, { stream: null, path: "/", dir: "/", append: false });
-    fds.set(PREOPEN_CWD, { stream: null, path: fsCwd(), dir: fsCwd(), append: false });
     // Constructors (wasi-libc preopens/environ) never run on their own in a
     // cdylib; alc_ng_init runs __wasm_call_ctors exactly once.
     if (!ctorsRan && inst.exports.alc_ng_init) {
@@ -553,15 +548,35 @@ var AlcWasi = (() => {
       inst.exports.alc_ng_free_string(ret);
       return out;  // JSON produced by the Rust side
     } catch (e) {
-      // A trap (panic under panic=abort, proc_exit) leaves the instance's
-      // allocator in an undefined state — force a reload for the next run.
-      inst = null;
-      ctorsRan = false;
+      // A trap (panic under panic=abort, proc_exit, stack overflow) leaves the
+      // instance's allocator in an undefined state — force a reload for the
+      // next run.
+      dropInstance();
       throw e;
     } finally {
       if (inst) inst.exports.alc_ng_free_buf(ptr, bytes.length);
       flushStdio();  // e.g. a panic message cut short by the trap
     }
+  }
+
+  // Forgets the instance and the descriptors it had open, so the next
+  // alcng_load starts from a clean slate.
+  function dropInstance() {
+    inst = null;
+    ctorsRan = false;
+    for (const [fd, entry] of fds) {
+      if (fd <= PREOPEN_ROOT) continue;
+      fds.delete(fd);
+      if (entry.stream) { try { FS.close(entry.stream); } catch (e) {} }
+    }
+  }
+
+  // The error with its stack. Firefox's stack holds only the frames, not the
+  // "RuntimeError: unreachable" line itself, so the message goes first.
+  function describe(e) {
+    const text = String(e);
+    const stack = e && e.stack ? String(e.stack) : "";
+    return stack && !stack.startsWith(text) ? `${text}\n${stack}` : stack || text;
   }
 
   function flushStdio() {
@@ -630,12 +645,14 @@ var AlcWasi = (() => {
         case "alcng_load":
           load(msg.wasm, { trace: msg.trace }).then(
             (exports) => reply("ok", msg.cmd, { exports }),
-            (err) => { inst = null; ctorsRan = false; reply("failed", msg.cmd, { error: String((err && err.stack) || err) }); }
+            (err) => { dropInstance(); reply("failed", msg.cmd, { error: describe(err), reloadRequired: true }); }
           );
           return true;
         case "alcng_run":
           try { reply("ok", msg.cmd, { json: run(msg.json) }); }
-          catch (e) { reply("failed", msg.cmd, { error: String((e && e.stack) || e) }); }
+          // Without an instance (dropped after a trap, or never loaded) every
+          // further run fails, so tell the page to send alcng_load again.
+          catch (e) { reply("failed", msg.cmd, { error: describe(e), reloadRequired: inst === null }); }
           return true;
         case "alcng_list":
           try { reply("ok", msg.cmd, { entries: list(msg.path) }); }

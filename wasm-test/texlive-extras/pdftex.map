@@ -10,7 +10,7 @@
 % encoding vectors the base map already defines (CMTT12, CMMI10, CMBX10 are
 % defined above line 4100 of the cached map, and we are appended after it).
 % The pfb targets below (cmtt12, cmmi10, cmbx10) are verified present in the
-% texlive-cache volume; unverified targets would 301 and fail noisily.
+% TeX Live image; unverified targets would 301 and fail noisily.
 
 % bold typewriter — bitmap-only without cm-super
 cmttb8 CMTT12 <cmtt12.pfb

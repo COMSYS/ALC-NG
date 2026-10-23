@@ -639,6 +639,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "percent-encoding",
  "serde_json",
  "sha1",
  "tokio",

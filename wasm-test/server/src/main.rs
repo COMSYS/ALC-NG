@@ -1,5 +1,6 @@
-//! Serves the repository for wasm-test/index.html and backs the engine's
-//! texlive-on-demand requests with the local TeX Live installation.
+//! Serves the alc-ng web app (web/, a Vite + React build) together with the
+//! repository files it loads, and backs the engine's texlive-on-demand
+//! requests with the local TeX Live installation.
 //!
 //! (Rust/axum port of the original Python `wasm-test/serve.py`; the wire
 //! protocol towards the engine workers is unchanged.)
@@ -10,14 +11,13 @@
 //! the dvipdfmx worker uses `xetex`, PK requests arrive as
 //! `pdftex/pk/<dpi>/<name>`); this server proxies GET `/texlive/<path>` as:
 //!
-//! 1. the per-URL cache under wasm-test/texlive-cache/ (gitignored),
-//! 2. the local TeX Live resolved with `kpsewhich <basename>` for that engine
+//! 1. the local TeX Live resolved with `kpsewhich <basename>` for that engine
 //!    (PK requests are answered only by real `.pk` files — never by extension
-//!    fallbacks),
-//! 3. a 301 — the mirror protocol's "file does not exist" marker, which the
+//!    fallbacks); resolved paths are remembered in memory,
+//! 2. a 301 — the mirror protocol's "file does not exist" marker, which the
 //!    workers cache as a negative. The dead mirror fetch this used to end in
 //!    is gone; Dockerfile.wasm runs the server inside the TeX Live full
-//!    image, where step 2 answers the entire distribution.
+//!    image, where step 1 answers the entire distribution.
 //!
 //! Map answers (format 11) additionally get the tracked fallback lines from
 //! wasm-test/texlive-extras/<mapname> appended — the engine honours the last
@@ -28,16 +28,21 @@
 //!     cargo run --release --manifest-path wasm-test/server/Cargo.toml -- [port]
 //!
 //! Then open:  http://localhost:<port>/
-//! (The bench page is served at the site root; the former /wasm-test/
-//! location forwards there, and all files stay served under their paths.)
+//! (The app's build, web/dist, is served at the site root: an overview at
+//! /, the app in its two designs at /tool/ and /site/, and the hashed
+//! bundles under /assets/. Build it with `pnpm --dir web
+//! build`; during development `pnpm --dir web dev` serves the app itself and
+//! forwards everything else to this server. The former /wasm-test/ location
+//! forwards to /, and all repository files stay served under their paths.)
 //!
-//! SERVE_ROOT=<dir> serves a different repository root, SERVE_HOST=0.0.0.0
+//! SERVE_ROOT=<dir> serves a different repository root, SERVE_WEB=<dir> a
+//! different app build (default: <root>/web/dist), SERVE_HOST=0.0.0.0
 //! exposes the server (e.g. inside a container), and SERVE_VERBOSE=1 logs
 //! every /texlive/ request with its status.
 //!
 //! GET /tree/<dir> additionally lists a directory of the repository as JSON,
 //! which is how the page fills a sample given as a folder (see SAMPLES in
-//! index.html) without hardcoding every path of a submission.
+//! web/shared/lib/samples.ts) without hardcoding every path of a submission.
 //!
 //! GET /fmt/<key>/<name> serves the prebuilt LaTeX format dumps: the page
 //! reads one before it builds the format itself. Dumps are engine-build
@@ -46,20 +51,26 @@
 //! read-only here. There is deliberately no upload route: a client-written
 //! dump would be served to every browser.
 //!
+//! Read-only: the server never writes to disk, and every route answers GET
+//! (and HEAD) only. URLs never reach the file system unchecked: TeX Live
+//! requests must have the exact shape the workers send (see
+//! `parse_texlive_request`) before a name is handed to kpsewhich, and the
+//! static files and /tree/ listings refuse hidden paths (`.git`, `.env`, ...)
+//! as well as symlinks that lead out of the served root.
+//!
 //! Cache policy: everything answers `no-cache` except plain TeX Live
 //! packages — those bytes are frozen with the image, so their 200s carry a
 //! one-day window and browser caches (and every re-run of a page session)
 //! skip re-downloading the package set. Map files and format dumps opt out;
-//! see `TEXLIVE_CACHE` and `get_fmt`.
+//! see `TEXLIVE_CACHE` and `get_fmt`. The app's /assets/ are named after
+//! their content hash and therefore cached for good (`ASSET_CACHE`).
 
 use std::{
+    collections::HashMap,
     env, fs, io,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock, PoisonError},
     time::Duration,
 };
 
@@ -73,6 +84,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
+use percent_encoding::percent_decode_str;
 use sha1::{Digest as _, Sha1};
 use tower::ServiceBuilder;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
@@ -80,6 +92,16 @@ use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 /// `kpsewhich` runs get this long before the attempt counts as a miss —
 /// TeX filename lookups on a cold ls-RDB walk the tree, but never that far.
 const KPSEWHICH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Longest file name the workers may ask for; TeX Live's longest is 90 bytes.
+const MAX_NAME_LEN: usize = 100;
+
+/// Upper bound of the in-memory kpsewhich cache. It is emptied when full, so
+/// a client sending endless distinct names cannot grow it without bound.
+const LOOKUP_CACHE_CAPACITY: usize = 50_000;
+
+/// Marks the fileids handed to the workers (see `TexliveRequest::fileid`).
+const FILEID_PREFIX: &str = "tl";
 
 /// kpathsea format ids (kpse_file_format_type) of requests that arrive
 /// without an extension: the extension to try first and/or the format name
@@ -134,12 +156,11 @@ fn kpsewhich_available() -> bool {
 struct App {
     /// Repository root: everything below it is served statically.
     root: PathBuf,
-    /// Per-URL cache of resolved TeX Live files (one flat file per request,
-    /// slashes replaced by `__` — same layout the Python server left behind).
-    cache: PathBuf,
-    /// fileid -> original request, so dvipdfmx's `/tex/<fileid>` lookups
-    /// find their way back (the engine never stores names, only this id).
-    fileids: PathBuf,
+    /// The web app's build: index.html for the site root, assets/ for /assets/.
+    web: PathBuf,
+    /// kpsewhich hits per lookup, so repeated requests skip the process
+    /// spawn. Only paths are kept; the bytes are read from TeX Live each time.
+    lookups: Mutex<HashMap<String, PathBuf>>,
     /// Tracked byte-level fallbacks per map file (see texlive-extras/pdftex.map).
     extras: PathBuf,
     /// Prebuilt LaTeX format dumps (`.fmt`), baked into the image by the
@@ -151,6 +172,21 @@ struct App {
     /// and a bad dump would poison every browser that fetches it.
     fmt_cache: PathBuf,
     verbose: bool,
+}
+
+impl App {
+    /// The server state for the canonical repository root `root`, serving
+    /// the app build in `web`.
+    fn new(root: PathBuf, web: PathBuf, verbose: bool) -> Self {
+        Self {
+            web,
+            lookups: Mutex::new(HashMap::new()),
+            extras: root.join("wasm-test/texlive-extras"),
+            fmt_cache: root.join("wasm-test/fmt-cache"),
+            root,
+            verbose,
+        }
+    }
 }
 
 /// The two dumps the patched engines look for (see wasm-test/swiftlatex).
@@ -185,17 +221,19 @@ fn configure() -> Result<(u16, String, Arc<App>)> {
         .canonicalize()
         .context("serving root does not exist - run from the repository root or set SERVE_ROOT")?;
 
-    let app = Arc::new(App {
-        cache: root.join("wasm-test/texlive-cache"),
-        fileids: root.join("wasm-test/texlive-cache/fileids"),
-        extras: root.join("wasm-test/texlive-extras"),
-        fmt_cache: root.join("wasm-test/fmt-cache"),
-        root,
-        verbose: env::var_os("SERVE_VERBOSE").is_some_and(|v| !v.is_empty()),
-    });
-    fs::create_dir_all(&app.fmt_cache)
-        .with_context(|| format!("creating format cache dir {}", app.fmt_cache.display()))?;
-    Ok((port, host, app))
+    // Not canonicalized: the build may not exist yet (`pnpm dev` serves the
+    // app itself), and every request resolves it afresh.
+    let web = env::var_os("SERVE_WEB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("web/dist"));
+    let web = if web.is_absolute() {
+        web
+    } else {
+        root.join(web)
+    };
+
+    let verbose = env::var_os("SERVE_VERBOSE").is_some_and(|v| !v.is_empty());
+    Ok((port, host, Arc::new(App::new(root, web, verbose))))
 }
 
 /// Bind `host:port` — a bare IP directly, anything else (e.g. "localhost")
@@ -221,6 +259,10 @@ const NO_CACHE: &str = "no-cache";
 /// frozen with the image.
 const TEXLIVE_CACHE: &str = "public, max-age=86400";
 
+/// The app's bundles carry their content hash in the file name, so a URL
+/// never changes its bytes and browsers may keep them indefinitely.
+const ASSET_CACHE: &str = "public, max-age=31536000, immutable";
+
 /// All routes plus the static fallback.
 ///
 /// The page, its files and the listings answer no-cache — a test server, so
@@ -234,7 +276,15 @@ fn build_router(app: Arc<App>) -> Router {
     );
     let static_files = ServiceBuilder::new()
         .layer(no_cache.clone())
+        .layer(middleware::from_fn_with_state(app.clone(), guard_static))
         .service(ServeDir::new(&app.root));
+    let assets = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(ASSET_CACHE),
+        ))
+        .layer(middleware::from_fn_with_state(app.clone(), guard_assets))
+        .service(ServeDir::new(app.web.join("assets")));
     // Engine content, outside the no-cache layer: every response from
     // here states its cacheability itself.
     let engine_files = Router::new()
@@ -246,18 +296,31 @@ fn build_router(app: Arc<App>) -> Router {
         // before it considers building the format itself, so a fresh
         // browser skips the multi-minute INITEX run.
         .route("/fmt/{key}/{name}", get(get_fmt));
-    // The bench page lives at the site root; the former /wasm-test/
-    // location forwards there. The files under wasm-test/ themselves
-    // keep being served by the static fallback.
-    let pages = Router::new()
+    // The app lives at the site root: an overview there, each design under
+    // its own folder. The former /wasm-test/ location forwards to the root;
+    // the files under wasm-test/ themselves keep being served by the static
+    // fallback.
+    let mut pages = Router::new()
         .route("/tree/{*dir}", get(tree))
-        .route("/", get(index))
+        .route("/", get(|State(app)| page(app, "index.html")))
         .route("/wasm-test", get(moved_to_root))
-        .route("/wasm-test/", get(moved_to_root))
-        .layer(no_cache);
+        .route("/wasm-test/", get(moved_to_root));
+    for design in DESIGNS {
+        pages = pages
+            .route(
+                &format!("/{design}/"),
+                get(move |State(app)| page(app, format!("{design}/index.html"))),
+            )
+            .route(
+                &format!("/{design}"),
+                get(move || async move { Redirect::temporary(&format!("/{design}/")) }),
+            );
+    }
+    let pages = pages.layer(no_cache);
     Router::new()
         .merge(engine_files)
         .merge(pages)
+        .nest_service("/assets", assets)
         .fallback_service(static_files)
         .with_state(app)
 }
@@ -266,6 +329,12 @@ fn build_router(app: Arc<App>) -> Router {
 async fn main() -> Result<()> {
     let (port, host, app) = configure()?;
     println!("Serving {} on http://localhost:{port}", app.root.display());
+    if !is_file(&app.web.join("index.html")).await {
+        println!(
+            "no app build at {} - run `pnpm --dir web build`, or `pnpm --dir web dev` for development",
+            app.web.display()
+        );
+    }
     println!(
         "texlive proxy: cache -> kpsewhich{} (mirror offline)",
         if kpsewhich_available() {
@@ -279,10 +348,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// The bench page at the site root: read at request time, so edits show up
-/// after a plain reload (the page and its files answer no-cache anyway).
-async fn index(State(app): State<Arc<App>>) -> Response {
-    match tokio::fs::read(app.root.join("wasm-test/index.html")).await {
+/// The app in its two designs, each a page of the build in its own folder
+/// (web/tool/, web/site/); the overview at the root links to both.
+const DESIGNS: [&str; 2] = ["tool", "site"];
+
+/// A page of the app build (`rel` below it): read at request time, so a new
+/// build shows up after a plain reload (it answers no-cache; the bundles it
+/// names change their URLs with their content).
+async fn page(app: Arc<App>, rel: impl AsRef<Path>) -> Response {
+    let page = app.web.join(rel);
+    match tokio::fs::read(&page).await {
         Ok(html) => Response::builder()
             .status(StatusCode::OK)
             .header(
@@ -293,7 +368,10 @@ async fn index(State(app): State<Arc<App>>) -> Response {
             .unwrap(),
         Err(err) => (
             StatusCode::NOT_FOUND,
-            format!("no bench page to serve: wasm-test/index.html: {err}"),
+            format!(
+                "no app build to serve ({}: {err}) - run `pnpm --dir web build`, or `pnpm --dir web dev` for development",
+                page.display()
+            ),
         )
             .into_response(),
     }
@@ -341,19 +419,213 @@ async fn log_texlive(State(app): State<Arc<App>>, request: Request, next: Next) 
     response
 }
 
+/// Refuses static requests for hidden paths (`.git`, `.env`, ...) and for
+/// files that a symlink leads to outside the served root. `ServeDir` itself
+/// already rejects `..` and absolute segments, but follows symlinks and
+/// serves dotfiles.
+async fn guard_static(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+    if static_path_allowed(&app.root, request.uri().path()).await {
+        next.run(request).await
+    } else {
+        (StatusCode::NOT_FOUND, "not found").into_response()
+    }
+}
+
+/// The same guard for the app's /assets/, relative to the build's assets
+/// directory (the nested service sees the path without its /assets prefix).
+async fn guard_assets(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+    let allowed = match tokio::fs::canonicalize(app.web.join("assets")).await {
+        Ok(root) => static_path_allowed(&root, request.uri().path()).await,
+        // no build: ServeDir answers 404
+        Err(_) => true,
+    };
+    if allowed {
+        next.run(request).await
+    } else {
+        (StatusCode::NOT_FOUND, "not found").into_response()
+    }
+}
+
+/// Whether the (percent-encoded) URL path may be served from `root`, which
+/// must be canonical. Decoded the same way `ServeDir` decodes it.
+async fn static_path_allowed(root: &Path, uri_path: &str) -> bool {
+    let Ok(decoded) = percent_decode_str(uri_path).decode_utf8() else {
+        return false;
+    };
+    let rel = decoded.trim_start_matches('/');
+    if !rel_path_allowed(rel) {
+        return false;
+    }
+
+    let Ok(target) = tokio::fs::canonicalize(root.join(rel)).await else {
+        // Missing files get ServeDir's own 404
+        return true;
+    };
+    if !target.starts_with(root) {
+        return false;
+    }
+    // ServeDir answers a directory with its index.html
+    if tokio::fs::metadata(&target)
+        .await
+        .is_ok_and(|meta| meta.is_dir())
+    {
+        return match tokio::fs::canonicalize(target.join("index.html")).await {
+            Ok(index) => index.starts_with(root),
+            Err(_) => true,
+        };
+    }
+    true
+}
+
+/// A relative URL path without hidden or parent segments (`.git`, `..`) and
+/// without characters a path segment must not carry.
+fn rel_path_allowed(rel: &str) -> bool {
+    !rel.contains(['\\', '\0']) && !rel.split('/').any(|segment| segment.starts_with('.'))
+}
+
+/// One request of the engine workers, in the only shapes they send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TexliveRequest {
+    /// `<engine>/<kpathsea format id>/<name>`, engine `pdftex` or `xetex`.
+    File {
+        engine: &'static str,
+        format: u8,
+        name: String,
+    },
+    /// `pdftex/pk/<dpi>/<name>`, a bitmap font at that resolution.
+    Pk { dpi: u16, name: String },
+}
+
+impl TexliveRequest {
+    /// The canonical URL path below /texlive/.
+    fn rel(&self) -> String {
+        match self {
+            Self::File {
+                engine,
+                format,
+                name,
+            } => format!("{engine}/{format}/{name}"),
+            Self::Pk { dpi, name } => format!("pdftex/pk/{dpi}/{name}"),
+        }
+    }
+
+    /// The stable id the workers store the file under (`/tex/<fileid>`).
+    ///
+    /// XeTeX writes that path of every OpenType/TrueType font it loaded into
+    /// the XDV; dvipdfmx strips `/tex/` and asks for
+    /// `xetex/<format>/<fileid>[.otf|.ttf]`. The id therefore encodes the
+    /// request itself (hex, so it has no `.` or `/`), which lets the server
+    /// map it back without storing anything.
+    fn fileid(&self) -> String {
+        let hex: String = self
+            .rel()
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("{FILEID_PREFIX}{hex}")
+    }
+
+    /// The requested file name.
+    fn name(&self) -> &str {
+        match self {
+            Self::File { name, .. } | Self::Pk { name, .. } => name,
+        }
+    }
+
+    /// `<engine>/11/<name>.map` — the requests whose answer `extend_map`
+    /// builds from TeX Live plus texlive-extras/ overrides, and which the
+    /// TeX Live freshness window therefore skips.
+    fn is_map(&self) -> bool {
+        matches!(self, Self::File { format: 11, name, .. } if name.ends_with(".map"))
+    }
+}
+
+/// Parses `rel` into a request of the workers, `None` for anything else.
+///
+/// The name ends up as a kpsewhich argument, so it must be a plain TeX Live
+/// file name: kpathsea expands `$VAR` and `~` in names (`$SHELL` resolves to
+/// the shell binary) and reads a leading `-` as an option.
+fn parse_texlive_request(rel: &str) -> Option<TexliveRequest> {
+    let request = parse_texlive_shape(rel)?;
+
+    // dvipdfmx asks for fonts by the fileid XeTeX recorded
+    if let TexliveRequest::File { name, .. } = &request
+        && let Some(original) = decode_fileid(name)
+    {
+        return parse_texlive_shape(&original).filter(|original| valid_name(original.name()));
+    }
+
+    valid_name(request.name()).then_some(request)
+}
+
+/// The shape of a request; its name is checked by the caller.
+fn parse_texlive_shape(rel: &str) -> Option<TexliveRequest> {
+    match rel.split('/').collect::<Vec<_>>().as_slice() {
+        ["pdftex", "pk", dpi, name] => Some(TexliveRequest::Pk {
+            dpi: parse_number(dpi)?,
+            name: (*name).to_string(),
+        }),
+        [engine, format, name] => Some(TexliveRequest::File {
+            engine: match *engine {
+                "pdftex" => "pdftex",
+                "xetex" => "xetex",
+                _ => return None,
+            },
+            format: parse_number(format)?,
+            name: (*name).to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// A plain decimal number, without sign or surrounding characters.
+fn parse_number<T: std::str::FromStr>(text: &str) -> Option<T> {
+    (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| text.parse().ok())
+        .flatten()
+}
+
+/// A TeX Live file name: `[A-Za-z0-9._+-]`, not starting with `.` or `-`.
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && !name.starts_with(['.', '-'])
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
+}
+
+/// The request a fileid (optionally with an extension) was made for.
+fn decode_fileid(name: &str) -> Option<String> {
+    let stem = name.split('.').next()?;
+    let hex = stem.strip_prefix(FILEID_PREFIX)?;
+    if hex.is_empty() || hex.len() % 2 != 0 || hex.len() > 2 * (MAX_NAME_LEN + 16) {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
 async fn texlive(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     UrlPath(rel): UrlPath<String>,
 ) -> Response {
-    match serve_texlive(&app, &rel).await {
+    let Some(request) = parse_texlive_request(&rel) else {
+        return proxy_not_found();
+    };
+    match serve_texlive(&app, &request).await {
         // The engine worker derives its /tex cache path from the fileid/pkid
         // headers — keep them stable per request so repeated fetches rewrite
         // the same file.
-        Ok(Some((data, fileid))) => {
+        Ok(Some(data)) => {
+            let fileid = request.fileid();
             // Maps stay out of the freshness window: their bytes mix in the
             // tracked texlive-extras/ overrides, not only the frozen image.
-            let cache = if is_map_request(&rel) {
+            let cache = if request.is_map() {
                 NO_CACHE
             } else {
                 TEXLIVE_CACHE
@@ -364,11 +636,15 @@ async fn texlive(
             // still shows up on the very next load.
             let etag = format!("\"{}\"", sha1_hex(&data));
             if not_modified(&headers, &etag) {
+                // The ids go along, so a browser that stored a response with
+                // an older id scheme updates it on revalidation.
                 return (
                     StatusCode::NOT_MODIFIED,
                     [
                         (header::ETAG, etag),
                         (header::CACHE_CONTROL, cache.to_string()),
+                        (HeaderName::from_static("fileid"), fileid.clone()),
+                        (HeaderName::from_static("pkid"), fileid),
                     ],
                 )
                     .into_response();
@@ -388,7 +664,7 @@ async fn texlive(
     }
 }
 
-/// `sha1` hex digest, reused for the ETags and the fileids below.
+/// `sha1` hex digest, used for the ETags.
 fn sha1_hex(bytes: &[u8]) -> String {
     Sha1::digest(bytes)
         .iter()
@@ -411,36 +687,11 @@ fn not_modified(headers: &HeaderMap, etag: &str) -> bool {
 }
 
 /// Resolve one engine request, `Ok(None)` standing for "no such file".
-async fn serve_texlive(app: &App, rel: &str) -> Result<Option<(Vec<u8>, String)>> {
-    // XeTeX writes the cache path of every OpenType/TrueType font it loaded
-    // (`/tex/<fileid>`) into the XDV; dvipdfmx strips `/tex/` and asks for
-    // `xetex/<format>/<fileid>[.otf|.ttf]`. Map the id back to its request.
-    let mut rel = rel.to_string();
-    let stem = rel
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .split('.')
-        .next()
-        .unwrap_or_default();
-    if !stem.is_empty() {
-        let known = app.fileids.join(stem);
-        if is_file(&known).await {
-            rel = tokio::fs::read_to_string(&known)
-                .await
-                .with_context(|| format!("reading fileid map {}", known.display()))?;
-        }
+async fn serve_texlive(app: &App, request: &TexliveRequest) -> Result<Option<Vec<u8>>> {
+    match local_texlive_file(app, request).await? {
+        Some(data) => Ok(Some(extend_map(app, request, data).await?)),
+        None => Ok(None),
     }
-
-    let cache_file = app.cache.join(rel.replace('/', "__"));
-    if let Some(data) = read_cache(&cache_file).await? {
-        return Ok(Some(finish(app, &rel, data).await?));
-    }
-    if let Some(data) = local_texlive_file(&rel).await? {
-        write_cache(&cache_file, &data).await?;
-        return Ok(Some(finish(app, &rel, data).await?));
-    }
-    Ok(None)
 }
 
 /// An octet-stream 200 with a Content-Length and an explicit Cache-Control
@@ -499,56 +750,15 @@ async fn is_file(path: &Path) -> bool {
         .is_ok_and(|meta| meta.is_file())
 }
 
-async fn read_cache(path: &Path) -> Result<Option<Vec<u8>>> {
-    match tokio::fs::read(path).await {
-        Ok(data) => Ok(Some(data)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).context(format!("reading cache {}", path.display())),
-    }
-}
-
-async fn write_cache(path: &Path, data: &[u8]) -> Result<()> {
-    // One writer per request: two concurrent misses for the same file must
-    // not share (and truncate) a temporary file or race each other's rename.
-    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
-
-    let name = path.file_name().context("cache path has no file name")?;
-    let tmp = path.with_file_name(format!(
-        "{name}.{}.{}.tmp",
-        std::process::id(),
-        NEXT_TMP.fetch_add(1, Ordering::Relaxed),
-        name = name.to_string_lossy()
-    ));
-    let parent = path.parent().context("cache path has no parent")?;
-    tokio::fs::create_dir_all(parent).await?;
-    tokio::fs::write(&tmp, data)
-        .await
-        .context(format!("writing cache {}", tmp.display()))?;
-    if let Err(err) = tokio::fs::rename(&tmp, path).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(err).context(format!("caching {}", path.display()));
-    }
-    Ok(())
-}
-
-/// `<engine>/11/<name>.map` — the requests whose answer `extend_map` below
-/// builds from cache file plus texlive-extras/ overrides, and which the
-/// TeX Live freshness window therefore skips. dvipdfmx's `/tex/<fileid>`
-/// round-trips never carry maps (fonts only), so deciding on the raw URL
-/// matches what `extend_map` will see for the resolved request.
-fn is_map_request(rel: &str) -> bool {
-    let parts: Vec<&str> = rel.split('/').collect();
-    parts.len() == 3 && parts[1] == "11" && parts[2].ends_with(".map")
-}
-
 /// Map responses get the tracked fallback lines (texlive-extras/<name>)
 /// appended. pdfTeX reads the map last-entry-wins, so appends override
-/// the cache's stale entries without rewriting the cache itself.
-async fn extend_map(app: &App, rel: &str, mut data: Vec<u8>) -> Result<Vec<u8>> {
-    if !is_map_request(rel) {
+/// the distribution's stale entries without touching it.
+async fn extend_map(app: &App, request: &TexliveRequest, mut data: Vec<u8>) -> Result<Vec<u8>> {
+    if !request.is_map() {
         return Ok(data);
     }
-    let extra = app.extras.join(rel.rsplit('/').next().unwrap_or_default());
+    // A valid name has no `/` and does not start with `.`
+    let extra = app.extras.join(request.name());
     if !is_file(&extra).await {
         return Ok(data);
     }
@@ -562,85 +772,65 @@ async fn extend_map(app: &App, rel: &str, mut data: Vec<u8>) -> Result<Vec<u8>> 
     Ok(data)
 }
 
-/// Answer for the worker: extended map plus the stable per-request fileid,
-/// recorded so `/tex/<fileid>` round-trips back to this very request.
-async fn finish(app: &App, rel: &str, data: Vec<u8>) -> Result<(Vec<u8>, String)> {
-    let data = extend_map(app, rel, data).await?;
-    let fileid = sha1_hex(rel.as_bytes())[..16].to_string();
-    // The mapping only feeds the XeTeX→dvipdfmx /tex/<fileid> round-trip;
-    // a failed write must not fail a request whose bytes are already valid.
-    let mapping = app.fileids.join(&fileid);
-    if !is_file(&mapping).await {
-        // Atomic write: a concurrent request may read this mapping while
-        // another creates it, and a half-written fileid would send the
-        // round-trip to the wrong TeX Live path.
-        if let Err(err) = write_cache(&mapping, rel.as_bytes()).await {
-            eprintln!("[texlive] {err:#} — XeTeX font round-trips will miss");
-        }
-    }
-    Ok((data, fileid))
-}
-
-/// Resolves `<...>/<basename>` against the local TeX Live with `kpsewhich`;
+/// Resolves a request against the local TeX Live with `kpsewhich`;
 /// returns the file content or None.
 ///
 /// C-level kpathsea callers (fonts, virtual fonts) request base names without
 /// their format's extension, so several extensions are tried and the first
-/// hit wins — except PK requests (`pk` format): only a real `.pk` will do
-/// (handing pdfTeX a .tfm or .pfb for a PK request is a fatal "bad pk file,
-/// expected pre"), and .pk files exist only where mktexpk has run.
-async fn local_texlive_file(rel: &str) -> Result<Option<Vec<u8>>> {
-    let parts: Vec<&str> = rel.split('/').collect();
-    let basename = parts.last().copied().unwrap_or_default();
-    if basename.is_empty() || basename.starts_with('.') || !kpsewhich_available() {
+/// hit wins — except PK requests: only a real `.pk` at the requested
+/// resolution will do (handing pdfTeX a .tfm or .pfb for a PK request is a
+/// fatal "bad pk file, expected pre"), and .pk files exist only where
+/// mktexpk has run.
+async fn local_texlive_file(app: &App, request: &TexliveRequest) -> Result<Option<Vec<u8>>> {
+    if !kpsewhich_available() {
         return Ok(None);
     }
-    // `<engine>/<kpathsea format id>/<name>`; the engine picks the
-    // program-specific search paths (tex/xelatex/... for XeTeX).
-    let engine = if parts.len() == 3 { parts[0] } else { "pdftex" };
-    let progname = match engine {
-        "pdftex" => "pdflatex",
-        "xetex" => "xelatex",
-        other => other,
-    };
-    let fmt = if parts.len() >= 3 {
-        Some(parts[1])
-    } else {
-        None
-    };
 
-    let mut candidates: Vec<String> = Vec::new();
-    if fmt == Some("pk") {
-        candidates.push(if basename.ends_with(".pk") {
-            basename.to_string()
-        } else {
-            format!("{basename}.pk")
-        });
-    } else {
-        candidates.push(basename.to_string());
-        if !basename.contains('.') {
-            let preferred = fmt.and_then(format_ext);
-            let exts = [".tfm", ".pfb", ".vf", ".otf", ".ttf", ".enc", ".map"];
-            candidates.extend(
-                preferred
-                    .into_iter()
-                    .chain(exts.into_iter().filter(move |ext| Some(*ext) != preferred))
-                    .map(|ext| format!("{basename}{ext}")),
-            );
+    let (engine, format, basename) = match request {
+        TexliveRequest::File {
+            engine,
+            format,
+            name,
+        } => (*engine, Some(format.to_string()), name.as_str()),
+        TexliveRequest::Pk { dpi, name } => {
+            let candidate = if name.ends_with(".pk") {
+                name.clone()
+            } else {
+                format!("{name}.pk")
+            };
+            let dpi = [format!("-dpi={dpi}")];
+            return lookup_read(app, "pdftex", "pdflatex", &dpi, &candidate).await;
         }
+    };
+    // The engine picks the program-specific search paths (tex/xelatex/...
+    // for XeTeX).
+    let progname = match engine {
+        "xetex" => "xelatex",
+        _ => "pdflatex",
+    };
+    let format = format.as_deref();
+
+    let mut candidates = vec![basename.to_string()];
+    if !basename.contains('.') {
+        let preferred = format.and_then(format_ext);
+        let exts = [".tfm", ".pfb", ".vf", ".otf", ".ttf", ".enc", ".map"];
+        candidates.extend(
+            preferred
+                .into_iter()
+                .chain(exts.into_iter().filter(move |ext| Some(*ext) != preferred))
+                .map(|ext| format!("{basename}{ext}")),
+        );
     }
     for candidate in &candidates {
-        if let Some(data) = lookup_read(engine, progname, &[], candidate).await? {
+        if let Some(data) = lookup_read(app, engine, progname, &[], candidate).await? {
             return Ok(Some(data));
         }
     }
     // Formats whose search path kpsewhich does not guess from the suffix
     // (e.g. XeTeX's TECkit mappings, `*.tec` in "misc fonts").
-    if parts.len() == 3
-        && let Some(fmt_name) = fmt.and_then(format_name)
-    {
-        let extra = format!("-format={fmt_name}");
-        if let Some(data) = lookup_read(engine, progname, &[extra], basename).await? {
+    if let Some(fmt_name) = format.and_then(format_name) {
+        let extra = [format!("-format={fmt_name}")];
+        if let Some(data) = lookup_read(app, engine, progname, &extra, basename).await? {
             return Ok(Some(data));
         }
     }
@@ -648,14 +838,34 @@ async fn local_texlive_file(rel: &str) -> Result<Option<Vec<u8>>> {
 }
 
 /// A kpsewhich hit for one name, read into memory; misses are `Ok(None)`.
+/// Hits are remembered in `App::lookups`, misses are not.
 async fn lookup_read(
+    app: &App,
     engine: &str,
     progname: &str,
     extra: &[String],
     name: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let Some(found) = kpsewhich(engine, progname, extra, name).await else {
-        return Ok(None);
+    let key = format!("{engine} {progname} {} {name}", extra.join(" "));
+    let cached = app
+        .lookups
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+        .cloned();
+    let found = match cached {
+        Some(found) => found,
+        None => {
+            let Some(found) = kpsewhich(engine, progname, extra, name).await else {
+                return Ok(None);
+            };
+            let mut lookups = app.lookups.lock().unwrap_or_else(PoisonError::into_inner);
+            if lookups.len() >= LOOKUP_CACHE_CAPACITY {
+                lookups.clear();
+            }
+            lookups.insert(key, found.clone());
+            found
+        }
     };
     Ok(Some(
         tokio::fs::read(&found)
@@ -671,7 +881,17 @@ async fn kpsewhich(engine: &str, progname: &str, extra: &[String], name: &str) -
     command
         .arg(format!("-engine={engine}"))
         .arg(format!("-progname={progname}"))
+        // Never generate missing fonts or files: mktex scripts would write
+        // into TEXMFVAR on behalf of whoever sends a request.
+        .args([
+            "-no-mktex=pk",
+            "-no-mktex=mf",
+            "-no-mktex=tex",
+            "-no-mktex=tfm",
+        ])
         .args(extra)
+        // The name is validated already; `--` keeps it from ever being an option
+        .arg("--")
         .arg(name)
         .stdin(Stdio::null())
         .kill_on_drop(true);
@@ -723,10 +943,13 @@ async fn tree(State(app): State<Arc<App>>, UrlPath(dir): UrlPath<String>) -> Res
 /// Paths are relative to <dir> and sorted, so the page can hand a whole
 /// submission folder to the same fetch loop it uses for the small samples;
 /// a fixture dropped under wasm-test/fixtures/ then needs one line in
-/// SAMPLES. Dotfiles are skipped. Local dev server, but the listing stays
-/// inside the repository and never follows out of it.
+/// SAMPLES. Hidden files and symlinks are skipped. Local dev server, but the
+/// listing stays inside the repository and never follows out of it.
 fn list_tree(app: &App, dir: &str) -> Result<String, (StatusCode, &'static str)> {
     let rel = dir.trim_matches('/');
+    if !rel_path_allowed(rel) {
+        return Err((StatusCode::NOT_FOUND, "no such directory"));
+    }
     let target = app
         .root
         .join(rel)
@@ -744,16 +967,20 @@ fn list_tree(app: &App, dir: &str) -> Result<String, (StatusCode, &'static str)>
 
 fn collect_files(target: &Path, dir: &Path, files: &mut Vec<String>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
+        let entry = entry?;
+        let path = entry.path();
         if path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with('.'))
         {
             continue; // dotfiles, and whatever hides under them
         }
-        if path.is_dir() {
+        // The entry's own type: symlinks are neither followed nor listed, so
+        // the listing cannot leave the repository or loop.
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
             collect_files(target, &path, files)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             files.push(
                 path.strip_prefix(target)
                     .unwrap_or(&path)
@@ -788,18 +1015,350 @@ mod tests {
         }
     }
 
+    fn is_map(rel: &str) -> bool {
+        parse_texlive_request(rel).is_some_and(|request| request.is_map())
+    }
+
     /// The TeX Live freshness window keys off this predicate: real map
-    /// requests yes, everything else — dvipdfmx's extensionless or
-    /// font-extension fileid round-trips, plain package requests, PK — no.
+    /// requests yes, everything else — plain package requests, PK, fonts
+    /// asked for by fileid — no.
     #[test]
     fn map_request_predicate() {
-        assert!(is_map_request("pdftex/11/pdftex.map"));
-        assert!(is_map_request("xetex/11/xetex.map"));
-        assert!(!is_map_request("xetex/11/0123abcd4567ef89")); // fileid
-        assert!(!is_map_request("xetex/11/0123abcd4567ef89.otf")); // round-trip
-        assert!(!is_map_request("pdftex/3/cmr10"));
-        assert!(!is_map_request("pdftex/pk/600/x"));
-        assert!(!is_map_request("pdftex/11/pdftex.map/x"));
+        assert!(is_map("pdftex/11/pdftex.map"));
+        assert!(is_map("xetex/11/xetex.map"));
+        assert!(!is_map("pdftex/3/cmr10"));
+        assert!(!is_map("pdftex/pk/600/x"));
+        assert!(!is_map("pdftex/11/pdftex.map/x"));
+        let font = parse_texlive_request("xetex/47/texgyreheros-regular.otf").unwrap();
+        assert!(!is_map(&format!("xetex/47/{}.otf", font.fileid())));
+    }
+
+    /// Only the shapes the workers send reach kpsewhich, with plain names.
+    #[test]
+    fn texlive_requests_are_parsed_strictly() {
+        assert_eq!(
+            parse_texlive_request("pdftex/26/article.cls"),
+            Some(TexliveRequest::File {
+                engine: "pdftex",
+                format: 26,
+                name: "article.cls".into()
+            })
+        );
+        assert_eq!(
+            parse_texlive_request("pdftex/pk/657/cmr10"),
+            Some(TexliveRequest::Pk {
+                dpi: 657,
+                name: "cmr10".into()
+            })
+        );
+        assert!(parse_texlive_request("xetex/47/lmroman10-regular.otf").is_some());
+        assert!(parse_texlive_request("pdftex/3/ec-lmr10").is_some());
+
+        for rel in [
+            // kpathsea expansion and option injection
+            "pdftex/3/$SHELL",
+            "pdftex/3/${HOME}",
+            "pdftex/3/~",
+            "pdftex/3/-var-value=SHELL",
+            "pdftex/3/--help",
+            // hidden files and traversal
+            "pdftex/3/.bashrc",
+            "pdftex/3/..",
+            "pdftex/3/../../etc/passwd",
+            "pdftex/3/a\\b",
+            // shapes the workers never send
+            "pdftex__33/ptmr7t",
+            "ptmr7t",
+            "luatex/3/cmr10",
+            "pdftex/abc/cmr10",
+            "pdftex/+3/cmr10",
+            "pdftex/999/cmr10",
+            "pdftex/3/",
+            "pdftex/3/cmr10/x",
+            "pdftex/pk/abc/cmr10",
+            "pdftex/pk/99999999/cmr10",
+            "xetex/pk/600/cmr10",
+            "pdftex/3/my file",
+        ] {
+            assert_eq!(parse_texlive_request(rel), None, "{rel:?}");
+        }
+        assert_eq!(
+            parse_texlive_request(&format!("pdftex/3/{}", "a".repeat(MAX_NAME_LEN + 1))),
+            None
+        );
+    }
+
+    /// dvipdfmx's `<fileid>[.ext]` requests map back to the original request
+    /// without any stored state, and a fileid cannot smuggle in a name the
+    /// direct route would refuse.
+    #[test]
+    fn fileids_round_trip() {
+        let font = parse_texlive_request("xetex/47/texgyreheros-regular.otf").unwrap();
+        let fileid = font.fileid();
+        assert!(!fileid.contains(['.', '/']));
+        assert_eq!(
+            parse_texlive_request(&format!("xetex/47/{fileid}")),
+            Some(font.clone())
+        );
+        assert_eq!(
+            parse_texlive_request(&format!("xetex/36/{fileid}.otf")),
+            Some(font)
+        );
+
+        let encode = |rel: &str| {
+            let hex: String = rel.bytes().map(|b| format!("{b:02x}")).collect();
+            format!("xetex/47/{FILEID_PREFIX}{hex}")
+        };
+        assert_eq!(parse_texlive_request(&encode("pdftex/3/$SHELL")), None);
+        assert_eq!(parse_texlive_request(&encode("../../etc/passwd")), None);
+        // Decoded once only: a nested fileid stays a plain (missing) name
+        let nested = parse_texlive_request("xetex/47/x.otf").unwrap().fileid();
+        assert_eq!(
+            parse_texlive_request(&encode(&format!("xetex/47/{nested}"))),
+            Some(TexliveRequest::File {
+                engine: "xetex",
+                format: 47,
+                name: nested
+            })
+        );
+    }
+
+    /// A scratch directory below the system temp dir, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = env::temp_dir().join(format!("wasm-serve-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir.canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A served root with a page, a sample, hidden files and symlinks that
+    /// lead out of it; `outside` holds the files those symlinks point at.
+    fn served_root(tag: &str) -> (Scratch, Scratch) {
+        let root = Scratch::new(&format!("{tag}-root"));
+        let outside = Scratch::new(&format!("{tag}-outside"));
+        fs::write(outside.0.join("secret.txt"), "secret").unwrap();
+        fs::create_dir_all(root.0.join("wasm-test/fmt-cache")).unwrap();
+        fs::create_dir_all(root.0.join("web/dist/assets")).unwrap();
+        fs::write(root.0.join("web/dist/index.html"), "<html></html>").unwrap();
+        for design in DESIGNS {
+            fs::create_dir_all(root.0.join(format!("web/dist/{design}"))).unwrap();
+            fs::write(root.0.join(format!("web/dist/{design}/index.html")), design).unwrap();
+        }
+        fs::write(root.0.join("web/dist/assets/index-abc123.js"), "app").unwrap();
+        fs::write(root.0.join("web/dist/assets/.hidden"), "hidden").unwrap();
+        fs::create_dir_all(root.0.join("sample/figs")).unwrap();
+        fs::write(root.0.join("sample/main.tex"), "main").unwrap();
+        fs::write(root.0.join("sample/figs/a.png"), "png").unwrap();
+        fs::create_dir_all(root.0.join(".git")).unwrap();
+        fs::write(root.0.join(".git/config"), "config").unwrap();
+        fs::write(root.0.join("sample/.env"), "env").unwrap();
+        std::os::unix::fs::symlink(outside.0.join("secret.txt"), root.0.join("sample/leak.txt"))
+            .unwrap();
+        std::os::unix::fs::symlink(&outside.0, root.0.join("sample/out")).unwrap();
+        (root, outside)
+    }
+
+    /// Every file below `dir` with its contents, to prove nothing changed.
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut entries = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let file_type = entry.file_type().unwrap();
+                if file_type.is_dir() {
+                    stack.push(entry.path());
+                }
+                let contents = if file_type.is_file() {
+                    fs::read(entry.path()).unwrap()
+                } else {
+                    Vec::new()
+                };
+                entries.push((entry.path(), contents));
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    async fn send(app: &Arc<App>, method: &str, uri: &str) -> StatusCode {
+        use tower::ServiceExt as _;
+
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        build_router(app.clone())
+            .oneshot(request)
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Static files: hidden paths and symlinks out of the root are refused
+    /// in every encoding, regular files are served.
+    #[tokio::test]
+    async fn static_files_stay_inside_the_root() {
+        let (root, _outside) = served_root("static");
+        let app = Arc::new(App::new(root.0.clone(), root.0.join("web/dist"), false));
+
+        assert_eq!(send(&app, "GET", "/sample/main.tex").await, StatusCode::OK);
+        assert_eq!(
+            send(&app, "GET", "/sample/figs/a.png").await,
+            StatusCode::OK
+        );
+        assert_eq!(send(&app, "GET", "/").await, StatusCode::OK);
+        for uri in [
+            "/.git/config",
+            "/%2egit/config",
+            "/sample/.env",
+            "/sample/%2Eenv",
+            "/sample/leak.txt",
+            "/sample/out/secret.txt",
+            "/sample/out/",
+            "/../secret.txt",
+            "/sample/%2e%2e/%2e%2e/secret.txt",
+            "/sample/..%2f..%2fsecret.txt",
+            "/sample%5c..%5c.git%5cconfig",
+            "/wasm-test/fmt-cache/../../.git/config",
+        ] {
+            assert_eq!(
+                send(&app, "GET", uri).await,
+                StatusCode::NOT_FOUND,
+                "GET {uri}"
+            );
+        }
+    }
+
+    /// /tree/ lists regular files only: no hidden files, no symlinks, and no
+    /// directory outside the root or below a hidden one.
+    #[test]
+    fn tree_listing_stays_inside_the_root() {
+        let (root, _outside) = served_root("tree");
+        let app = App::new(root.0.clone(), root.0.join("web/dist"), false);
+
+        let listing: serde_json::Value =
+            serde_json::from_str(&list_tree(&app, "sample").unwrap()).unwrap();
+        assert_eq!(
+            listing["files"],
+            serde_json::json!(["figs/a.png", "main.tex"])
+        );
+
+        for dir in [
+            ".git",
+            "sample/../.git",
+            "..",
+            "../..",
+            "sample/out",
+            "/etc",
+        ] {
+            assert!(list_tree(&app, dir).is_err(), "/tree/{dir}");
+        }
+    }
+
+    async fn get_response(app: &Arc<App>, uri: &str) -> Response {
+        use tower::ServiceExt as _;
+
+        let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        build_router(app.clone()).oneshot(request).await.unwrap()
+    }
+
+    /// The app build: the overview at the root, a page per design below it,
+    /// hashed bundles under /assets/ with a permanent cache, and nothing
+    /// hidden or outside the build.
+    #[tokio::test]
+    async fn app_build_is_served() {
+        let (root, _outside) = served_root("app");
+        let app = Arc::new(App::new(root.0.clone(), root.0.join("web/dist"), false));
+
+        let index = get_response(&app, "/").await;
+        assert_eq!(index.status(), StatusCode::OK);
+        assert_eq!(index.headers()[header::CACHE_CONTROL], NO_CACHE);
+
+        for design in DESIGNS {
+            let page = get_response(&app, &format!("/{design}/")).await;
+            assert_eq!(page.status(), StatusCode::OK);
+            assert_eq!(page.headers()[header::CACHE_CONTROL], NO_CACHE);
+            let body = axum::body::to_bytes(page.into_body(), 1024).await.unwrap();
+            assert_eq!(body, design.as_bytes());
+
+            let bare = get_response(&app, &format!("/{design}")).await;
+            assert_eq!(bare.status(), StatusCode::TEMPORARY_REDIRECT);
+            assert_eq!(bare.headers()[header::LOCATION], format!("/{design}/"));
+        }
+
+        let bundle = get_response(&app, "/assets/index-abc123.js").await;
+        assert_eq!(bundle.status(), StatusCode::OK);
+        assert_eq!(bundle.headers()[header::CACHE_CONTROL], ASSET_CACHE);
+
+        for uri in [
+            "/assets/.hidden",
+            "/assets/%2ehidden",
+            "/assets/../index.html",
+            "/assets/%2e%2e/%2e%2e/%2e%2e/.git/config",
+            "/assets/missing.js",
+        ] {
+            assert_eq!(
+                get_response(&app, uri).await.status(),
+                StatusCode::NOT_FOUND,
+                "GET {uri}"
+            );
+        }
+
+        // without a build, the root explains how to make one
+        let bare = Arc::new(App::new(root.0.clone(), root.0.join("web/missing"), false));
+        assert_eq!(
+            get_response(&bare, "/").await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// No route accepts a writing method, and serving requests leaves the
+    /// served tree byte for byte as it was.
+    #[tokio::test]
+    async fn server_has_no_write_path() {
+        let (root, outside) = served_root("readonly");
+        let app = Arc::new(App::new(root.0.clone(), root.0.join("web/dist"), false));
+        let before = (snapshot(&root.0), snapshot(&outside.0));
+
+        let uris = [
+            "/",
+            "/tool/",
+            "/site/",
+            "/assets/index-abc123.js",
+            "/wasm-test/",
+            "/sample/main.tex",
+            "/sample/new.tex",
+            "/tree/sample",
+            "/texlive/pdftex/26/article.cls",
+            "/texlive/pdftex/3/cmr10",
+            "/fmt/key/swiftlatexpdftex.fmt",
+        ];
+        for uri in uris {
+            for method in ["POST", "PUT", "PATCH", "DELETE"] {
+                assert_eq!(
+                    send(&app, method, uri).await,
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "{method} {uri}"
+                );
+            }
+        }
+        for uri in uris {
+            send(&app, "GET", uri).await;
+        }
+
+        assert_eq!((snapshot(&root.0), snapshot(&outside.0)), before);
     }
 
     /// The engine's fallback lookups depend on this table staying exactly as
