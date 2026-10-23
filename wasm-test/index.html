@@ -94,15 +94,12 @@
     border-bottom: 1px solid var(--color-border);
   }
   header.hero .hero-left { min-width: 0; }
-  header.hero .hero-badge {
-    display: inline-block;
-    font-weight: 600; font-size: 11px;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--color-accent-dark);
-    background: var(--color-accent-light);
-    padding: 4px 14px; border-radius: 100px;
-    margin-bottom: 8px;
-  }
+  /* The tagline shares the wordmark's baseline, behind a hairline rule:
+     a sentence, not a sticker. Wraps under the title when it runs out of
+     room (phones). */
+  header.hero .hero-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header.hero .hero-title .hero-rule { width: 1px; height: 1.15em; background: var(--color-border); transform: translateY(0.18em); }
+  header.hero .hero-title .hero-tag { font-size: 13.5px; color: var(--color-secondary); }
   header.hero h1 {
     font-family: var(--font-serif);
     font-size: clamp(22px, 3vw, 30px);
@@ -725,8 +722,11 @@
 <body>
   <header class="hero">
     <div class="hero-left">
-      <div class="hero-badge">runs in your browser · no uploads</div>
-      <h1>alc-ng<span class="highlight">.</span></h1>
+      <div class="hero-title">
+        <h1>alc-ng<span class="highlight">.</span></h1>
+        <span class="hero-rule" aria-hidden="true"></span>
+        <span class="hero-tag">runs in your browser · no uploads</span>
+      </div>
     </div>
     <div class="hero-right">
       <div class="btn-row">
