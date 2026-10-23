@@ -657,6 +657,18 @@
   details.tree-files:not([open]) summary .tw { transform: rotate(-90deg); }
 
   iframe#pdfPane { width: 100%; height: 42rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: #fff; }
+  @media (max-width: 62rem) { iframe#pdfPane { height: min(42rem, 78dvh); } }
+
+  /* The touch replacement for the pdf iframe (see setPdfView) — roomy 44px
+     buttons, since this panel is the whole pdf tab on phones. */
+  #pdfTouchPanel {
+    display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
+    padding: 3rem 1rem 3.4rem; text-align: center; color: var(--color-secondary);
+  }
+  #pdfTouchPanel[hidden] { display: none; }
+  #pdfTouchPanel p { max-width: 30rem; margin: 0 0 0.7rem; }
+  #pdfTouchPanel .pdf-touch-btns { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+  #pdfTouchPanel .btn { min-height: 44px; }
 
   /* ════════════════════════════════════════════════════════════
      PROCESSING LOG — dark dock, the template's modal toolbar ink
@@ -743,7 +755,7 @@
         </a>
       </div>
       <div class="chip-row">
-        <span class="chipstat" id="status">loading module …</span>
+        <span class="chipstat" id="status">idle — loads on Run</span>
         <span class="chipstat fmeta" id="engineStatus">engine not loaded</span>
       </div>
     </div>
@@ -800,6 +812,16 @@
       </div>
       <div id="pdfTab" hidden>
         <iframe id="pdfPane" title="Compiled PDF"></iframe>
+        <!-- Touch devices never see the iframe — setPdfView swaps in these
+             buttons instead, since embedded PDF viewers misbehave there. -->
+        <div id="pdfTouchPanel" hidden>
+          <p>The compiled PDF is ready, but an embedded PDF viewer does not
+             work on touch devices — open it in its own tab or save the file.</p>
+          <div class="pdf-touch-btns">
+            <a class="btn" id="pdfOpenLink" href="#" target="_blank" rel="noopener">Open compiled PDF</a>
+            <a class="btn" id="pdfDlLink" href="#" download="compiled.pdf">Download PDF</a>
+          </div>
+        </div>
       </div>
       <div id="compareTab" hidden>
         <div class="cmp-head" id="compareSummary"></div>
@@ -1413,9 +1435,30 @@ function texCallNow(message, responseCmds) {
 function resetPdfPane() {
   const pane = $("pdfPane");
   pane.removeAttribute("src");
+  pane.hidden = false;
+  for (const id of ["pdfOpenLink", "pdfDlLink"]) $(id).removeAttribute("href");
+  $("pdfTouchPanel").hidden = true;
   $("tabPdfBtn").disabled = true;
   resetCompare();
   showTab("review");
+}
+
+// Show the compiled PDF in the pdf tab: the iframe on pointer-fine devices,
+// open/download buttons on touch ones — a blob: PDF iframe renders blank in
+// iOS Safari, and on Android its own scroll view hijacks page scrolling.
+// `?pdf=touch|embed` forces either branch (for testing without a device).
+function setPdfView(url) {
+  const forced = new URLSearchParams(location.search).get("pdf");
+  const touch = forced === "touch" || (forced !== "embed" && window.matchMedia("(pointer: coarse)").matches);
+  const pane = $("pdfPane");
+  pane.hidden = touch;
+  $("pdfTouchPanel").hidden = !touch;
+  if (touch) {
+    $("pdfOpenLink").href = url;
+    $("pdfDlLink").href = url;
+  } else {
+    pane.src = url;
+  }
 }
 
 // --- workspace tabs -----------------------------------------------------------
@@ -2052,8 +2095,7 @@ async function compileFolderInEngine(mains) {
 
   // Show the compiled PDF in the workspace's pdf tab (the primary's).
   const pdfUrl = URL.createObjectURL(new Blob([pdf], { type: "application/pdf" }));
-  const pane = $("pdfPane");
-  pane.src = pdfUrl;
+  setPdfView(pdfUrl);
   $("tabPdfBtn").disabled = false;
 
   return { failed: false, main: primary, mains, compileMs, log: primaryLog || log, inputs, outputs, pdf };
@@ -2517,6 +2559,10 @@ async function ensureWorkerAlcModule() {
   if (trace) logInfo("WASI call tracing enabled (?wasitrace=1)");
   logOk(`alc_ng module live in engine worker (${(reply.exports ?? []).length} exports)`);
   steps.detail("cleaner", `module live (${fmtKB(buf.byteLength)} wasm)`);
+  // The chip module piggybacks on the now cached bytes — the same URL with a
+  // warm HTTP cache, so no second download, only a local compile — and the
+  // header gets its real version instead of staying idle.
+  if (!alcExports) loadModule();
 }
 
 async function runAlcNg() {
@@ -3895,8 +3941,16 @@ $("tabStatsBtn").addEventListener("click", () => showTab("stats"));
 // starting point, which also makes the page scriptable from a headless browser.
 const sampleParam = new URLSearchParams(location.search).get("sample");
 if (sampleParam !== null && SAMPLES[Number(sampleParam)]) loadSampleFolder(Number(sampleParam));
-loadEngine();
-loadModule();
+// Lazy boot: a first load never fetches more than the page itself — the run
+// cold-starts the engine worker (runAlcNg → loadEngine) and pulls the wasm
+// module into it on demand (ensureWorkerAlcModule). The header chips tell the
+// idle truth until then, and the version readout piggybacks on the first run.
+// This keeps a first mobile visit page-sized instead of ~11 MB. `?preload=1`
+// restores the eager boot for sessions that measure load times.
+if (new URLSearchParams(location.search).has("preload")) {
+  loadEngine();
+  loadModule();
+}
 </script>
 </body>
 </html>
