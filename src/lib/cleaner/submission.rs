@@ -796,10 +796,39 @@ impl Submission {
 
         // Gather all files that are required by the LaTeX build:
         // recorder inputs and bib references from latexmk.
+        //
+        // A user-provided main file is required by definition, even when the
+        // recorder does not list it: an .fls recorded on another machine (the
+        // typical provided-fls input — e.g. the author's own latexmk run)
+        // references the main file with an absolute path outside the
+        // submission, which parse_fls cannot resolve into the tree. Without
+        // this, cleaning such a submission would silently drop its main file.
+        let forced_main_files: HashSet<SourceFile> = self
+            .cleaner_config
+            .user_provided_main_files
+            .iter()
+            .flatten()
+            .filter_map(|p| {
+                SourceFile::from_path(self.cache_path.path().join(p), &self.cache_path).ok()
+            })
+            .collect();
+        for main in &forced_main_files {
+            if !self
+                .initial_file_list
+                .iter()
+                .any(|f| f.source_file() == main)
+            {
+                warn!(
+                    "User-provided main file {} was not found in the submission; the cleaned project cannot compile",
+                    main.relative().display()
+                );
+            }
+        }
         let all_used: HashSet<_> = self
             .recorder_inputs
             .union(&self.latexmk_referenced_bibs)
             .chain(&self.latexmk_referenced_bsts)
+            .chain(&forced_main_files)
             .collect();
         trace!("Total files marked as used: {}", all_used.len());
 
