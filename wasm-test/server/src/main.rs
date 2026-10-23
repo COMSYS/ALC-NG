@@ -268,12 +268,7 @@ async fn get_fmt(
         return (StatusCode::NOT_FOUND, "unknown format dump").into_response();
     };
     match fs::read(&path) {
-        Ok(data) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .header(header::CONTENT_LENGTH, data.len().to_string())
-            .body(Body::from(data))
-            .expect("a decimal length is always a valid header"),
+        Ok(data) => octet_stream(data, &[]),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             (StatusCode::NOT_FOUND, "no dump cached yet").into_response()
         }
@@ -297,16 +292,12 @@ async fn log_texlive(State(app): State<Arc<App>>, request: Request, next: Next) 
 
 async fn texlive(State(app): State<Arc<App>>, UrlPath(rel): UrlPath<String>) -> Response {
     match serve_texlive(&app, &rel).await {
-        Ok(Some((data, fileid))) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .header(header::CONTENT_LENGTH, data.len().to_string())
-            // The engine worker derives its /tex cache path from these headers -
-            // keep them stable per request so repeated fetches rewrite the same file.
-            .header(HeaderName::from_static("fileid"), &fileid)
-            .header(HeaderName::from_static("pkid"), &fileid)
-            .body(Body::from(data))
-            .expect("a hex id and a decimal length are always valid headers"),
+        // The engine worker derives its /tex cache path from the fileid/pkid
+        // headers — keep them stable per request so repeated fetches rewrite
+        // the same file.
+        Ok(Some((data, fileid))) => {
+            octet_stream(data, &[("fileid", fileid.clone()), ("pkid", fileid)])
+        }
         Ok(None) => proxy_not_found(),
         // proxy trouble: report as upstream error
         Err(err) => (
@@ -347,6 +338,20 @@ async fn serve_texlive(app: &App, rel: &str) -> Result<Option<(Vec<u8>, String)>
         return Ok(Some(finish(app, &rel, data)?));
     }
     Ok(None)
+}
+
+/// An octet-stream 200 with a Content-Length plus any extra headers.
+fn octet_stream(data: Vec<u8>, extra: &[(&'static str, String)]) -> Response {
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, data.len().to_string());
+    for (name, value) in extra {
+        builder = builder.header(HeaderName::from_static(name), value.clone());
+    }
+    builder
+        .body(Body::from(data))
+        .expect("a decimal length and static names are always valid headers")
 }
 
 /// Reply 301, the mirror protocol's "file does not exist" marker: the engine
@@ -477,10 +482,8 @@ async fn local_texlive_file(rel: &str) -> Result<Option<Vec<u8>>> {
         }
     }
     for candidate in &candidates {
-        if let Some(found) = kpsewhich(engine, progname, &[], candidate).await {
-            return Ok(Some(
-                fs::read(&found).with_context(|| format!("reading {}", found.display()))?,
-            ));
+        if let Some(data) = lookup_read(engine, progname, &[], candidate).await? {
+            return Ok(Some(data));
         }
     }
     // Formats whose search path kpsewhich does not guess from the suffix
@@ -489,13 +492,26 @@ async fn local_texlive_file(rel: &str) -> Result<Option<Vec<u8>>> {
         && let Some(fmt_name) = fmt.and_then(format_name)
     {
         let extra = format!("-format={fmt_name}");
-        if let Some(found) = kpsewhich(engine, progname, &[extra], basename).await {
-            return Ok(Some(
-                fs::read(&found).with_context(|| format!("reading {}", found.display()))?,
-            ));
+        if let Some(data) = lookup_read(engine, progname, &[extra], basename).await? {
+            return Ok(Some(data));
         }
     }
     Ok(None)
+}
+
+/// A kpsewhich hit for one name, read into memory; misses are `Ok(None)`.
+async fn lookup_read(
+    engine: &str,
+    progname: &str,
+    extra: &[String],
+    name: &str,
+) -> Result<Option<Vec<u8>>> {
+    let Some(found) = kpsewhich(engine, progname, extra, name).await else {
+        return Ok(None);
+    };
+    Ok(Some(
+        fs::read(&found).with_context(|| format!("reading {}", found.display()))?,
+    ))
 }
 
 /// One `kpsewhich` lookup; the first stdout line must be an absolute path

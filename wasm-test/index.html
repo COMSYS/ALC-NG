@@ -1269,7 +1269,7 @@ async function loadEngine(engine = "pdftex") {
   resetPdfPane();
   if (texWorker) {
     texWorker.worker.terminate();
-    texLock = Promise.resolve();
+    texQueue.tail = Promise.resolve();
     workerModuleLoaded = false;
   }
 
@@ -1303,7 +1303,7 @@ function bindWorkerMessages(worker) {
   worker.onmessage = (ev) => {
     const data = ev.data;
     if (data?.cmd === "workerlog") {
-      logLine(`[engine] ${data.text ?? ""}`, data.level === "error" ? "error" : "verbose");
+      forwardWorkerLog(data, "engine");
       return;
     }
     const pending = texWorker?.pending;
@@ -1352,15 +1352,27 @@ function awaitWorkerReply(cmds, failTitle) {
   });
 }
 
-// Engine calls are serialized: the review's lazy file reads (alcng_read) can
-// overlap with the next pipeline stage, and the worker answers one call at a time.
-let texLock = Promise.resolve();
-function texCall(message, responseCmds) {
-  const run = () => texCallNow(message, responseCmds);
-  const result = texLock.then(run, run);
-  texLock = result.catch(() => {});
-  return result;
+// Serialized call queues: the workers answer one call at a time, and the
+// review's lazy file reads (alcng_read) can overlap with the next pipeline
+// stage. Both worker protocols share this queue shape.
+function makeCallQueue() {
+  const q = { tail: Promise.resolve() };
+  q.run = (thunk) => {
+    const result = q.tail.then(thunk, thunk);
+    q.tail = result.catch(() => {});
+    return result;
+  };
+  return q;
 }
+
+const texQueue = makeCallQueue();
+function texCall(message, responseCmds) {
+  return texQueue.run(() => texCallNow(message, responseCmds));
+}
+
+// worker console lines → page log, under a per-worker prefix.
+const forwardWorkerLog = (data, label) =>
+  logLine(`[${label}] ${data.text ?? ""}`, data.level === "error" ? "error" : "verbose");
 
 function texCallNow(message, responseCmds) {
   // Sends a command and resolves with the worker's reply. Commands that do
@@ -1511,7 +1523,7 @@ async function loadSampleFolder(index) {
         logErr(`sample fetch failed: ${rel} (${response.status})`);
         throw new Error(`fetch ${rel}: ${response.status}`);
       }
-      const file = new File([await response.arrayBuffer()], rel.split("/").pop());
+      const file = new File([await response.arrayBuffer()], baseOf(rel));
       // webkitRelativePath is missing on synthesized files; define it so
       // setFolder() strips exactly one folder segment and keys match the
       // relative paths inside the .fls ("main.tex", "sub/used2.tex", …).
@@ -1552,6 +1564,8 @@ function synthesizeFlsFromLog(log) {
 const stripTexComments = (text) => text.replace(/(^|[^\\])%.*$/gm, "$1");
 const dirOf = (rel) => (rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "");
 const baseOf = (rel) => rel.slice(rel.lastIndexOf("/") + 1);
+const stemOf = (rel) => rel.replace(/\.[^./]*$/, "");  // path without its final extension
+const failTail = (log) => String(log ?? "").slice(-160);  // one-line failure tail for the log
 
 // Every .tex file with a \documentclass, best main file first. Native alc-ng
 // only considers top-level files (helper::find_mains); a nested one is a
@@ -1603,7 +1617,7 @@ async function findMainFiles() {
 const MAX_PASSES = 5;
 
 async function compileLatexPasses(main, what) {
-  const stem = main.replace(/\.[^./]*$/, "");
+  const stem = stemOf(main);
   let previous = await auxSnapshot(stem);
   for (let pass = 1; ; pass++) {
     steps.detail("compile", `pass ${pass}/${MAX_PASSES} running …`);
@@ -1649,6 +1663,28 @@ function setEngineMainFile(rel) {
   return texCall({ cmd: "setmainfile", url: baseOf(rel), dir: dirOf(rel) }, null);
 }
 
+// Stage [{rel, bytes}] into an engine memfs: mkdir once per directory (the
+// worker treats re-creation as a failure), then writefile. `call` speaks
+// either worker's protocol (texCall-shaped); dviCall is adapted at the call
+// site. `onWrite(rel, bytes)` sees every written file; `label` names the
+// worker in staging errors.
+async function stageIntoEngine(entries, call, onWrite, label = "engine") {
+  const madeDirs = new Set();
+  for (const { rel, bytes } of entries) {
+    let prefix = "";
+    for (const part of rel.split("/").slice(0, -1)) {
+      prefix = prefix ? `${prefix}/${part}` : part;
+      if (!madeDirs.has(prefix)) {
+        await call({ cmd: "mkdir", url: prefix }, ["mkdir"]);
+        madeDirs.add(prefix);
+      }
+    }
+    const reply = await call({ cmd: "writefile", url: rel, src: bytes }, ["writefile"]);
+    if (reply?.result !== undefined && reply.result !== "ok") logErr(`[${label}] could not stage ${rel}`);
+    onWrite?.(rel, bytes);
+  }
+}
+
 // --- the format dump ---------------------------------------------------------
 
 // The engine cannot load a format dump from disk (SwiftLaTeX's mirror is
@@ -1684,14 +1720,27 @@ async function provideFormatDump() {
   if (texWorker.fmtBytes !== undefined) { logv("format dump already seeded for this session"); return texWorker.fmtBytes; }
   const spec = engineSpec();
 
+  // One dump from one source: remember it for the session, cache it, seed
+  // the engine's kpathsea hook, and report the engine ready. `note` is the
+  // log line naming the source.
+  async function adoptFormatDump(dump, note, { level = "ok", cache = true, ready = true } = {}) {
+    texWorker.fmtBytes = dump;
+    if (cache) await saveFmt(spec.fmtKey, dump);
+    ({ ok: logOk, info: logInfo })[level](note);
+    await seedFormatDump(dump);
+    if (ready) setEngineStatus(`${spec.label} engine ready`, "ok");
+    return dump;
+  }
+
   // Reloads reuse the previously built dump.
   const stored = await loadFmt(spec.fmtKey);
   if (stored) {
-    texWorker.fmtBytes = stored;
-    logInfo(`restored ${spec.label} format dump from IndexedDB (${fmtKB(stored.length)}) — skipping the build`);
     steps.detail("stage", `format dump restored from IndexedDB (${fmtKB(stored.length)})`);
-    await seedFormatDump(stored);
-    return stored;
+    return adoptFormatDump(
+      stored,
+      `restored ${spec.label} format dump from IndexedDB (${fmtKB(stored.length)}) — skipping the build`,
+      { level: "info", cache: false, ready: false },
+    );
   }
 
   // A browser that has never built one asks the server first — this is what
@@ -1699,13 +1748,8 @@ async function provideFormatDump() {
   steps.detail("stage", "checking the server's format-dump cache …");
   const remote = await fetchServerFmt(spec);
   if (remote) {
-    texWorker.fmtBytes = remote;
-    await saveFmt(spec.fmtKey, remote);
-    logOk(`restored ${spec.label} format dump from the server cache (${fmtKB(remote.length)}) — skipping the build`);
     steps.detail("stage", `format dump from the server cache (${fmtKB(remote.length)})`);
-    await seedFormatDump(remote);
-    setEngineStatus(`${spec.label} engine ready`, "ok");
-    return remote;
+    return adoptFormatDump(remote, `restored ${spec.label} format dump from the server cache (${fmtKB(remote.length)}) — skipping the build`);
   }
 
   logInfo(`building the ${spec.label} LaTeX format dump with the engine (once, ~a few minutes — INITEX loads the full LaTeX2e kernel + hyphenation patterns)`);
@@ -1715,12 +1759,8 @@ async function provideFormatDump() {
     const result = await texCall({ cmd: "compileformat" }, ["compile"]);
     if (result.result === "ok" && result.pdf !== undefined) {
       const dump = new Uint8Array(result.pdf);
-      texWorker.fmtBytes = dump;
-      await saveFmt(spec.fmtKey, dump);
-      logOk(`format dump built: ${fmtKB(dump.length)} (cached in IndexedDB for later runs)`);
-      await seedFormatDump(dump);
+      await adoptFormatDump(dump, `format dump built: ${fmtKB(dump.length)} (cached in IndexedDB for later runs)`);
       logv("format dump seeded into the engine's kpathsea hook");
-      setEngineStatus(`${spec.label} engine ready`, "ok");
       return dump;
     }
     // A reply without a dump must fail here — silently returning undefined
@@ -1735,12 +1775,7 @@ async function provideFormatDump() {
       logv("official readback missed (dump named after the job's cache id) — grabbing the fresh *.fmt from /work");
       const dump = await grabBuiltFormatDump();
       if (dump) {
-        texWorker.fmtBytes = dump;
-        await saveFmt(spec.fmtKey, dump);
-        logOk(`format dump recovered from /work: ${fmtKB(dump.length)} (cached in IndexedDB for later runs)`);
-        await seedFormatDump(dump);
-        setEngineStatus(`${spec.label} engine ready`, "ok");
-        return dump;
+        return adoptFormatDump(dump, `format dump recovered from /work: ${fmtKB(dump.length)} (cached in IndexedDB for later runs)`);
       }
       logErr("no *.fmt found in the engine's /work");
     } else {
@@ -1875,7 +1910,7 @@ function normalizeAccessPath(path, dir = "") {
 // and pdfTeX writes its log to <main>.log in the engine's memfs. Read that file
 // back through the module's file reader and echo the tail.
 async function logEngineTeXLog(main) {
-  const stem = String(main ?? "main").replace(/\.[^./]*$/, "");
+  const stem = stemOf(String(main ?? "main"));
   for (const path of [`/work/${stem}.log`, "/work/main.log"]) {
     try {
       const reply = await texCall({ cmd: "alcng_read", path }, ["alcng_read"]);
@@ -1906,24 +1941,15 @@ async function compileFolderInEngine(mains) {
 
   // mkdir once per directory: the worker treats re-creation as a failure.
   steps.detail("stage", `staging ${folder.files.size} file(s) → engine memfs …`);
-  let written = 0;
-  const madeDirs = new Set();
   const staged = [];  // also handed to dvipdfmx after a XeTeX compile
   for (const rel of [...folder.files.keys()].sort()) {
-    let prefix = "";
-    for (const part of rel.split("/").slice(0, -1)) {
-      prefix = prefix ? `${prefix}/${part}` : part;
-      if (!madeDirs.has(prefix)) {
-        await texCall({ cmd: "mkdir", url: prefix }, ["mkdir"]);
-        madeDirs.add(prefix);
-      }
-    }
-    const bytes = new Uint8Array(await folder.files.get(rel).arrayBuffer());
-    await texCall({ cmd: "writefile", url: rel, src: bytes }, ["writefile"]);
-    staged.push({ rel, bytes });
+    staged.push({ rel, bytes: new Uint8Array(await folder.files.get(rel).arrayBuffer()) });
+  }
+  let written = 0;
+  await stageIntoEngine(staged, texCall, (rel, bytes) => {
     written += bytes.byteLength;
     logv(`[engine] fs write ${rel} (${fmtKB(bytes.byteLength)})`);
-  }
+  });
   logv(`[page] folder written to engine memfs: ${folder.files.size} file(s), ${fmtKB(written)}`);
   // Every checked main compiles, and the used-file basis unions their access
   // logs (native alc-ng cleans around all of --main-files at once). The
@@ -1945,7 +1971,7 @@ async function compileFolderInEngine(mains) {
     log = String(result.log ?? "");
     if (result.result !== "ok" || result.pdf === undefined) {
       const more = mains.length > 1;
-      logErr(`${what} failed (status ${result.status})${more ? " — trying the remaining main file(s)" : ""}: ${log.slice(-160)}`);
+      logErr(`${what} failed (status ${result.status})${more ? " — trying the remaining main file(s)" : ""}: ${failTail(log)}`);
       if (!firstError) {
         firstError = { main, status: result.status, log };
         logEngineLog(log);
@@ -1998,7 +2024,7 @@ async function compileFolderInEngine(mains) {
     // nothing compiled: report the first failure, like a single-main run did
     const err = firstError ?? { main: mains[0], status: "?", log: "" };
     if (/format file/.test(err.log)) await dropFmt(engineSpec().fmtKey);
-    setEngineStatus(`compile failed (status ${err.status}) — log tail: ${String(err.log).slice(-160)}`, "err");
+    setEngineStatus(`compile failed (status ${err.status}) — log tail: ${failTail(err.log)}`, "err");
     await logEngineTeXLog(err.main);
     return { failed: true, main: err.main };
   }
@@ -2027,11 +2053,11 @@ function loadDvipdfm() {
   dviPromise ??= new Promise((resolve, reject) => {
     logInfo(`spawning dvipdfmx worker ${DVIPDFM_WORKER}`);
     const worker = new Worker(`${DVIPDFM_WORKER}?v=${Date.now()}`);
-    const dvi = { worker, queue: Promise.resolve(), pending: null, ready: false };
+    const dvi = { worker, queue: makeCallQueue(), pending: null, ready: false };
     worker.onmessage = (ev) => {
       const data = ev.data;
       if (data?.cmd === "workerlog") {
-        logLine(`[dvipdfmx] ${data.text ?? ""}`, data.level === "error" ? "error" : "verbose");
+        forwardWorkerLog(data, "dvipdfmx");
         return;
       }
       if (!dvi.ready) {  // the runtime's spontaneous {result: "ok"} after init
@@ -2058,35 +2084,20 @@ function loadDvipdfm() {
 
 // Serialized like texCall; `reply = false` for commands without an answer.
 function dviCall(dvi, message, reply = true) {
-  const run = () => new Promise((resolve) => {
+  return dvi.queue.run(() => new Promise((resolve) => {
     if (reply) dvi.pending = resolve;
     dvi.worker.postMessage(message);
     if (!reply) resolve();
-  });
-  const result = dvi.queue.then(run, run);
-  dvi.queue = result.catch(() => {});
-  return result;
+  }));
 }
 
 // Returns the PDF bytes, or null when dvipdfmx failed.
 async function xdvToPdf(files, main, xdv) {
   const t0 = performance.now();
   const dvi = await loadDvipdfm();
-  const xdvRel = main.replace(/\.[^./]*$/, "") + ".xdv";
+  const xdvRel = `${stemOf(main)}.xdv`;
   await dviCall(dvi, { cmd: "flushcache" }, false);
-  const madeDirs = new Set();
-  for (const { rel, bytes } of [...files, { rel: xdvRel, bytes: xdv }]) {
-    let prefix = "";
-    for (const part of rel.split("/").slice(0, -1)) {
-      prefix = prefix ? `${prefix}/${part}` : part;
-      if (!madeDirs.has(prefix)) {
-        await dviCall(dvi, { cmd: "mkdir", url: prefix });
-        madeDirs.add(prefix);
-      }
-    }
-    const reply = await dviCall(dvi, { cmd: "writefile", url: rel, src: bytes });
-    if (reply?.result !== "ok") logErr(`[dvipdfmx] could not stage ${rel}`);
-  }
+  await stageIntoEngine([...files, { rel: xdvRel, bytes: xdv }], (msg) => dviCall(dvi, msg), null, "dvipdfmx");
   await dviCall(dvi, { cmd: "setmainfile", url: baseOf(xdvRel), dir: dirOf(xdvRel) }, false);
   logInfo(`converting "${xdvRel}" to PDF with dvipdfmx`);
   const result = await dviCall(dvi, { cmd: "compilepdf" });
@@ -2126,7 +2137,7 @@ async function cleanCompileArtifacts(run, main) {
     // compile-log fallback (empty access log): at least remove the main
     // file's own artifacts by name.
     const dir = dirOf(main) ? `${dirOf(main)}/` : "";
-    const stem = baseOf(main).replace(/\.[^.]*$/, "");
+    const stem = stemOf(baseOf(main));
     doomed = ["aux", "bbl", "blg", "log", "out", "toc", "pdf"].map((ext) => `${dir}${stem}.${ext}`);
   }
   let removed = 0;
@@ -2287,24 +2298,13 @@ async function compileCleanedInEngine(cfg, main) {
   await texCall({ cmd: "flushcache" }, null);
   await provideFormatDump();
   await drainEngineOpenLog();
-  const madeDirs = new Set();
-  for (const { rel, bytes } of files.sort((a, b) => (a.rel < b.rel ? -1 : 1))) {
-    let prefix = "";
-    for (const part of rel.split("/").slice(0, -1)) {
-      prefix = prefix ? `${prefix}/${part}` : part;
-      if (!madeDirs.has(prefix)) {
-        await texCall({ cmd: "mkdir", url: prefix }, ["mkdir"]);
-        madeDirs.add(prefix);
-      }
-    }
-    await texCall({ cmd: "writefile", url: rel, src: bytes }, ["writefile"]);
-  }
+  await stageIntoEngine(files.sort((a, b) => (a.rel < b.rel ? -1 : 1)), texCall);
   logInfo(`compiling cleaned "${cleanedMain}" (${files.length} file(s)) with SwiftLaTeX ${engineSpec().label}`);
   const t0 = performance.now();
   await setEngineMainFile(cleanedMain);
   const result = await compileLatexPasses(cleanedMain, "cleaned compile");
   if (result.result !== "ok" || result.pdf === undefined) {
-    logErr(`cleaned compile failed (status ${result.status}): ${String(result.log ?? "").slice(-160)}`);
+    logErr(`cleaned compile failed (status ${result.status}): ${failTail(result.log)}`);
     logEngineLog(result.log);
     await logEngineTeXLog(cleanedMain);
     return null;
@@ -2469,7 +2469,7 @@ async function chooseEngine(main) {
   const xetexOnly = /\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{[^}]*?\b(fontspec|unicode-math|polyglossia|xeCJK|xltxtra|xunicode|mathspec)\b/;
   const texFiles = [main, ...[...folder.files.keys()].filter((rel) => rel !== main && /\.tex$/i.test(rel))];
   for (const rel of texFiles) {
-    const text = (await folder.files.get(rel).text()).replace(/(^|[^\\])%.*$/gm, "$1");
+    const text = stripTexComments(await folder.files.get(rel).text());
     const m = xetexOnly.exec(text);
     if (m) return { engine: "xetex", why: `${rel} loads ${m[1]}` };
   }
@@ -3088,7 +3088,7 @@ function renderDone() {
     const dl = document.createElement("button");
     dl.type = "button";
     dl.className = "primary";
-    dl.textContent = `↓ Download ${review.archive.path.split("/").pop()} · ${fmtSize(review.archive.size)}`;
+    dl.textContent = `↓ Download ${baseOf(review.archive.path)} · ${fmtSize(review.archive.size)}`;
     dl.addEventListener("click", () => downloadArchive());
     acts.appendChild(dl);
   }
@@ -3133,7 +3133,7 @@ function renderTree() {
   // group by directory, root files first
   const byDir = new Map();
   for (const c of review.changes) {
-    const dir = c.rel.includes("/") ? c.rel.slice(0, c.rel.lastIndexOf("/")) : "";
+    const dir = dirOf(c.rel);
     (byDir.get(dir) ?? byDir.set(dir, []).get(dir)).push(c);
   }
   const dirs = [...byDir.keys()].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a < b ? -1 : 1));
@@ -3148,7 +3148,7 @@ function renderTree() {
     st.className = `st st-${c.status}`;
     st.textContent = c.status;
     b.appendChild(st);
-    const name = c.rel.slice(c.rel.lastIndexOf("/") + 1);
+    const name = baseOf(c.rel);
     const path = document.createElement("span");
     path.className = "tpath";
     path.textContent = name;
@@ -3215,18 +3215,22 @@ function renderTree() {
   }
 }
 
+// Blob → invisible <a> → click → delayed revoke.
+function saveBlob(bytes, name) {
+  const url = URL.createObjectURL(new Blob([bytes]));
+  const tmp = document.createElement("a");
+  tmp.href = url;
+  tmp.download = name;
+  tmp.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 // Hand the tarball to the browser: pulled out of the engine's memfs on
 // demand. Shared by the artifact row in the rail and the success screen.
 async function downloadArchive() {
   const a = currentReview?.review.archive;
   if (!a) return;
-  const bytes = await cleanedBytes(a.path);
-  const url = URL.createObjectURL(new Blob([bytes]));
-  const tmp = document.createElement("a");
-  tmp.href = url;
-  tmp.download = a.path.split("/").pop();
-  tmp.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  saveBlob(await cleanedBytes(a.path), baseOf(a.path));
 }
 
 function renderArtifact() {
@@ -3538,7 +3542,7 @@ function renderDiffHeader() {
   const badge = e?.status ? `<span class="${cls}">${e.status}</span>` : "";
   const stat = c ? `<span class="dstat"><span class="plus">+${c.ins}</span> <span class="minus">−${c.del}</span> · ${c.oldN} → ${c.newN} lines</span>` : "";
   const dl = e?.outPath
-    ? `<a class="dget" href="#" data-dl="${esc(e.outPath)}" data-name="${esc(e.rel.split("/").pop())}">download cleaned</a>`
+    ? `<a class="dget" href="#" data-dl="${esc(e.outPath)}" data-name="${esc(baseOf(e.rel))}">download cleaned</a>`
     : "";
   return `<div class="diff-head"><button type="button" class="dback" data-summary>← summary</button>${badge}<span class="dpath">${esc(diffPathLabel(e))}</span>${stat}<span class="spacer"></span>`
     + `<div class="segs"><button data-mode="sbs" aria-pressed="${diffState.mode === "sbs"}">split</button>`
@@ -3628,7 +3632,7 @@ function renderBinaryNote(change) {
   if (change.resized) parts.push(`resized ${dimsLabel(change.resized.before)} → ${dimsLabel(change.resized.after)} px`);
   pane.innerHTML = `<div class="diff"><div class="diff-head"><button type="button" class="dback" data-summary>← summary</button><span class="st st-${change.status}">${change.status}</span>`
     + `<span class="dpath">${esc(diffPathLabel(change))}</span><span class="dstat">binary · ${parts.join(" → ")}</span><span class="spacer"></span>`
-    + (change.outPath ? `<a class="dget" href="#" data-dl="${esc(change.outPath)}" data-name="${esc(change.rel.split("/").pop())}">download cleaned</a>` : "")
+    + (change.outPath ? `<a class="dget" href="#" data-dl="${esc(change.outPath)}" data-name="${esc(baseOf(change.rel))}">download cleaned</a>` : "")
     + `</div><div class="diff-note">binary file — no line diff</div></div>`;
 }
 
@@ -3656,13 +3660,7 @@ $("diffPane").addEventListener("click", async (ev) => {
   const dl = ev.target.closest("[data-dl]");
   if (dl) {
     ev.preventDefault();
-    const bytes = await cleanedBytes(dl.dataset.dl);
-    const url = URL.createObjectURL(new Blob([bytes]));
-    const tmp = document.createElement("a");
-    tmp.href = url;
-    tmp.download = dl.dataset.name;
-    tmp.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    saveBlob(await cleanedBytes(dl.dataset.dl), dl.dataset.name);
   }
 });
 
