@@ -58,7 +58,7 @@ pub const IF_TEX_CONDITIONALS: [&[u8]; 16] = [
 
 /// Grammar names that are preserved as‑is during stripping.
 /// These tokens are simply copied to the output without modification.
-pub const GRAMMAR_PRESERVE: [&str; 35] = [
+pub const GRAMMAR_PRESERVE: [&str; 33] = [
     "$",
     "$$",
     "(",
@@ -69,9 +69,7 @@ pub const GRAMMAR_PRESERVE: [&str; 35] = [
     "]",
     "active_character",
     "argc",
-    "biblatex_include",
     "command_name",
-    "curly_group_glob_pattern",
     "delimiter",
     "hyperlink",
     "label",
@@ -97,13 +95,14 @@ pub const GRAMMAR_PRESERVE: [&str; 35] = [
 ];
 
 /// Grammar names that may contain nested sub‑nodes that need to be processed recursively.
-pub const GRAMMAR_NESTING: [&str; 81] = [
+pub const GRAMMAR_NESTING: [&str; 85] = [
     "acronym_definition",
     "acronym_reference",
     "asy_enviroment",
     "asydef_environment",
     "author_declaration",
     "begin",
+    "biblatex_include",
     "bibstyle_include",
     "bibtex_include",
     "brack_group",
@@ -129,6 +128,7 @@ pub const GRAMMAR_NESTING: [&str; 81] = [
     "curly_group_author_list",
     "curly_group_author_list_repeat1",
     "curly_group_command_name",
+    "curly_group_glob_pattern",
     "curly_group_impl",
     "curly_group_label",
     "curly_group_label_list",
@@ -144,9 +144,11 @@ pub const GRAMMAR_NESTING: [&str; 81] = [
     "enum_item",
     "environment_definition",
     "expand_after",
+    "file_include",
     "glossary_entry_definition",
     "glossary_entry_reference",
     "graphics_include",
+    "graphics_path_declaration",
     "if_content",
     "import_include",
     "inkscape_include",
@@ -1026,7 +1028,7 @@ impl<'a> ContentStripper<'a> {
             "old_command_definition" => {
                 self.handle_old_command_definition(node, previous_node, whitespaces, false)
             }
-            "path" => {
+            "path" | "glob_pattern" => {
                 // Point references to renamed files to their new name
                 match self
                     .file_renames
@@ -1096,7 +1098,7 @@ impl<'a> ContentStripper<'a> {
 
                     // In math mode, spaces are ignored but an empty group is an atom that changes
                     // the spacing (e.g. turns a unary minus into a binary one), so delete the invocation.
-                    if is_in_math_mode(&node) {
+                    if is_in_math_mode(&node, self.content) {
                         // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
                         let fullline = self.is_fullline(&node);
 
@@ -1298,7 +1300,7 @@ impl<'a> ContentStripper<'a> {
         let newline_after = self.content[node.end_byte()..]
             .iter()
             .find(|&&b| !is_horizontal_whitespace(b))
-            .is_some_and(|&b| is_newline(b));
+            .is_none_or(|&b| is_newline(b));
 
         newline_before && newline_after
     }
@@ -1709,6 +1711,7 @@ impl<'a> ContentStripper<'a> {
 
         // Clean command, declaration and parameter text
         let mut name = None;
+        let mut delimited = false;
         let mut i = 0;
         while let Some(child) = node.child(i) {
             if child == implementation {
@@ -1718,6 +1721,8 @@ impl<'a> ContentStripper<'a> {
 
             if child == decl {
                 name = Some(result.text().to_owned());
+            } else if matches!(child.kind(), "parameter_delimiter" | "command_name") {
+                delimited = true;
             }
 
             result.append_to(&mut new_content, &prev_node);
@@ -1736,8 +1741,11 @@ impl<'a> ContentStripper<'a> {
             String::from_utf8_lossy(cleaned_impl.text()),
         ))?;
         // An empty body marks a custom comment command (whose invocations are deleted).
+        // Parameters with delimiters (e.g. `\def\a#1\par{}`) swallow text that is not a curly group,
+        // so invocations cannot be deleted or replaced safely and the definition is kept.
         // If the file opts out of comment cleaning, treat it as a normal command instead.
-        if is_empty(&cleaned_impl_tree.root_node()) && !self.directives.keep_comments {
+        if is_empty(&cleaned_impl_tree.root_node()) && !delimited && !self.directives.keep_comments
+        {
             // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
             if long {
                 self.long_command_definitions.insert(name.to_owned());
@@ -1795,58 +1803,40 @@ impl<'a> ContentStripper<'a> {
         let node_content = &self.content[node.byte_range()];
         let mut prev_node = previous_node;
 
-        let new_command = match node.child(0) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+        // Optional argument count and default value sit between declaration and implementation,
+        // so locate the nodes by field instead of index.
+        let (Some(decl), Some(implementation)) = (
+            node.child_by_field_name("declaration"),
+            node.child_by_field_name("implementation"),
+        ) else {
+            whitespaces.extend_from_slice(node_content);
+            return Ok(Kept(whitespaces));
+        };
+
+        // Clean command, declaration and arguments
+        let mut name = None;
+        let mut i = 0;
+        while let Some(child) = node.child(i) {
+            if child == implementation {
+                break;
             }
-        };
-        let cleaned_command = self.handle_node(new_command, prev_node.clone())?;
+            let result = self.handle_node(child, prev_node.clone())?;
 
-        cleaned_command.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_command;
-
-        // Declaration node
-        let decl = match node.child(1) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
+            if child == decl {
+                // If the declaration has a child, then the name is wrapped by curly braces
+                name = Some(match decl.child(1) {
+                    Some(c) => self.content[c.byte_range()].to_owned(),
+                    None => result.text().to_owned(),
+                });
             }
-        };
-        let cleaned_decl = self.handle_node(decl, prev_node.clone())?;
 
-        cleaned_decl.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_decl.clone();
+            result.append_to(&mut new_content, &prev_node);
+            prev_node = result;
+            i += 1;
+        }
+        let name = name.unwrap_or_default();
+        let name = name.as_slice();
 
-        // Name inside declaration node
-        // If it has a child, then the name is wrapped by curly braces
-        let name = match decl.child(1) {
-            Some(c) => &self.content[c.byte_range()],
-            None => cleaned_decl.text(),
-        };
-
-        let argc = match node.child(2) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
-        let cleaned_argc = self.handle_node(argc, prev_node.clone())?;
-
-        cleaned_argc.append_to(&mut new_content, &prev_node);
-        prev_node = cleaned_argc;
-
-        // Extract implementation of new command
-        let implementation = match node.child(3) {
-            Some(c) => c,
-            None => {
-                whitespaces.extend_from_slice(node_content);
-                return Ok(Kept(whitespaces));
-            }
-        };
         let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
 
         // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
@@ -1884,8 +1874,8 @@ impl<'a> ContentStripper<'a> {
             cleaned_impl.append_to(&mut new_content, &prev_node);
             prev_node = cleaned_impl;
 
-            // Clean remaining children (starting with index 4)
-            let mut i = 4;
+            // Clean remaining children after the implementation
+            i += 1;
 
             // Clean all child nodes inside the command body
             while let Some(child) = node.child(i) {
@@ -1902,15 +1892,41 @@ impl<'a> ContentStripper<'a> {
     }
 }
 
+/// Commands that typeset their argument in text mode, also inside a formula.
+const TEXT_MODE_COMMANDS: [&[u8]; 14] = [
+    b"\\mbox",
+    b"\\hbox",
+    b"\\fbox",
+    b"\\framebox",
+    b"\\makebox",
+    b"\\parbox",
+    b"\\textrm",
+    b"\\textsf",
+    b"\\texttt",
+    b"\\textnormal",
+    b"\\textbf",
+    b"\\textit",
+    b"\\textup",
+    b"\\intertext",
+];
+
 /// Returns `true` if the node is typeset in math mode, i.e. inside a formula
-/// or math environment but not inside a nested text command (e.g. `\text`).
-fn is_in_math_mode(node: &Node) -> bool {
+/// or math environment but not inside a nested text command (e.g. `\text` or `\mbox`).
+fn is_in_math_mode(node: &Node, content: &[u8]) -> bool {
     let mut current = node.parent();
 
     while let Some(parent) = current {
         match parent.kind() {
             "inline_formula" | "displayed_equation" | "math_environment" => return true,
             "text_mode" => return false,
+            "generic_command" => {
+                if let Some(name) = parent.child(0)
+                    && TEXT_MODE_COMMANDS.contains(&&content[name.byte_range()])
+                {
+                    return false;
+                }
+                current = parent.parent();
+            }
             _ => current = parent.parent(),
         }
     }

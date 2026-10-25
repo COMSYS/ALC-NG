@@ -114,4 +114,64 @@ Second paragraph
 
         assert_eq!(clean(input), "$a \\text{if {} b}$\n");
     }
+
+    #[test]
+    fn deletion_at_start_of_file() {
+        assert_eq!(clean(b"\\iffalse x\\fi\nText\n"), "Text\n");
+        assert_eq!(clean(b"\\usepackage{comment}\nText\n"), "Text\n");
+        assert_eq!(
+            clean(b"\\begin{comment}\nx\n\\end{comment}\nText\n"),
+            "Text\n"
+        );
+    }
+
+    #[test]
+    fn deletion_at_end_of_file_without_newline() {
+        assert_eq!(clean(b"Text\n\\iffalse x\\fi"), "Text\n");
+        // The indentation of the deleted line is removed as well
+        assert_eq!(clean(b"Text\n  \\iffalse x\\fi"), "Text\n");
+    }
+
+    #[test]
+    fn consecutive_deleted_lines() {
+        assert_eq!(clean(b"A\n\\iffalse x\\fi\n\\iffalse y\\fi\nB\n"), "A\nB\n");
+        // The blank line between the deleted lines is a paragraph break and kept
+        assert_eq!(
+            clean(b"A\n\\iffalse x\\fi\n\n\\iffalse y\\fi\nB\n"),
+            "A\n\nB\n"
+        );
+    }
+
+    #[test]
+    fn comment_package_followed_directly_by_another_line() {
+        assert_eq!(
+            clean(b"\\usepackage{comment}\n\\usepackage{x}\n"),
+            "\\usepackage{x}\n"
+        );
+    }
+
+    #[test]
+    fn invocation_after_control_word_keeps_space() {
+        // Deleting the invocation would let `\LaTeX` swallow the following space
+        let input = b"\\newcommand{\\note}[1]{}\n\\LaTeX\\note{x} is\n";
+
+        assert_eq!(clean(input), "\\LaTeX{} is\n");
+    }
+
+    #[test]
+    fn invocation_in_math_environments_is_deleted() {
+        let input = b"\\newcommand{\\note}[1]{}\n\\begin{align} a \\note{x} - b \\end{align}\n\\( c \\note{y} - d \\)\n";
+
+        assert_eq!(
+            clean(input),
+            "\\begin{align} a  - b \\end{align}\n\\( c  - d \\)\n"
+        );
+    }
+
+    #[test]
+    fn indented_long_definition_on_own_line() {
+        let input = b"Text\n  \\long\\def\\note#1{}\nMore \\note{x}\n";
+
+        assert_eq!(clean(input), "Text\nMore {}\n");
+    }
 }

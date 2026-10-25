@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use flate2::{Compression, write::GzEncoder};
 use log::{error, info, trace, warn};
 use std::{
@@ -187,17 +187,20 @@ impl Submission {
 
     /// Returns a set of main source files to compile.
     ///
-    /// If a `00Readme` was successfully parsed (`zzrm` is `Some`),
-    /// its top‑level files are used as the main files. Otherwise,
+    /// If a `00Readme` was successfully parsed (`zzrm` is `Some`) and declares
+    /// top‑level files, these are used as the main files. Otherwise,
     /// the set of possible main files discovered earlier is returned.
     pub fn get_mains(&self) -> HashSet<SourceFile> {
-        // If a 00Readme exists, use its declared top‑level files.
-        if let Some(zzrm) = &self.zzrm {
-            zzrm.top_level_files(&self.cache_path)
-        } else {
-            // No 00Readme, fall back to the previously found possible mains.
-            self.possible_main_files.clone()
+        // If a 00Readme declares top‑level files, use them.
+        if let Some(zzrm) = &self.zzrm
+            && zzrm.declares_top_level_files()
+        {
+            return zzrm.top_level_files(&self.cache_path);
         }
+
+        // No 00Readme or one that only sets global options (e.g. `nostamp`),
+        // fall back to the previously found possible mains.
+        self.possible_main_files.clone()
     }
 
     /// Creates a temporary cache of the project by copying all input files into
@@ -998,7 +1001,9 @@ impl Submission {
 
                 (
                     main_file,
-                    spinner.run_piped(&mut cmd).is_ok_and(|o| o.status.success()),
+                    spinner
+                        .run_piped(&mut cmd)
+                        .is_ok_and(|o| o.status.success()),
                 )
             })
             .collect();
@@ -1057,6 +1062,14 @@ impl Submission {
                 .collect::<Result<HashSet<_>, _>>()?,
             None => find_mains(self.cache_path.path())?,
         };
+
+        // Top-level files of the 00README that do not exist cannot be compiled
+        if let Some(zzrm) = &self.zzrm
+            && zzrm.declares_top_level_files()
+            && self.get_mains().is_empty()
+        {
+            bail!("The 00README declares top-level files, but none of them exists in the project");
+        }
 
         if !std::io::stderr().is_terminal() {
             info!(

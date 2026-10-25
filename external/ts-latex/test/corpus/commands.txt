@@ -479,3 +479,47 @@ Command definition of active character
     (curly_group_impl
       (text
         (placeholder)))))
+
+================================================================================
+Expandafter def of csname is no definition of csname
+================================================================================
+
+\expandafter\def\csname foo\endcsname{}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (expand_after
+    (command_name))
+  (generic_command
+    (command_name))
+  (text
+    (word)
+    (generic_command
+      (command_name)
+      (curly_group))))
+
+================================================================================
+Old command definition with bracket and dot delimiters
+================================================================================
+
+\def\opt[#1]{#1}
+\def\a#1#2.{}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (old_command_definition
+    (command_name)
+    (parameter_delimiter)
+    (placeholder)
+    (parameter_delimiter)
+    (curly_group_impl
+      (text
+        (placeholder))))
+  (old_command_definition
+    (command_name)
+    (placeholder)
+    (placeholder)
+    (parameter_delimiter)
+    (curly_group_impl)))

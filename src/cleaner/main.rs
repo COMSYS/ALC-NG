@@ -404,3 +404,24 @@ fn main() -> anyhow::Result<(), anyhow::Error> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::count_renamable_files;
+    use temp_dir::TempDir;
+
+    #[test]
+    fn counts_files_that_would_be_renamed() {
+        let dir = TempDir::with_prefix("alc-ng-test-").unwrap();
+        for file in ["main.tex", "a b.tex", "sub dir/c.tex", "x y.png", "x_y.png"] {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("empty dir")).unwrap();
+
+        // `a b.tex` and `sub dir/c.tex`: `x y.png` is not renamed as `x_y.png` exists, and
+        // directories do not count on their own. Files count whether the build uses them or not.
+        assert_eq!(count_renamable_files(dir.path()), 2);
+    }
+}

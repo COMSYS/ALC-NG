@@ -299,4 +299,29 @@ $\ax(I1)$ \Tik 1,2:"#;
         assert!(stripped.contains_slice(br#"\newcommand{"}[2]{{}_{#1}{#2}}"#));
         assert!(_deletion_stats.grammar_errors.is_empty());
     }
+
+    /// Without the inner braces, `\graphicspath` does not parse; the content is kept
+    /// and the surrounding comments are still removed.
+    #[test]
+    fn malformed_graphicspath_is_kept() {
+        let input = br"\graphicspath{figs/}
+% comment
+\graphicspath{\mydirs}
+% comment two
+Text
+";
+        let tree = parse(input).unwrap();
+        let (stripped, _deletion_stats) = ContentStripper::clean(
+            input,
+            tree.root_node(),
+            "test.tex",
+            Arc::new(CleanerConfig::default()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(stripped.unwrap()).unwrap(),
+            "\\graphicspath{figs/}\n\\graphicspath{\\mydirs}\nText\n"
+        );
+    }
 }

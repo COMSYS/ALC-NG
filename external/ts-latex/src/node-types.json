@@ -444,6 +444,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -457,6 +461,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -924,6 +932,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "general_if",
           "named": true
         },
@@ -945,6 +957,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -1247,6 +1263,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -1264,6 +1284,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -1747,6 +1771,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -1764,6 +1792,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -2928,6 +2960,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -2945,6 +2981,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -3294,6 +3334,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -3307,6 +3351,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -3617,6 +3665,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -3630,6 +3682,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -3960,6 +4016,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -3977,6 +4037,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -4283,6 +4347,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -4300,6 +4368,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -4649,6 +4721,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -4666,6 +4742,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -4940,6 +5020,50 @@
     }
   },
   {
+    "type": "file_include",
+    "named": true,
+    "fields": {
+      "command": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "\\includepdf",
+            "named": false
+          },
+          {
+            "type": "\\includestandalone",
+            "named": false
+          },
+          {
+            "type": "\\lstinputlisting",
+            "named": false
+          }
+        ]
+      },
+      "options": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "brack_group_key_value",
+            "named": true
+          }
+        ]
+      },
+      "path": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "curly_group_path",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "general_if",
     "named": true,
     "fields": {
@@ -5183,6 +5307,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -5200,6 +5328,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -5667,6 +5799,32 @@
     }
   },
   {
+    "type": "graphics_path_declaration",
+    "named": true,
+    "fields": {
+      "command": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "\\graphicspath",
+            "named": false
+          }
+        ]
+      },
+      "path": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "curly_group_path",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "hyperlink",
     "named": true,
     "fields": {
@@ -5839,6 +5997,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -5856,6 +6018,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -6270,6 +6436,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -6287,6 +6457,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -7172,6 +7346,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -7189,6 +7367,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -7508,6 +7690,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -7525,6 +7711,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -8233,6 +8423,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -8250,6 +8444,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -8579,6 +8777,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -8596,6 +8798,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -9045,6 +9251,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -9062,6 +9272,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -9361,6 +9575,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -9378,6 +9596,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -9715,6 +9937,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -9732,6 +9958,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -10069,6 +10299,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -10086,6 +10320,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -10411,6 +10649,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -10428,6 +10670,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -10754,6 +11000,10 @@
             "named": true
           },
           {
+            "type": "file_include",
+            "named": true
+          },
+          {
             "type": "generic_command",
             "named": true
           },
@@ -10767,6 +11017,10 @@
           },
           {
             "type": "graphics_include",
+            "named": true
+          },
+          {
+            "type": "graphics_path_declaration",
             "named": true
           },
           {
@@ -11210,6 +11464,10 @@
           "named": true
         },
         {
+          "type": "file_include",
+          "named": true
+        },
+        {
           "type": "generic_command",
           "named": true
         },
@@ -11223,6 +11481,10 @@
         },
         {
           "type": "graphics_include",
+          "named": true
+        },
+        {
+          "type": "graphics_path_declaration",
           "named": true
         },
         {
@@ -12399,6 +12661,10 @@
     "named": false
   },
   {
+    "type": "\\graphicspath",
+    "named": false
+  },
+  {
     "type": "\\href",
     "named": false
   },
@@ -12444,6 +12710,14 @@
   },
   {
     "type": "\\includeinkscape",
+    "named": false
+  },
+  {
+    "type": "\\includepdf",
+    "named": false
+  },
+  {
+    "type": "\\includestandalone",
     "named": false
   },
   {
@@ -12508,6 +12782,10 @@
   },
   {
     "type": "\\long",
+    "named": false
+  },
+  {
+    "type": "\\lstinputlisting",
     "named": false
   },
   {

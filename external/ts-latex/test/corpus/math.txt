@@ -250,3 +250,26 @@ Unbalanced math delimiters in environment definition
         (command_name))
       (math_delimiter
         (word)))))
+
+================================================================================
+Standalone and nested math delimiters
+================================================================================
+
+$\bigr)$
+{\left( a}
+$\left(\bigl[ x \bigr]\right)$
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (inline_formula
+    (math_delimiter))
+  (curly_group
+    (math_delimiter
+      (text
+        (word))))
+  (inline_formula
+    (math_delimiter
+      (math_delimiter
+        (text
+          (word))))))

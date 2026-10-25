@@ -411,6 +411,14 @@ impl ZeroZeroReadMe {
         Ok(tl_files)
     }
 
+    /// Returns `true` if the 00README declares at least one top-level file. A 00README
+    /// may also only set global options (e.g. `nostamp`) and leave the detection to arXiv.
+    pub fn declares_top_level_files(&self) -> bool {
+        self.sources
+            .values()
+            .any(|properties| matches!(properties.usage, Some(FileUsage::TopLevel)))
+    }
+
     pub fn top_level_files(&self, parent_dir: impl AsRef<Path>) -> HashSet<SourceFile> {
         self.sources
             .iter()
@@ -615,6 +623,22 @@ mod tests {
         }
     }
 
+    /// A 00README that only sets global options declares no top-level file.
+    #[test]
+    fn test_v1_declares_top_level_files() {
+        for (content, expected) in [
+            ("nostamp\n", false),
+            ("nostamp\nfigure.eps include\n", false),
+            ("main.tex toplevelfile\nnostamp\n", true),
+        ] {
+            let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+            std::fs::write(dir.path().join("00README.XXX"), content).unwrap();
+
+            let zzrm = ZeroZeroReadMe::new_from_folder(dir.path()).unwrap();
+            assert_eq!(zzrm.declares_top_level_files(), expected, "{content:?}");
+        }
+    }
+
     #[test]
     fn test_v2_json_still_parsed() {
         let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
@@ -635,6 +659,48 @@ mod tests {
         let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
         std::fs::write(dir.path().join("00README.txt"), "main.tex toplevelfile\n").unwrap();
         std::fs::write(dir.path().join("00README.xxx"), "main.tex toplevelfile\n").unwrap();
+
+        match ZeroZeroReadMe::new_from_folder(dir.path()) {
+            Err(ZZRMException::MultipleFiles(_)) => {}
+            other => panic!("expected MultipleFiles, got {:?}", other.ok()),
+        }
+    }
+
+    /// The 00README is found regardless of the case of its name, and directories
+    /// with a 00README name are not mistaken for it.
+    #[test]
+    fn test_discovery_ignores_case_and_directories() {
+        let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+        std::fs::write(dir.path().join("00readme.xxx"), "main.tex toplevelfile\n").unwrap();
+        let zzrm = ZeroZeroReadMe::new_from_folder(dir.path()).unwrap();
+        assert_eq!(zzrm.version, Version::V1);
+        assert!(zzrm.declares_top_level_files());
+
+        for name in ["00README", "00README.d"] {
+            let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+
+            match ZeroZeroReadMe::new_from_folder(dir.path()) {
+                Err(ZZRMException::FileNotFound(_)) => {}
+                other => panic!("{name}: expected FileNotFound, got {:?}", other.ok()),
+            }
+
+            // A 00README file next to the directory is found
+            std::fs::write(dir.path().join("00README.txt"), "nostamp\n").unwrap();
+            assert!(
+                ZeroZeroReadMe::new_from_folder(dir.path()).is_ok(),
+                "{name}"
+            );
+        }
+    }
+
+    /// An editor backup next to the 00README makes it ambiguous which file is meant.
+    #[test]
+    fn test_editor_backup_is_ambiguous() {
+        let dir = temp_dir::TempDir::with_prefix("alc_ng_zzrm_").unwrap();
+        let content = r#"{"sources": [{"filename": "main.tex", "usage": "toplevel"}]}"#;
+        std::fs::write(dir.path().join("00README.json"), content).unwrap();
+        std::fs::write(dir.path().join("00README.json~"), content).unwrap();
 
         match ZeroZeroReadMe::new_from_folder(dir.path()) {
             Err(ZZRMException::MultipleFiles(_)) => {}

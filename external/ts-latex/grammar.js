@@ -722,6 +722,8 @@ module.exports = grammar({
         $.inkscape_include,
         $.verbatim_include,
         $.import_include,
+        $.file_include,
+        $.graphics_path_declaration,
         $.caption,
         $.citation,
         $.counter_declaration,
@@ -973,6 +975,26 @@ module.exports = grammar({
         ),
         field('directory', $.curly_group_path),
         field('file', $.curly_group_path),
+      ),
+
+    // File inputs of common packages (pdfpages, standalone, listings)
+    file_include: $ =>
+      seq(
+        field(
+          'command',
+          choice('\\includepdf', '\\includestandalone', '\\lstinputlisting'),
+        ),
+        field('options', optional($.brack_group_key_value)),
+        field('path', $.curly_group_path),
+      ),
+
+    // Search paths of graphicx, e.g. `\graphicspath{{figs/}{img/}}`
+    graphics_path_declaration: $ =>
+      seq(
+        field('command', '\\graphicspath'),
+        '{',
+        repeat(field('path', $.curly_group_path)),
+        '}',
       ),
 
     caption: $ =>
