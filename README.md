@@ -147,7 +147,8 @@ alc-ng ./my-latex-project --keep-bib --clean-classes --latex-cmd pdflatex -f
 | `--resize-images` | | `false` | Downscale images to reduce file size |
 | `--im-size` | | `512` | Target image size in pixels (longest side) when resizing |
 | `--no-zzrm` | | `false` | Ignore an existing `00readme` file |
-| `--tar` | | | Write a `.tar.gz` archive (use `-` to pipe to stdout) |
+| `--tar` | | | Write a `.tar.gz` archive (use `-` to pipe to stdout). In an interactive terminal, suggests enabling `--rename-files` if any file name contains spaces |
+| `--rename-files` | | `false` | Replace spaces in file names with underscores (as arXiv does on upload) and update references to the renamed files |
 | `--skip-watermark` | | `false` | Do not add a watermark to cleaned files |
 | `--diff-color` | | `ff0000` | Provide a color for pixel that have changed during the pixel-perfect compare. |
 

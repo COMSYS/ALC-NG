@@ -17,6 +17,7 @@ mod tests {
             force: true,
             skip_watermark: true,
             tar: tar.map(|t| t.to_string_lossy().to_string()),
+            rename_files: true,
             ..Default::default()
         });
 

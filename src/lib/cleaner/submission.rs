@@ -619,10 +619,10 @@ impl Submission {
     /// Determines which files are renamed in the cleaned project.
     ///
     /// arXiv replaces spaces in file names with underscores, which breaks references
-    /// to these files. Thus, if a tar archive for the upload is created, we rename
+    /// to these files. Thus, if renaming is enabled, we rename
     /// them ourselves and rewrite the references.
     fn determine_file_renames(&mut self) {
-        if self.cleaner_config.tar.is_none() {
+        if !self.cleaner_config.rename_files {
             return;
         }
 
