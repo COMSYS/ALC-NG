@@ -27,11 +27,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            !stripped
-                .unwrap()
-                .contains_slice(br"\newcommand{\customdraft}")
-        );
+        // The definition is kept, only the invocations are removed
+        let stripped = stripped.unwrap();
+        assert!(stripped.contains_slice(br"\newcommand{\customdraft}"));
+        assert!(!stripped.contains_slice(b"Text}"));
+        assert!(stripped.contains_slice(b"Not in command"));
         assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
@@ -62,11 +62,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            !stripped
-                .unwrap()
-                .contains_slice(br"\newcommand{\customdraft}")
-        );
+        // The definition is kept, only the invocations are removed
+        let stripped = stripped.unwrap();
+        assert!(stripped.contains_slice(br"\newcommand{\customdraft}"));
+        assert!(!stripped.contains_slice(b"Text}"));
+        assert!(stripped.contains_slice(b"Not in command"));
         assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
@@ -97,11 +97,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            stripped
-                .unwrap()
-                .contains_slice(br"\newcommand{\customdraft}")
-        );
+        let stripped = stripped.unwrap();
+        assert!(stripped.contains_slice(br"\newcommand{\customdraft}"));
+        assert!(stripped.contains_slice(br"\customdraft{Another Text}"));
         assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }

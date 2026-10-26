@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ffi::OsStr,
     fmt::Debug,
     fs::read,
@@ -14,6 +14,7 @@ use crate::{
         config::CleanerConfig,
         file_renames::FileRenames,
         submission::{
+            comment_commands::{AnalyzedFile, CommentCommand, CommentCommands, EmptyDefinition},
             deletion_stats::DeletionStats,
             directives::{FileDirectives, directive_keywords, parse_directives},
         },
@@ -23,7 +24,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow};
 use image::ImageDecoder;
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use tree_sitter::{Node, Parser, Tree};
 
 /// Extensions of LaTeX class and package files, which are only cleaned with `clean_classes`.
@@ -54,6 +55,34 @@ pub const IF_TEX_CONDITIONALS: [&[u8]; 16] = [
     b"hint",
     b"prote",
     b"pdf",
+];
+
+/// Conditionals of TeX, e-TeX and pdfTeX (without the `\if` prefix). Their condition is
+/// evaluated by the engine, thus both branches are kept.
+/// `\iftrue`, `\iffalse` and `\if0` are evaluated by the cleaner and missing.
+pub const PRIMITIVE_CONDITIONALS: [&[u8]; 22] = [
+    b"cat",
+    b"num",
+    b"dim",
+    b"odd",
+    b"vmode",
+    b"hmode",
+    b"mmode",
+    b"inner",
+    b"void",
+    b"hbox",
+    b"vbox",
+    b"x",
+    b"eof",
+    b"case",
+    b"defined",
+    b"csname",
+    b"fontchar",
+    b"incsname",
+    b"pdfprimitive",
+    b"pdfabsnum",
+    b"pdfabsdim",
+    b"pdfstrcmp",
 ];
 
 /// Grammar names that are preserved as‑is during stripping.
@@ -390,18 +419,19 @@ impl LatexLikeFile {
         target: impl AsRef<Path>,
         deletion_stats: &mut DeletionStats,
         file_renames: &FileRenames,
+        comment_commands: &Arc<CommentCommands>,
     ) -> Result<()> {
         use std::fs::File;
 
-        let input_filename = self.input_path.join(self.source_file.relative());
-        let filename = input_filename.to_string_lossy();
+        let filename = self.cleaning_name();
 
-        let (stripped, stats) = ContentStripper::clean_with_renames(
+        let (stripped, stats) = ContentStripper::clean_with_comment_commands(
             &self.original_content,
             self.tree.root_node(),
-            filename.as_ref(),
+            &filename,
             self.cleaner_config.clone(),
             Some(file_renames),
+            comment_commands.clone(),
         )?;
 
         deletion_stats.merge(stats);
@@ -414,6 +444,23 @@ impl LatexLikeFile {
         }
 
         Ok(())
+    }
+
+    /// The name of the file used for cleaning and logging.
+    pub fn cleaning_name(&self) -> String {
+        self.input_path
+            .join(self.source_file.relative())
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The file as input of the comment command analysis.
+    pub fn analyzed<'a>(&'a self, filename: &'a str) -> AnalyzedFile<'a> {
+        AnalyzedFile {
+            content: &self.original_content,
+            root: self.tree.root_node(),
+            filename,
+        }
     }
 
     /// Copies the raw (unmodified) LaTeX file to the target path.
@@ -589,11 +636,15 @@ impl ParsedFile {
         target: impl AsRef<Path>,
         deletion_stats: &mut DeletionStats,
         file_renames: &FileRenames,
+        comment_commands: &Arc<CommentCommands>,
     ) -> Result<()> {
         match self {
-            ParsedFile::LatexLike(latex_like_file) => {
-                latex_like_file.copy_cleaned_to(target, deletion_stats, file_renames)
-            }
+            ParsedFile::LatexLike(latex_like_file) => latex_like_file.copy_cleaned_to(
+                target,
+                deletion_stats,
+                file_renames,
+                comment_commands,
+            ),
             ParsedFile::Bib(bib) => {
                 if bib.cleaner_config.keep_bib {
                     bib.copy_raw_to(target)
@@ -667,8 +718,6 @@ enum NodeHandling {
     IfEvaluatedEmpty(Vec<u8>, bool),
     /// The node was after \end{document} and was deleted.
     OutOfBounds,
-    /// The node was a comment definition that was deleted.
-    CommandDefinitionDeleted(Vec<u8>, bool),
     /// The node was an invocation of a comment command in math mode that was deleted.
     CommandInvocationDeleted(Vec<u8>, bool),
     /// The node was an invocation of a comment command that was replaced with `{}`.
@@ -686,7 +735,6 @@ impl NodeHandling {
             FullLineCommentDeleted(text) => Some(text),
             IfEvaluated(ws) => Some(ws),
             IfEvaluatedEmpty(ws, _) => Some(ws),
-            CommandDefinitionDeleted(ws, _) => Some(ws),
             CommandInvocationDeleted(ws, _) => Some(ws),
             CommentPackageIncludeDeleted(ws, _) => Some(ws),
             BlockCommentDeleted(ws, _) => Some(ws),
@@ -701,7 +749,6 @@ impl NodeHandling {
             self,
             BlockCommentDeleted(_, true)
                 | IfEvaluatedEmpty(_, true)
-                | CommandDefinitionDeleted(_, true)
                 | CommandInvocationDeleted(_, true)
                 | CommentPackageIncludeDeleted(_, true)
         )
@@ -715,7 +762,6 @@ impl NodeHandling {
             FullLineCommentDeleted(ws) => ws,
             IfEvaluated(ws) => ws,
             IfEvaluatedEmpty(ws, _) => ws,
-            CommandDefinitionDeleted(ws, _) => ws,
             CommandInvocationDeleted(ws, _) => ws,
             CommentPackageIncludeDeleted(ws, _) => ws,
             BlockCommentDeleted(ws, _) => ws,
@@ -754,14 +800,12 @@ impl NodeHandling {
             | SuffixCommentDeleted(_)
             | IfEvaluated(_)
             | IfEvaluatedEmpty(_, false)
-            | CommandDefinitionDeleted(_, false)
             | CommandInvocationDeleted(_, false)
             | CommandInvocationReplaced(_)
             | CommentPackageIncludeDeleted(_, false) => existing.extend_from_slice(own_text),
             FullLineCommentDeleted(_)
             | BlockCommentDeleted(_, true)
             | IfEvaluatedEmpty(_, true)
-            | CommandDefinitionDeleted(_, true)
             | CommandInvocationDeleted(_, true)
             | CommentPackageIncludeDeleted(_, true) => {
                 if let Self::FullLineCommentDeleted(ws) = self {
@@ -788,8 +832,13 @@ pub struct ContentStripper<'a> {
     filename: &'a str,
     content: &'a [u8],
     if_values: HashMap<Vec<u8>, bool>,
-    command_definitions: HashSet<Vec<u8>>,
-    long_command_definitions: HashSet<Vec<u8>>,
+    /// Commands whose invocations are removed, see [`CommentCommands`].
+    comment_commands: Arc<CommentCommands>,
+    /// Only collect the definitions of comment commands instead of cleaning.
+    /// Warnings are suppressed as the file is cleaned (and reported) afterwards.
+    collecting: bool,
+    /// Eligible definitions with an empty body, found while collecting.
+    empty_definitions: Vec<EmptyDefinition>,
     last_byte_of_document_block: Option<usize>,
     deletion_stats: DeletionStats,
     directives: FileDirectives,
@@ -815,6 +864,8 @@ impl<'a> ContentStripper<'a> {
 
     /// Like [`ContentStripper::clean`], but additionally rewrites references
     /// (e.g. `\input`, `\includegraphics`) to files renamed in `file_renames`.
+    ///
+    /// Comment commands are determined from this file only.
     pub fn clean_with_renames(
         content: &'a [u8],
         root: Node<'a>,
@@ -822,11 +873,41 @@ impl<'a> ContentStripper<'a> {
         cleaner_config: Arc<CleanerConfig>,
         file_renames: Option<&'a FileRenames>,
     ) -> Result<(Option<Vec<u8>>, DeletionStats)> {
+        let comment_commands = CommentCommands::analyze(
+            &[AnalyzedFile {
+                content,
+                root,
+                filename,
+            }],
+            cleaner_config.clone(),
+        );
+
+        Self::clean_with_comment_commands(
+            content,
+            root,
+            filename,
+            cleaner_config,
+            file_renames,
+            comment_commands,
+        )
+    }
+
+    /// Like [`ContentStripper::clean_with_renames`], but with the comment commands
+    /// determined for the whole submission.
+    pub fn clean_with_comment_commands(
+        content: &'a [u8],
+        root: Node<'a>,
+        filename: &'a str,
+        cleaner_config: Arc<CleanerConfig>,
+        file_renames: Option<&'a FileRenames>,
+        comment_commands: Arc<CommentCommands>,
+    ) -> Result<(Option<Vec<u8>>, DeletionStats)> {
         trace!("Starting content stripping for file: {}", filename);
         trace!("Content size: {} bytes", content.len());
 
         let mut stripper = Self::new(content, filename, cleaner_config);
         stripper.file_renames = file_renames;
+        stripper.comment_commands = comment_commands;
         stripper.directives = parse_directives(root, content);
 
         if !stripper.directives.is_empty() {
@@ -861,14 +942,39 @@ impl<'a> ContentStripper<'a> {
         result
     }
 
+    /// Strips the file without producing output and returns the definitions with an
+    /// empty body that are eligible as comment commands.
+    /// Bodies are cleaned with the given (previously found) comment commands.
+    pub(crate) fn empty_definitions(
+        content: &'a [u8],
+        root: Node<'a>,
+        filename: &'a str,
+        cleaner_config: Arc<CleanerConfig>,
+        comment_commands: Arc<CommentCommands>,
+    ) -> Result<Vec<EmptyDefinition>> {
+        let mut stripper = Self::new(content, filename, cleaner_config);
+        stripper.comment_commands = comment_commands;
+        stripper.collecting = true;
+        stripper.directives = parse_directives(root, content);
+
+        if stripper.directives.keep_all {
+            return Ok(Vec::new());
+        }
+
+        stripper.handle_node(root, NoNode)?;
+
+        Ok(stripper.empty_definitions)
+    }
+
     fn new(content: &'a [u8], filename: &'a str, cleaner_config: Arc<CleanerConfig>) -> Self {
         Self {
             filename,
             content,
             cleaner_config,
             if_values: Default::default(),
-            command_definitions: Default::default(),
-            long_command_definitions: Default::default(),
+            comment_commands: Default::default(),
+            collecting: false,
+            empty_definitions: Vec::new(),
             last_byte_of_document_block: None,
             deletion_stats: Default::default(),
             directives: FileDirectives::default(),
@@ -992,41 +1098,26 @@ impl<'a> ContentStripper<'a> {
                     .push(node_content.to_owned());
                 Ok(FullLineCommentDeleted(whitespaces))
             }
-            "long_command_definition" => {
-                let nested_command_handled = match node.child(1) {
-                    Some(c) if c.grammar_name() == "new_command_definition" => {
-                        self.handle_new_command_definition(c, previous_node, whitespaces, true)?
-                    }
-                    Some(c) if c.grammar_name() == "old_command_definition" => {
-                        self.handle_old_command_definition(c, previous_node, whitespaces, true)?
-                    }
-                    Some(_) | None => {
-                        whitespaces.extend_from_slice(node_content);
-                        return Ok(Kept(whitespaces));
-                    }
-                };
-
-                match nested_command_handled {
-                    Kept(mut s) => {
-                        let mut prefix = Vec::from(b"\\long");
-                        prefix.append(&mut s);
-                        Ok(Kept(prefix))
-                    }
-                    CommandDefinitionDeleted(s, _) => {
-                        // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
-                        let fullline = self.is_fullline(&node);
-
-                        // We need the fulline argument corresponding to the wrapped \long\...
-                        Ok(CommandDefinitionDeleted(s, fullline))
-                    }
-                    _ => unreachable!("Long command without actual command definition"),
+            "long_command_definition" => match node.child(1) {
+                // The wrapped definition is cleaned with `\long` (and anything up to it) as prefix
+                Some(c) if c.grammar_name() == "new_command_definition" => {
+                    whitespaces.extend_from_slice(&self.content[node.start_byte()..c.start_byte()]);
+                    self.handle_new_command_definition(c, previous_node, whitespaces)
                 }
-            }
+                Some(c) if c.grammar_name() == "old_command_definition" => {
+                    whitespaces.extend_from_slice(&self.content[node.start_byte()..c.start_byte()]);
+                    self.handle_old_command_definition(c, previous_node, whitespaces)
+                }
+                Some(_) | None => {
+                    whitespaces.extend_from_slice(node_content);
+                    Ok(Kept(whitespaces))
+                }
+            },
             "new_command_definition" => {
-                self.handle_new_command_definition(node, previous_node, whitespaces, false)
+                self.handle_new_command_definition(node, previous_node, whitespaces)
             }
             "old_command_definition" => {
-                self.handle_old_command_definition(node, previous_node, whitespaces, false)
+                self.handle_old_command_definition(node, previous_node, whitespaces)
             }
             "path" | "glob_pattern" => {
                 // Point references to renamed files to their new name
@@ -1077,42 +1168,15 @@ impl<'a> ContentStripper<'a> {
                     Ok(Kept(whitespaces))
                 }
             }
-            "generic_command" => {
-                // We want to check if this command invocation references a command with an empty body that we previously added to self.command_definitions
-                let name = match node.child(0) {
-                    Some(c) => c,
-                    None => {
-                        whitespaces.extend_from_slice(node_content);
-                        return Ok(Kept(whitespaces));
-                    }
-                };
+            "generic_command" | "todo" => {
+                // Remove invocations of comment commands, see `CommentCommands`
+                if let Some(last_argument) = self.comment_invocation(node) {
+                    return self.handle_comment_invocation(node, last_argument, whitespaces);
+                }
 
-                let name_str = &self.content[name.byte_range()];
-
-                if self.command_definitions.contains(name_str)
-                    || self.long_command_definitions.contains(name_str)
-                {
-                    self.deletion_stats
-                        .comment_invocation_deleted
-                        .push(node_content.to_owned());
-
-                    // In math mode, spaces are ignored but an empty group is an atom that changes
-                    // the spacing (e.g. turns a unary minus into a binary one), so delete the invocation.
-                    if is_in_math_mode(&node, self.content) {
-                        // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
-                        let fullline = self.is_fullline(&node);
-
-                        return Ok(CommandInvocationDeleted(whitespaces, fullline));
-                    }
-
-                    // Otherwise, we replace the command invocation with an empty curly brace to preserve formatting.
-                    // Simply deleting it would also delete the space it separates, e.g. the line break of an invocation
-                    // on its own line, which changes the spacing in the PDF.
-                    let mut replacement_text = whitespaces;
-                    replacement_text.push(b'{');
-                    replacement_text.push(b'}');
-
-                    return Ok(CommandInvocationReplaced(replacement_text));
+                if node.child(0).is_none() {
+                    whitespaces.extend_from_slice(node_content);
+                    return Ok(Kept(whitespaces));
                 }
 
                 // Handle child nodes inside the command body, if present
@@ -1135,32 +1199,15 @@ impl<'a> ContentStripper<'a> {
             "generic_environment" => {
                 let mut new_content = whitespaces;
                 let mut i = 0;
-                let mut is_document_environment = false;
+                let is_document_environment = node
+                    .child_by_field_name("begin")
+                    .is_some_and(|begin| self.is_document_environment_name(begin));
+                let ends_document_environment = node
+                    .child_by_field_name("end")
+                    .is_some_and(|end| self.is_document_environment_name(end));
                 let mut prev_node = previous_node;
 
                 while let Some(child) = node.child(i) {
-                    // The \begin{document} block can be formatted in various ways (and include comments!)
-                    // This is an extensive way to check if this "begin" block is actually the document environment
-                    if child.grammar_name() == "begin"
-                        && let Some(name) = child.child_by_field_name("name")
-                        && let Some(text) = name.child_by_field_name("text")
-                    {
-                        let mut i = 0;
-                        let mut complete_group_name = Vec::new();
-
-                        while let Some(child) = text.child(i) {
-                            if child.grammar_name() == "word" {
-                                complete_group_name
-                                    .extend_from_slice(&self.content[child.byte_range()]);
-                            }
-                            i += 1;
-                        }
-
-                        if complete_group_name == b"document" {
-                            is_document_environment = true
-                        }
-                    }
-
                     let result = self.handle_node(child, prev_node.clone())?;
 
                     result.append_to(&mut new_content, &prev_node);
@@ -1172,7 +1219,12 @@ impl<'a> ContentStripper<'a> {
 
                 // If this is the document environment, then we want to remove all content after this node, thus we store the last byte.
                 // Unless the file opts to keep content after \end{document} (keep-tail).
-                if is_document_environment && !self.directives.keep_tail {
+                // The parser can pair \begin{document} with an unrelated \end{...}.
+                // Only remove the tail if the parsed end really is \end{document}.
+                if is_document_environment
+                    && ends_document_environment
+                    && !self.directives.keep_tail
+                {
                     self.last_byte_of_document_block = Some(node.end_byte());
                 }
 
@@ -1261,6 +1313,12 @@ impl<'a> ContentStripper<'a> {
                 Ok(BlockCommentDeleted(whitespaces, fullline))
             }
             r"\iffalse" | r"\fi" | r"\if0" | r"\iftrue" | r"\else" => {
+                // Outside of a block comment, the token is a leftover of a parsing error,
+                // e.g. the `\else` of an `\ifdefined` whose branch opens an environment.
+                if node.parent().is_none_or(|p| p.kind() != "block_comment") {
+                    whitespaces.extend_from_slice(node_content);
+                    return Ok(Kept(whitespaces));
+                }
                 // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
                 let fullline = self.is_fullline(&node);
 
@@ -1276,15 +1334,50 @@ impl<'a> ContentStripper<'a> {
             }
             // Keep all other nodes that are not listed in this match statement and log a warning
             other => {
-                warn!(
-                    "Unhandled grammar '{}' with content {:?}\nPlease open an issue at https://github.com/COMSYS/ALC-NG/issues",
-                    other,
-                    node.utf8_text(self.content).unwrap()
-                );
+                if !self.collecting {
+                    warn!(
+                        "Unhandled grammar '{}' with content {:?}\nPlease open an issue at https://github.com/COMSYS/ALC-NG/issues",
+                        other,
+                        node.utf8_text(self.content).unwrap()
+                    );
+                }
 
                 whitespaces.extend_from_slice(node_content);
                 Ok(Kept(whitespaces))
             }
+        }
+    }
+
+    /// Returns `true` if the `begin` or `end` node names the document environment.
+    /// The name can be formatted in various ways (and include comments!), thus only its words are compared.
+    fn is_document_environment_name(&self, node: Node<'a>) -> bool {
+        let Some(text) = node
+            .child_by_field_name("name")
+            .and_then(|name| name.child_by_field_name("text"))
+        else {
+            return false;
+        };
+
+        let mut i = 0;
+        let mut complete_group_name = Vec::new();
+
+        while let Some(child) = text.child(i) {
+            if child.grammar_name() == "word" {
+                complete_group_name.extend_from_slice(&self.content[child.byte_range()]);
+            }
+            i += 1;
+        }
+
+        complete_group_name == b"document"
+    }
+
+    /// Reports an error that is ignored if the cleaning is forced, see [`exception`].
+    /// While collecting, the error is not logged, as cleaning the file reports it.
+    fn exception<T>(&self, err: anyhow::Error, otherwise: T) -> Result<T> {
+        match (self.collecting, self.cleaner_config.force) {
+            (false, force) => exception(err, otherwise, "tex-cleaner", force),
+            (true, true) => Ok(otherwise),
+            (true, false) => Err(err),
         }
     }
 
@@ -1310,6 +1403,11 @@ impl<'a> ContentStripper<'a> {
     fn whitespace_to_previous_node(&self, node: &Node<'a>) -> Vec<u8> {
         if let Some(prev) = node.prev_sibling() {
             let content_inbetween = &self.content[prev.end_byte()..node.start_byte()];
+            // Text that is not part of any node, e.g. the `\ifdefined` of a conditional
+            // inside an ERROR node, would be lost otherwise.
+            if !content_inbetween.iter().all(|c| c.is_ascii_whitespace()) {
+                return content_inbetween.to_vec();
+            }
             let mut ws_rev: Vec<u8> = content_inbetween
                 .iter()
                 .rev()
@@ -1515,11 +1613,9 @@ impl<'a> ContentStripper<'a> {
                 Some(c) => c.start_byte(),
                 None => {
                     new_content.extend_from_slice(node_content);
-                    return exception(
+                    return self.exception(
                         anyhow!("Custom if does not have any child or subsequent nodes."),
                         Kept(new_content),
-                        "tex-cleaner",
-                        self.cleaner_config.force,
                     );
                 }
             },
@@ -1533,14 +1629,29 @@ impl<'a> ContentStripper<'a> {
 
         let is_true = match self.if_values.get(name) {
             Some(b) => b,
-            None if name == b"csname" => {
-                warn!(
-                    "If '{}' not defined at {}:{}:{}. Assuming it is a LaTeX2e primitive conditional. Preserving if but cleaning both branches.",
-                    String::from_utf8_lossy(name),
-                    self.filename,
-                    node.start_position().row + 1,
-                    node.start_position().column
-                );
+            // Conditionals of TeX and its engines, or the iftex package: preserve the if but clean both branches.
+            None if PRIMITIVE_CONDITIONALS.contains(&name)
+                || IF_TEX_CONDITIONALS.contains(&name) =>
+            {
+                if self.collecting {
+                    // Cleaning the file reports it
+                } else if PRIMITIVE_CONDITIONALS.contains(&name) {
+                    debug!(
+                        "Preserving primitive conditional '\\if{}' at {}:{}:{} but cleaning both branches.",
+                        String::from_utf8_lossy(name),
+                        self.filename,
+                        node.start_position().row + 1,
+                        node.start_position().column
+                    );
+                } else {
+                    warn!(
+                        "If '{}' not defined at {}:{}:{}. Assuming it is from the package 'iftex'. Preserving if but cleaning both branches.",
+                        String::from_utf8_lossy(name),
+                        self.filename,
+                        node.start_position().row + 1,
+                        node.start_position().column
+                    );
+                }
                 new_content.extend_from_slice(name_with_prefix);
 
                 let mut i = 0;
@@ -1565,37 +1676,9 @@ impl<'a> ContentStripper<'a> {
 
                 return Ok(Kept(new_content));
             }
-            None if IF_TEX_CONDITIONALS.contains(&name) => {
-                warn!(
-                    "If '{}' not defined at {}:{}:{}. Assuming it is from the package 'iftex'. Preserving if but cleaning both branches.",
-                    String::from_utf8_lossy(name),
-                    self.filename,
-                    node.start_position().row + 1,
-                    node.start_position().column
-                );
-                new_content.extend_from_slice(name_with_prefix);
-
-                let mut i = 0;
-
-                while let Some(child) = node.child(i) {
-                    let result = match child.grammar_name() {
-                        r"\else" | r"\fi" => NodeHandling::Kept(
-                            self.content[child.start_byte()..child.end_byte()].to_vec(),
-                        ),
-                        _ => self.handle_node(child, previous_node.clone())?,
-                    };
-
-                    result.append_to(&mut new_content, &previous_node);
-
-                    previous_node = result;
-                    i += 1;
-                }
-
-                return Ok(Kept(new_content));
-            }
             None => {
                 new_content.extend_from_slice(node_content);
-                return exception(
+                return self.exception(
                     anyhow!(
                         "Custom if with name '{}' not defined at {}:{}:{}",
                         String::from_utf8_lossy(name),
@@ -1604,8 +1687,6 @@ impl<'a> ContentStripper<'a> {
                         node.start_position().column
                     ),
                     Kept(new_content),
-                    "tex-cleaner",
-                    self.cleaner_config.force,
                 );
             }
         };
@@ -1693,103 +1774,42 @@ impl<'a> ContentStripper<'a> {
         node: Node<'a>,
         previous_node: NodeHandling,
         mut whitespaces: Vec<u8>,
-        long: bool,
     ) -> Result<NodeHandling> {
-        let mut new_content = whitespaces.clone();
-        let node_content = &self.content[node.byte_range()];
-        let mut prev_node = previous_node;
-
         // The parameter text between declaration and implementation may consist of any number
         // of nodes (e.g. `\def\foo(#1,#2){...}`), so locate the nodes by field instead of index.
-        let (Some(decl), Some(implementation)) = (
+        let (Some(command), Some(decl), Some(implementation)) = (
+            node.child_by_field_name("command"),
             node.child_by_field_name("declaration"),
             node.child_by_field_name("implementation"),
         ) else {
-            whitespaces.extend_from_slice(node_content);
+            whitespaces.extend_from_slice(&self.content[node.byte_range()]);
             return Ok(Kept(whitespaces));
         };
 
-        // Clean command, declaration and parameter text
-        let mut name = None;
+        // Parameters with delimiters (e.g. `\def\a#1\par{}`) swallow text that is not a curly group,
+        // so invocations cannot be removed safely.
+        let mut arity = 0;
         let mut delimited = false;
         let mut i = 0;
         while let Some(child) = node.child(i) {
-            if child == implementation {
-                break;
+            match child.kind() {
+                _ if child == implementation => break,
+                "placeholder" => arity += 1,
+                "parameter_delimiter" | "command_name" if child != decl => delimited = true,
+                _ => (),
             }
-            let result = self.handle_node(child, prev_node.clone())?;
-
-            if child == decl {
-                name = Some(result.text().to_owned());
-            } else if matches!(child.kind(), "parameter_delimiter" | "command_name") {
-                delimited = true;
-            }
-
-            result.append_to(&mut new_content, &prev_node);
-            prev_node = result;
             i += 1;
         }
-        let name = name.unwrap_or_default();
-        let name = name.as_slice();
 
-        let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
+        let signature = (!delimited
+            && OLD_COMMENT_COMMAND_DEFINITIONS.contains(&&self.content[command.byte_range()]))
+        .then(|| Signature {
+            name: &self.content[decl.byte_range()],
+            arity,
+            optional: false,
+        });
 
-        // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
-        // We determine empty implementations by checking if they only contain whitespace characters.
-        let cleaned_impl_tree = parse(cleaned_impl.text()).context(anyhow!(
-            "Could not parse cleaned implementation of oldcommand: {}",
-            String::from_utf8_lossy(cleaned_impl.text()),
-        ))?;
-        // An empty body marks a custom comment command (whose invocations are deleted).
-        // Parameters with delimiters (e.g. `\def\a#1\par{}`) swallow text that is not a curly group,
-        // so invocations cannot be deleted or replaced safely and the definition is kept.
-        // If the file opts out of comment cleaning, treat it as a normal command instead.
-        if is_empty(&cleaned_impl_tree.root_node()) && !delimited && !self.directives.keep_comments
-        {
-            // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
-            if long {
-                self.long_command_definitions.insert(name.to_owned());
-
-                let mut deleted_content = Vec::from(b"\\long{}");
-                deleted_content.extend_from_slice(node_content);
-
-                self.deletion_stats
-                    .comment_definition_deleted
-                    .push(deleted_content);
-            } else {
-                self.command_definitions.insert(name.to_owned());
-
-                self.deletion_stats
-                    .comment_definition_deleted
-                    .push(node_content.to_owned());
-            }
-
-            // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
-            let fullline = self.is_fullline(&node);
-
-            self.deletion_stats
-                .comment_definition_deleted
-                .push(node_content.to_owned());
-            Ok(CommandDefinitionDeleted(whitespaces, fullline))
-        } else {
-            cleaned_impl.append_to(&mut new_content, &prev_node);
-            prev_node = cleaned_impl;
-
-            // Clean remaining children after the implementation
-            i += 1;
-
-            // Clean all child nodes inside the command body
-            while let Some(child) = node.child(i) {
-                let result = self.handle_node(child, prev_node.clone())?;
-
-                result.append_to(&mut new_content, &prev_node);
-
-                prev_node = result;
-                i += 1;
-            }
-
-            Ok(Kept(new_content))
-        }
+        self.handle_command_definition(node, implementation, previous_node, whitespaces, signature)
     }
 
     fn handle_new_command_definition(
@@ -1797,99 +1817,334 @@ impl<'a> ContentStripper<'a> {
         node: Node<'a>,
         previous_node: NodeHandling,
         mut whitespaces: Vec<u8>,
-        long: bool,
     ) -> Result<NodeHandling> {
-        let mut new_content = whitespaces.clone();
-        let node_content = &self.content[node.byte_range()];
-        let mut prev_node = previous_node;
-
         // Optional argument count and default value sit between declaration and implementation,
         // so locate the nodes by field instead of index.
-        let (Some(decl), Some(implementation)) = (
+        let (Some(command), Some(decl), Some(implementation)) = (
+            node.child_by_field_name("command"),
             node.child_by_field_name("declaration"),
             node.child_by_field_name("implementation"),
         ) else {
-            whitespaces.extend_from_slice(node_content);
+            whitespaces.extend_from_slice(&self.content[node.byte_range()]);
             return Ok(Kept(whitespaces));
         };
 
-        // Clean command, declaration and arguments
-        let mut name = None;
-        let mut i = 0;
-        while let Some(child) = node.child(i) {
-            if child == implementation {
-                break;
+        // The name is either given directly or wrapped by curly braces
+        let name = match decl.kind() {
+            "command_name" => Some(decl),
+            _ => decl
+                .child_by_field_name("command")
+                .filter(|c| c.kind() == "command_name"),
+        };
+        let argc = match node.child_by_field_name("argc") {
+            Some(argc) => argc
+                .child_by_field_name("value")
+                .and_then(|v| std::str::from_utf8(&self.content[v.byte_range()]).ok())
+                .and_then(|v| v.parse::<usize>().ok()),
+            None => Some(0),
+        };
+        // The first argument is optional if a default value is given
+        let optional = node.child_by_field_name("default").is_some();
+
+        let signature = match (name, argc) {
+            (Some(name), Some(argc))
+                if NEW_COMMENT_COMMAND_DEFINITIONS
+                    .contains(&&self.content[command.byte_range()]) =>
+            {
+                Some(Signature {
+                    name: &self.content[name.byte_range()],
+                    arity: argc.saturating_sub(optional as usize),
+                    optional,
+                })
             }
+            _ => None,
+        };
+
+        self.handle_command_definition(node, implementation, previous_node, whitespaces, signature)
+    }
+
+    /// Cleans a command definition.
+    ///
+    /// Definitions are always kept, even with an empty body: the command may be used implicitly
+    /// (e.g. hooks like `\thefootnote`), tested for (`\@ifundefined`) or extended later
+    /// (`\g@addto@macro`). Only invocations of comment commands are removed, see [`CommentCommands`].
+    /// A definition with a `signature` is a comment command candidate if its cleaned body is empty.
+    fn handle_command_definition(
+        &mut self,
+        node: Node<'a>,
+        implementation: Node<'a>,
+        previous_node: NodeHandling,
+        whitespaces: Vec<u8>,
+        signature: Option<Signature<'a>>,
+    ) -> Result<NodeHandling> {
+        let mut new_content = whitespaces;
+        let mut prev_node = previous_node;
+        let mut i = 0;
+
+        while let Some(child) = node.child(i) {
             let result = self.handle_node(child, prev_node.clone())?;
 
-            if child == decl {
-                // If the declaration has a child, then the name is wrapped by curly braces
-                name = Some(match decl.child(1) {
-                    Some(c) => self.content[c.byte_range()].to_owned(),
-                    None => result.text().to_owned(),
-                });
+            if child == implementation
+                && let Some(signature) = &signature
+            {
+                self.record_definition(node, signature, result.text())?;
             }
 
             result.append_to(&mut new_content, &prev_node);
             prev_node = result;
             i += 1;
         }
-        let name = name.unwrap_or_default();
-        let name = name.as_slice();
 
-        let cleaned_impl = self.handle_node(implementation, prev_node.clone())?;
+        Ok(Kept(new_content))
+    }
 
-        // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
-        // We determine empty implementations by checking if they only contain whitespace characters.
-        let cleaned_impl_tree = parse(cleaned_impl.text()).context(anyhow!(
-            "Could not parse cleaned implementation of newcommand: {}",
-            String::from_utf8_lossy(cleaned_impl.text()),
-        ))?;
-        // An empty body marks a custom comment command (whose invocations are deleted).
+    /// Records a definition as comment command candidate while collecting,
+    /// and counts the definitions of comment commands while cleaning.
+    fn record_definition(
+        &mut self,
+        node: Node<'a>,
+        signature: &Signature<'a>,
+        cleaned_impl: &[u8],
+    ) -> Result<()> {
+        if !self.collecting {
+            if self
+                .comment_commands
+                .get(signature.name)
+                .is_some_and(|c| c.filename == self.filename && c.end_byte == node.end_byte())
+            {
+                self.deletion_stats
+                    .comment_definitions
+                    .push(self.content[node.byte_range()].to_owned());
+            }
+            return Ok(());
+        }
+
+        // Without a mandatory argument there is no payload to remove; such commands are
+        // hooks, flags or switches. Internal (`@`) commands are never custom comment commands.
         // If the file opts out of comment cleaning, treat it as a normal command instead.
-        if is_empty(&cleaned_impl_tree.root_node()) && !self.directives.keep_comments {
-            // If the implementation is empty, we treat it as a comment command, thus all invocations should be deleted.
-            if long {
-                self.long_command_definitions.insert(name.to_owned());
+        if signature.arity == 0 || signature.name.contains(&b'@') || self.directives.keep_comments {
+            return Ok(());
+        }
 
-                let mut deleted_content = Vec::from(b"\\long{}");
-                deleted_content.extend_from_slice(node_content);
+        // The definition must hold for the rest of the document
+        let Some(in_document) = global_scope(node, self.content) else {
+            return Ok(());
+        };
 
-                self.deletion_stats
-                    .comment_definition_deleted
-                    .push(deleted_content);
-            } else {
-                self.command_definitions.insert(name.to_owned());
+        // We determine empty implementations by checking if they only contain whitespace characters (and comments).
+        let cleaned_impl_tree = parse(cleaned_impl).context(anyhow!(
+            "Could not parse cleaned implementation of command definition: {}",
+            String::from_utf8_lossy(cleaned_impl),
+        ))?;
+        if is_empty(&cleaned_impl_tree.root_node()) {
+            self.empty_definitions.push(EmptyDefinition {
+                name: signature.name.to_owned(),
+                command: CommentCommand {
+                    arity: signature.arity,
+                    optional: signature.optional,
+                    filename: self.filename.to_owned(),
+                    end_byte: node.end_byte(),
+                    in_document,
+                },
+            });
+        }
 
-                self.deletion_stats
-                    .comment_definition_deleted
-                    .push(node_content.to_owned());
+        Ok(())
+    }
+
+    /// Returns the last argument to remove if the node is an invocation of a comment command.
+    fn comment_invocation(&self, node: Node<'a>) -> Option<Node<'a>> {
+        if self.directives.keep_comments {
+            return None;
+        }
+
+        let name = node.child_by_field_name("command")?;
+        let command = self
+            .comment_commands
+            .get(&self.content[name.byte_range()])?;
+
+        // Invocations in front of the definition are not affected by it
+        if command.filename == self.filename {
+            if node.start_byte() < command.end_byte {
+                return None;
+            }
+        } else if command.in_document {
+            return None;
+        }
+
+        // Only `todo` nodes contain an optional argument
+        if node.child_by_field_name("options").is_some() && !command.optional {
+            return None;
+        }
+
+        // With fewer braced arguments than the command takes, it consumes other text.
+        let mut cursor = node.walk();
+        node.children_by_field_name("arg", &mut cursor)
+            .nth(command.arity - 1)
+    }
+
+    /// Removes the invocation of a comment command up to and including its last argument.
+    /// Further arguments are not consumed by the command and thus kept.
+    fn handle_comment_invocation(
+        &mut self,
+        node: Node<'a>,
+        last_argument: Node<'a>,
+        whitespaces: Vec<u8>,
+    ) -> Result<NodeHandling> {
+        self.deletion_stats
+            .comment_invocation_deleted
+            .push(self.content[node.start_byte()..last_argument.end_byte()].to_owned());
+
+        // In math mode, spaces are ignored but an empty group is an atom that changes
+        // the spacing (e.g. turns a unary minus into a binary one), so delete the invocation.
+        // In an alignment, an empty group starts the cell, which breaks a following `\hline` or `\multicolumn`.
+        // Otherwise, we replace the command invocation with an empty curly brace to preserve formatting.
+        // Simply deleting it would also delete the space it separates, e.g. the line break of an invocation
+        // on its own line, which changes the spacing in the PDF.
+        let delete = is_in_math_mode(&node, self.content) || is_in_alignment(&node, self.content);
+
+        let mut new_content = whitespaces;
+        if !delete {
+            new_content.extend_from_slice(b"{}");
+        }
+
+        let mut prev_node = Kept(Vec::new());
+        let mut child = last_argument.next_sibling();
+
+        if child.is_none() {
+            if delete {
+                // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
+                let fullline = self.is_fullline(&node);
+
+                return Ok(CommandInvocationDeleted(new_content, fullline));
             }
 
-            // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
-            let fullline = self.is_fullline(&node);
+            return Ok(CommandInvocationReplaced(new_content));
+        }
 
-            Ok(CommandDefinitionDeleted(whitespaces, fullline))
-        } else {
-            cleaned_impl.append_to(&mut new_content, &prev_node);
-            prev_node = cleaned_impl;
+        while let Some(c) = child {
+            let result = self.handle_node(c, prev_node.clone())?;
 
-            // Clean remaining children after the implementation
-            i += 1;
+            result.append_to(&mut new_content, &prev_node);
 
-            // Clean all child nodes inside the command body
-            while let Some(child) = node.child(i) {
-                let result = self.handle_node(child, prev_node.clone())?;
+            prev_node = result;
+            child = c.next_sibling();
+        }
 
-                result.append_to(&mut new_content, &prev_node);
+        Ok(Kept(new_content))
+    }
+}
 
-                prev_node = result;
-                i += 1;
+/// The name and arguments of a defined command.
+struct Signature<'a> {
+    name: &'a [u8],
+    /// Number of mandatory arguments.
+    arity: usize,
+    /// The first argument is optional.
+    optional: bool,
+}
+
+/// `\newcommand`-like definitions that can define comment commands.
+/// `\providecommand` is missing as it keeps an existing definition.
+const NEW_COMMENT_COMMAND_DEFINITIONS: [&[u8]; 6] = [
+    b"\\newcommand",
+    b"\\newcommand*",
+    b"\\renewcommand",
+    b"\\renewcommand*",
+    b"\\DeclareRobustCommand",
+    b"\\DeclareRobustCommand*",
+];
+
+/// `\def`-like definitions that can define comment commands.
+const OLD_COMMENT_COMMAND_DEFINITIONS: [&[u8]; 4] = [b"\\def", b"\\gdef", b"\\edef", b"\\xdef"];
+
+/// Environments whose content is an alignment, i.e. split into cells.
+const ALIGNMENT_ENVIRONMENTS: [&[u8]; 19] = [
+    b"tabular",
+    b"tabular*",
+    b"tabularx",
+    b"tabulary",
+    b"xltabular",
+    b"longtable",
+    b"longtable*",
+    b"supertabular",
+    b"supertabular*",
+    b"mpsupertabular",
+    b"xtabular",
+    b"tabu",
+    b"longtabu",
+    b"tblr",
+    b"longtblr",
+    b"talltblr",
+    b"NiceTabular",
+    b"NiceTabular*",
+    b"array",
+];
+
+/// Returns the name of an environment, e.g. `document`.
+fn environment_name<'c>(environment: &Node, content: &'c [u8]) -> Option<&'c [u8]> {
+    let name = environment
+        .child_by_field_name("begin")?
+        .child_by_field_name("name")?;
+    let name = &content[name.byte_range()];
+
+    Some(
+        name.strip_prefix(b"{")
+            .and_then(|n| n.strip_suffix(b"}"))
+            .unwrap_or(name)
+            .trim_ascii(),
+    )
+}
+
+/// Returns `Some(in_document)` if the definition holds for the rest of the document, i.e. it is
+/// not nested in a group, environment, conditional or other definition.
+/// `in_document` is `true` if the definition is part of the document environment.
+fn global_scope(node: Node, content: &[u8]) -> Option<bool> {
+    let mut in_document = false;
+    let mut current = node.parent();
+
+    while let Some(parent) = current {
+        match parent.kind() {
+            // `text` is a sequence of words and commands, not a group
+            "source_file"
+            | "text"
+            | "long_command_definition"
+            | "part"
+            | "chapter"
+            | "section"
+            | "subsection"
+            | "subsubsection"
+            | "paragraph"
+            | "subparagraph" => (),
+            "generic_environment"
+                if environment_name(&parent, content) == Some(b"document".as_slice()) =>
+            {
+                in_document = true
             }
+            _ => return None,
+        }
+        current = parent.parent();
+    }
 
-            Ok(Kept(new_content))
+    Some(in_document)
+}
+
+/// Returns `true` if the node is a cell of an alignment, e.g. in a `tabular` environment.
+fn is_in_alignment(node: &Node, content: &[u8]) -> bool {
+    let mut current = node.parent();
+
+    while let Some(parent) = current {
+        match parent.kind() {
+            "generic_environment" => {
+                return environment_name(&parent, content)
+                    .is_some_and(|name| ALIGNMENT_ENVIRONMENTS.contains(&name));
+            }
+            "curly_group" => return false,
+            _ => current = parent.parent(),
         }
     }
+
+    false
 }
 
 /// Commands that typeset their argument in text mode, also inside a formula.

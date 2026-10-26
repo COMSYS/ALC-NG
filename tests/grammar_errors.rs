@@ -257,7 +257,7 @@ $\ax(I1)$ \Tik 1,2:"#;
         assert!(stripped.contains_slice(br"\def\ax(#1){\hbox{({#1})}}"));
         assert!(stripped.contains_slice(br"\def\foo#1\par{#1}"));
         assert!(!stripped.contains_slice(b"remove me"));
-        assert!(_deletion_stats.comment_definition_deleted.is_empty());
+        assert!(_deletion_stats.comment_definitions.is_empty());
         assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
