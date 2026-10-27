@@ -35,7 +35,8 @@ c & d \\
 
         assert_eq!(
             clean(input),
-            r#"\begin{tabular}{ll}
+            r#"\newcommand{\note}[1]{}
+\begin{tabular}{ll}
 a & b \\
 \hline
 c & d \\
@@ -56,7 +57,8 @@ a & \note{fix}\multicolumn{1}{c}{b} \\
 
         assert_eq!(
             clean(input),
-            r#"\begin{tabular}{ll}
+            r#"\newcommand{\note}[1]{}
+\begin{tabular}{ll}
 a & \multicolumn{1}{c}{b} \\
 \end{tabular}
 "#
@@ -76,7 +78,8 @@ a & \multicolumn{1}{c}{b} \\
 
         assert_eq!(
             clean(input),
-            r#"\begin{tabular*}{\textwidth}[t]{ll}
+            r#"\newcommand{\note}[1]{}
+\begin{tabular*}{\textwidth}[t]{ll}
  a &  b \\ %
  c & d \tabularnewline
 \midrule
@@ -88,7 +91,7 @@ a & \multicolumn{1}{c}{b} \\
 
     #[test]
     fn invocations_inside_cells_are_replaced() {
-        // Within a cell, `{}` keeps the spacing of the original
+        // Within an alignment, the invocation is deleted; outside of it, `{}` keeps the spacing
         let input = br#"\newcommand{\note}[1]{}
 \begin{tabular}{ll}
 a \note{fix} b & {\note{fix} c} \\
@@ -98,8 +101,9 @@ Text \note{fix} text
 
         assert_eq!(
             clean(input),
-            r#"\begin{tabular}{ll}
-a {} b & {{} c} \\
+            r#"\newcommand{\note}[1]{}
+\begin{tabular}{ll}
+a  b & {{} c} \\
 \end{tabular}
 Text {} text
 "#

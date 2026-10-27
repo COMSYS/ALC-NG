@@ -22,7 +22,7 @@ mod tests {
         let test_files = root.join("tests/spaces");
         let target_path = test_output_dir().join(name);
         let mut submission =
-            Submission::new(config, test_files, &target_path, "latexmk", &[]).unwrap();
+            Submission::new(config, test_files, &target_path, "latexmk", &vec![]).unwrap();
 
         submission.run().unwrap();
 
@@ -48,12 +48,10 @@ mod tests {
             read("tests/spaces/frozen.tex")
         );
 
-        assert!(
-            submission
-                .compare()
-                .unwrap()
-                .into_iter()
-                .all(|(_, res)| res.is_some_and(|r| r.is_empty()))
-        );
+        assert!(submission
+            .compare()
+            .unwrap()
+            .into_iter()
+            .all(|(_, res)| res.is_some_and(|r| r.is_empty())));
     }
 }

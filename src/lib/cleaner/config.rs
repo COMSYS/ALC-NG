@@ -23,6 +23,10 @@ pub struct CleanerConfig {
     /// Spaces in file names are replaced with underscores (as arXiv does on upload)
     /// and references to the renamed files are updated.
     pub tar: Option<String>,
+    /// Rename files in the cleaned project: spaces in file names are replaced
+    /// with underscores (as arXiv does on upload) and references to the
+    /// renamed files are updated. Disabled by default.
+    pub rename_files: bool,
     /// Continue cleaning despite hitting errors.
     pub force: bool,
     /// The command for exiftool.
@@ -51,6 +55,7 @@ impl Default for CleanerConfig {
             clean_classes: false,
             no_zzrm: false,
             tar: None,
+            rename_files: false,
             force: false,
             exiftool_cmd: "exiftool".to_string(),
             exiftool_args: Vec::new(),

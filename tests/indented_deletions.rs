@@ -35,7 +35,8 @@ mod tests {
 
         assert_eq!(
             clean(input),
-            r#"\begin{figure}
+            r#"\newcommand{\added}[1]{}
+\begin{figure}
   \caption{
   Old text
   {}
@@ -50,21 +51,27 @@ mod tests {
     fn invocation_with_trailing_spaces_is_replaced() {
         let input = b"\\newcommand{\\note}[1]{}\nOld text\n    \\note{gone}   \n    Continued\n";
 
-        assert_eq!(clean(input), "Old text\n    {}   \n    Continued\n");
+        assert_eq!(
+            clean(input),
+            "\\newcommand{\\note}[1]{}\nOld text\n    {}   \n    Continued\n"
+        );
     }
 
     #[test]
     fn invocation_with_tab_indentation_is_replaced() {
         let input = b"\\newcommand{\\note}[1]{}\nOld text\n\t\\note{gone}\nContinued\n";
 
-        assert_eq!(clean(input), "Old text\n\t{}\nContinued\n");
+        assert_eq!(
+            clean(input),
+            "\\newcommand{\\note}[1]{}\nOld text\n\t{}\nContinued\n"
+        );
     }
 
     #[test]
     fn inline_invocation_is_replaced() {
         let input = b"\\newcommand{\\note}[1]{}\n  Old \\note{gone} text\n";
 
-        assert_eq!(clean(input), "  Old {} text\n");
+        assert_eq!(clean(input), "\\newcommand{\\note}[1]{}\n  Old {} text\n");
     }
 
     #[test]
@@ -105,33 +112,9 @@ Second paragraph
     fn invocation_in_math_is_deleted() {
         let input = b"\\newcommand{\\note}[1]{}\n$\\note{x}-b$ and \\[ a \\note{y} + b \\]\n";
 
-        assert_eq!(clean(input), "$-b$ and \\[ a  + b \\]\n");
-    }
-
-    #[test]
-    fn newcommand_without_argc_keeps_definition() {
-        let input = b"\\newcommand{\\keep}{x}\n\\keep\n";
-
-        assert_eq!(clean(input), "\\newcommand{\\keep}{x}\n\\keep\n");
-    }
-
-    #[test]
-    fn newcommand_without_argc_detects_comment_command() {
-        let input = b"\\newcommand{\\note}{}\nBefore \\note after\n";
-
-        assert_eq!(clean(input), "Before {} after\n");
-    }
-
-    #[test]
-    fn active_character_comment_definition_is_kept() {
-        // The stripper cannot recognize active-character invocations, so it
-        // must keep the definition instead of deleting it and leaving the
-        // invocation behind.
-        let input = b"\\newcommand{\"}[1]{}\nBefore \"{gone} after\n";
-
         assert_eq!(
             clean(input),
-            "\\newcommand{\"}[1]{}\nBefore \"{gone} after\n"
+            "\\newcommand{\\note}[1]{}\n$-b$ and \\[ a  + b \\]\n"
         );
     }
 
@@ -139,6 +122,70 @@ Second paragraph
     fn invocation_in_text_inside_math_is_replaced() {
         let input = b"\\newcommand{\\note}[1]{}\n$a \\text{if \\note{x} b}$\n";
 
-        assert_eq!(clean(input), "$a \\text{if {} b}$\n");
+        assert_eq!(
+            clean(input),
+            "\\newcommand{\\note}[1]{}\n$a \\text{if {} b}$\n"
+        );
+    }
+
+    #[test]
+    fn deletion_at_start_of_file() {
+        assert_eq!(clean(b"\\iffalse x\\fi\nText\n"), "Text\n");
+        assert_eq!(clean(b"\\usepackage{comment}\nText\n"), "Text\n");
+        assert_eq!(
+            clean(b"\\begin{comment}\nx\n\\end{comment}\nText\n"),
+            "Text\n"
+        );
+    }
+
+    #[test]
+    fn deletion_at_end_of_file_without_newline() {
+        assert_eq!(clean(b"Text\n\\iffalse x\\fi"), "Text\n");
+        // The indentation of the deleted line is removed as well
+        assert_eq!(clean(b"Text\n  \\iffalse x\\fi"), "Text\n");
+    }
+
+    #[test]
+    fn consecutive_deleted_lines() {
+        assert_eq!(clean(b"A\n\\iffalse x\\fi\n\\iffalse y\\fi\nB\n"), "A\nB\n");
+        // The blank line between the deleted lines is a paragraph break and kept
+        assert_eq!(
+            clean(b"A\n\\iffalse x\\fi\n\n\\iffalse y\\fi\nB\n"),
+            "A\n\nB\n"
+        );
+    }
+
+    #[test]
+    fn comment_package_followed_directly_by_another_line() {
+        assert_eq!(
+            clean(b"\\usepackage{comment}\n\\usepackage{x}\n"),
+            "\\usepackage{x}\n"
+        );
+    }
+
+    #[test]
+    fn invocation_after_control_word_keeps_space() {
+        // Deleting the invocation would let `\LaTeX` swallow the following space
+        let input = b"\\newcommand{\\note}[1]{}\n\\LaTeX\\note{x} is\n";
+
+        assert_eq!(clean(input), "\\newcommand{\\note}[1]{}\n\\LaTeX{} is\n");
+    }
+
+    #[test]
+    fn invocation_in_math_environments_is_deleted() {
+        let input = b"\\newcommand{\\note}[1]{}\n\\begin{align} a \\note{x} - b \\end{align}\n\\( c \\note{y} - d \\)\n";
+
+        assert_eq!(
+            clean(input),
+            "\\newcommand{\\note}[1]{}\n\\begin{align} a  - b \\end{align}\n\\( c  - d \\)\n"
+        );
+    }
+
+    #[test]
+    fn indented_long_definition_on_own_line() {
+        let input = b"Text\n  \\long\\def\\note#1{}\nMore \\note{x}\n";
+
+        // The definition is kept, only the invocation is removed
+        assert_eq!(clean(input), "Text\n  \\long\\def\\note#1{}\nMore {}\n");
     }
 }

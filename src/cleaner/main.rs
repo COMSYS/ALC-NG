@@ -5,6 +5,7 @@
 use alc_ng::{
     cleaner::{
         config::{CleanerConfig, DEFAULT_IM_SIZE},
+        file_renames::FileRenames,
         submission::Submission,
     },
     exif_tool,
@@ -16,7 +17,7 @@ use clap::{ArgAction, Parser, ValueHint};
 #[cfg(not(target_family = "wasm"))]
 use itertools::Itertools;
 #[cfg(not(target_family = "wasm"))]
-use log::{LevelFilter, info, trace, warn};
+use log::{info, trace, warn, LevelFilter};
 #[cfg(not(target_family = "wasm"))]
 use std::{
     fs::remove_dir_all,
@@ -29,7 +30,7 @@ use temp_dir::TempDir;
 use walkdir::WalkDir;
 
 #[cfg(not(target_family = "wasm"))]
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
 pub struct Config {
     /// Input path
@@ -81,10 +82,13 @@ pub struct Config {
     pub no_zzrm: bool,
     /// Create a tar archive that is ready to be uploaded.
     /// If the value is '-' then the archive is piped to stdout.
-    /// Spaces in file names are replaced with underscores (as arXiv does on upload)
-    /// and references to the renamed files are updated.
     #[arg(long)]
     pub tar: Option<String>,
+    /// Rename files in the cleaned project. Spaces in file names are replaced
+    /// with underscores (as arXiv does on upload) and references to the
+    /// renamed files are updated.
+    #[arg(long, default_value_t = false)]
+    pub rename_files: bool,
     /// Do not add a watermark at the end of main tex files.
     #[arg(long)]
     pub skip_watermark: bool,
@@ -106,6 +110,7 @@ impl Config {
             clean_classes: self.clean_classes,
             no_zzrm: self.no_zzrm,
             tar: self.tar.clone(),
+            rename_files: self.rename_files,
             exiftool_args: self.exiftool_args.clone(),
             exiftool_cmd: self.exiftool_cmd.clone(),
             force: self.force,
@@ -134,6 +139,7 @@ impl Config {
         trace!("  clean_classes: {}", self.clean_classes);
         trace!("  no_zzrm: {}", self.no_zzrm);
         trace!("  tar: {:?}", self.tar);
+        trace!("  rename_files: {}", self.rename_files);
         trace!("  skip_watermark: {}", self.skip_watermark);
         trace!("  main_files: {:?}", self.main_files);
     }
@@ -167,6 +173,61 @@ pub fn ensure_requirements() {
     if CONFIG.strip_exif {
         exif_tool::ensure_requirements(&CONFIG.exiftool_cmd);
     }
+}
+
+/// Counts the files in `root` whose names would be renamed by
+/// [`FileRenames`] (i.e. paths that contain spaces).
+#[cfg(not(target_family = "wasm"))]
+fn count_renamable_files(root: &std::path::Path) -> usize {
+    let relative_paths: Vec<PathBuf> = WalkDir::new(root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| entry.path().strip_prefix(root).ok().map(PathBuf::from))
+        .collect();
+
+    FileRenames::new(relative_paths.iter().map(PathBuf::as_path))
+        .iter()
+        .count()
+}
+
+/// Suggests enabling [`Config::rename_files`] when a tar archive is created
+/// and the project contains files that would be renamed.
+///
+/// The prompt is skipped when renaming is already enabled, when `--force` is
+/// set, or when no TTY is attached (CI, piped input).
+#[cfg(not(target_family = "wasm"))]
+fn suggest_rename_files(config: &mut Config) -> anyhow::Result<()> {
+    if config.tar.is_none() || config.rename_files || config.force {
+        return Ok(());
+    }
+
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        // No TTY attached (CI, piped input) — keep the default and do not prompt
+        return Ok(());
+    }
+
+    let renamable = count_renamable_files(&config.input_path);
+    if renamable == 0 {
+        return Ok(());
+    }
+
+    use dialoguer::Confirm;
+    let rename = Confirm::new()
+        .with_prompt(format!(
+            "ArXiv replaces spaces in file names with underscores. {} file(s) in the project would be renamed and their references updated. Do you want to rename them now automatically?",
+            renamable
+        ))
+        .default(true)
+        .interact()?;
+
+    if rename {
+        config.rename_files = true;
+        info!("Enabling file renaming.");
+    }
+
+    Ok(())
 }
 
 fn main() -> anyhow::Result<(), anyhow::Error> {
@@ -204,13 +265,18 @@ fn run_cli() -> anyhow::Result<(), anyhow::Error> {
         .filter_level(log_level)
         .init();
 
-    CONFIG.debug_print();
+    // Local mutable copy of the configuration so interactive suggestions can adjust it.
+    let mut config = (*CONFIG).clone();
+
+    config.debug_print();
 
     ensure_requirements();
 
-    if !CONFIG.input_path.exists() {
-        anyhow::bail!("Input path {:?} does not exist", CONFIG.input_path);
+    if !config.input_path.exists() {
+        anyhow::bail!("Input path {:?} does not exist", config.input_path);
     }
+
+    suggest_rename_files(&mut config)?;
 
     if let Some(main_files) = CONFIG.main_files.as_ref() {
         if main_files.is_empty() {
@@ -255,11 +321,11 @@ fn run_cli() -> anyhow::Result<(), anyhow::Error> {
     }
 
     let mut submission = Submission::new(
-        Arc::new(CONFIG.to_cleaner_config()),
-        &CONFIG.input_path,
-        &CONFIG.target_path,
-        &CONFIG.latex_cmd,
-        &CONFIG.latex_args,
+        Arc::new(config.to_cleaner_config()),
+        &config.input_path,
+        &config.target_path,
+        &config.latex_cmd,
+        &config.latex_args,
     )?;
     submission.run()?;
 
@@ -373,4 +439,25 @@ fn run_cli() -> anyhow::Result<(), anyhow::Error> {
     submission.stats().pretty_print(CONFIG.verbose != 0);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_renamable_files;
+    use temp_dir::TempDir;
+
+    #[test]
+    fn counts_files_that_would_be_renamed() {
+        let dir = TempDir::with_prefix("alc-ng-test-").unwrap();
+        for file in ["main.tex", "a b.tex", "sub dir/c.tex", "x y.png", "x_y.png"] {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("empty dir")).unwrap();
+
+        // `a b.tex` and `sub dir/c.tex`: `x y.png` is not renamed as `x_y.png` exists, and
+        // directories do not count on their own. Files count whether the build uses them or not.
+        assert_eq!(count_renamable_files(dir.path()), 2);
+    }
 }

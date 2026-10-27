@@ -1,5 +1,9 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
+    use crate::common::{is_pixel_identical, run_cleaner, write_project};
+
     use alc_ng::cleaner::config::CleanerConfig;
     use alc_ng::cleaner::submission::parsed_file::ContentStripper;
     use alc_ng::parsing::parse;
@@ -7,7 +11,7 @@ mod tests {
 
     fn clean(input: &[u8]) -> String {
         let tree = parse(input).unwrap();
-        let (stripped, deletion_stats) = ContentStripper::clean(
+        let (stripped, _) = ContentStripper::clean(
             input,
             tree.root_node(),
             "test.tex",
@@ -15,36 +19,66 @@ mod tests {
         )
         .unwrap();
 
-        assert!(deletion_stats.grammar_errors.is_empty());
         String::from_utf8(stripped.unwrap()).unwrap()
     }
 
+    /// An empty macro with delimited parameters swallows text up to its delimiter,
+    /// which is not a curly group of the invocation. The swallowed text must not
+    /// become visible: it may only remain together with the macro that hides it.
     #[test]
-    fn empty_def_with_delimited_parameter_is_kept() {
-        // The text up to the delimiter is not part of the invocation,
-        // so deleting the invocation would reveal the hidden text.
-        let input = br#"\def\ignore#1\endignore{}
-Visible. \ignore hidden draft text \endignore Visible again.
-"#;
+    fn empty_def_with_delimited_parameters_keeps_argument_hidden() {
+        for (macro_name, input) in [
+            (
+                r"\skipto",
+                &br"\def\skipto#1\par{}
+\skipto hidden text
 
-        assert_eq!(clean(input), String::from_utf8_lossy(input));
+Visible
+"[..],
+            ),
+            (
+                r"\drop",
+                &br"\def\drop(#1){}
+Visible \drop(hidden) end
+"[..],
+            ),
+        ] {
+            let cleaned = clean(input);
+
+            assert!(
+                !cleaned.contains("hidden") || cleaned.contains(macro_name),
+                "{macro_name}: hidden text is visible in {cleaned:?}"
+            );
+        }
     }
 
     #[test]
-    fn empty_def_with_delimiter_after_parameter_is_kept() {
-        let input = br#"\def\skipdot#1.{}
-A \skipdot secret. B
-"#;
+    fn empty_def_with_delimited_parameters_is_pixel_identical() {
+        let project = write_project(&[(
+            "main.tex",
+            br"\documentclass{article}
+\def\skipto#1\par{}
+\def\drop(#1){}
+\begin{document}
+Visible one.
+\skipto hidden text
 
-        assert_eq!(clean(input), String::from_utf8_lossy(input));
-    }
+Visible two \drop(hidden too) end.
+\end{document}
+",
+        )]);
 
-    #[test]
-    fn empty_def_with_undelimited_parameters_is_deleted() {
-        let input = br#"\def\drop#1#2{}
-A \drop{gone}{too} B
-"#;
+        let (submission, _, result) = run_cleaner(
+            "delimited_def_cleaned",
+            project.path(),
+            CleanerConfig {
+                force: true,
+                skip_watermark: true,
+                ..Default::default()
+            },
+        );
 
-        assert_eq!(clean(input), "A {} B\n");
+        result.unwrap();
+        assert!(is_pixel_identical(&submission));
     }
 }

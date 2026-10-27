@@ -4703,6 +4703,14 @@
         },
         {
           "type": "SYMBOL",
+          "name": "file_include"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "graphics_path_declaration"
+        },
+        {
+          "type": "SYMBOL",
           "name": "caption"
         },
         {
@@ -5782,6 +5790,88 @@
             "type": "SYMBOL",
             "name": "curly_group_path"
           }
+        }
+      ]
+    },
+    "file_include": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "command",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "\\includepdf"
+              },
+              {
+                "type": "STRING",
+                "value": "\\includestandalone"
+              },
+              {
+                "type": "STRING",
+                "value": "\\lstinputlisting"
+              }
+            ]
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "options",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "brack_group_key_value"
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "path",
+          "content": {
+            "type": "SYMBOL",
+            "name": "curly_group_path"
+          }
+        }
+      ]
+    },
+    "graphics_path_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "command",
+          "content": {
+            "type": "STRING",
+            "value": "\\graphicspath"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "FIELD",
+            "name": "path",
+            "content": {
+              "type": "SYMBOL",
+              "name": "curly_group_path"
+            }
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "}"
         }
       ]
     },

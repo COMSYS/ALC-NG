@@ -27,6 +27,7 @@ impl FileRenames {
     pub fn new<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Self {
         let paths: HashSet<&Path> = paths.into_iter().collect();
         let mut renames = HashMap::new();
+        let mut kept: Vec<PathBuf> = Vec::new();
         let mut taken: HashSet<PathBuf> = paths.iter().map(|p| p.to_path_buf()).collect();
 
         let mut candidates: Vec<&Path> = paths
@@ -40,6 +41,7 @@ impl FileRenames {
         for path in candidates {
             let Some(new_path) = replace_spaces(path) else {
                 warn!("Not renaming {}: path is not valid UTF-8", path.display());
+                kept.push(path.to_path_buf());
                 continue;
             };
 
@@ -49,11 +51,40 @@ impl FileRenames {
                     path.display(),
                     new_path.display()
                 );
+                kept.push(path.to_path_buf());
                 continue;
             }
 
             taken.insert(new_path.clone());
             renames.insert(path.to_path_buf(), new_path);
+        }
+
+        // A directory is renamed as a whole: references to it (e.g. `\graphicspath`) lead to
+        // all of its files, so if one of them keeps its name, the others must keep theirs as well.
+        loop {
+            let blocked: Vec<PathBuf> = renames
+                .keys()
+                .filter(|path| {
+                    path.ancestors()
+                        .skip(1)
+                        .filter(|dir| contains_space(dir))
+                        .any(|dir| kept.iter().any(|k| k.starts_with(dir)))
+                })
+                .cloned()
+                .collect();
+
+            if blocked.is_empty() {
+                break;
+            }
+
+            for path in blocked {
+                warn!(
+                    "Not renaming {}: other files in its directory cannot be renamed",
+                    path.display()
+                );
+                renames.remove(&path);
+                kept.push(path);
+            }
         }
 
         Self { renames }
@@ -81,13 +112,22 @@ impl FileRenames {
     /// `\input` or `\includegraphics`, if it refers to a renamed file or directory.
     ///
     /// References may omit the file extension and may be relative to a directory
-    /// set elsewhere (e.g. `\graphicspath` or `\import`), so a reference matches if
-    /// it is a trailing part of a renamed path, with or without extension.
+    /// set elsewhere (e.g. `\graphicspath` or `\import`) or to the including file
+    /// (e.g. `../figs/plot` in a subfile), so a reference matches if, without leading
+    /// `./` and `../`, it is a trailing part of a renamed path, with or without extension.
     /// Surrounding whitespace of the reference is preserved.
     pub fn rewrite_reference(&self, reference: &[u8]) -> Option<Vec<u8>> {
         let reference = std::str::from_utf8(reference).ok()?;
         let trimmed = reference.trim();
-        let normalized = trimmed.trim_start_matches("./").trim_end_matches('/');
+
+        let mut normalized = trimmed;
+        while let Some(rest) = normalized
+            .strip_prefix("./")
+            .or_else(|| normalized.strip_prefix("../"))
+        {
+            normalized = rest;
+        }
+        let normalized = normalized.trim_end_matches('/');
 
         if !normalized.contains(' ') || !self.references_renamed_path(normalized) {
             return None;
@@ -126,7 +166,8 @@ impl FileRenames {
 
         // Visit nodes in document order
         while let Some(node) = stack.pop() {
-            if node.kind() == "path" {
+            // File references, including the (glob) file names of `\addbibresource`
+            if matches!(node.kind(), "path" | "glob_pattern") {
                 let reference = &content[node.byte_range()];
                 if let Some(new_reference) = self.rewrite_reference(reference) {
                     info!(
@@ -281,6 +322,15 @@ mod tests {
         // Directory, e.g. in \import
         assert_eq!(rewrite("my dir/").as_deref(), Some("my_dir/"));
         assert_eq!(rewrite("my dir/sec 1").as_deref(), Some("my_dir/sec_1"));
+        // Relative to the including file, e.g. in a subfile
+        assert_eq!(
+            rewrite("../figures/my figure").as_deref(),
+            Some("../figures/my_figure")
+        );
+        assert_eq!(
+            rewrite("./../my dir/sec 1").as_deref(),
+            Some("./../my_dir/sec_1")
+        );
         // Surrounding whitespace is kept
         assert_eq!(rewrite(" my figure ").as_deref(), Some(" my_figure "));
 
@@ -309,5 +359,57 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn rewrites_references_of_search_paths_and_package_commands() {
+        let r = renames(&[
+            "my figs/plot.png",
+            "my refs.bib",
+            "my doc.pdf",
+            "code/my script.py",
+            "figs/my diagram.tex",
+        ]);
+        let content = br"\graphicspath{{figs/}{my figs/}}
+\addbibresource{my refs.bib}
+\includepdf[pages=-]{my doc}
+\lstinputlisting[language=Python]{code/my script.py}
+\includestandalone[width=\linewidth]{figs/my diagram}
+";
+        let tree = parse(content).unwrap();
+
+        let rewritten = r.rewrite_references(content, tree.root_node(), "test.tex");
+
+        assert_eq!(
+            rewritten.as_deref(),
+            Some(
+                &br"\graphicspath{{figs/}{my_figs/}}
+\addbibresource{my_refs.bib}
+\includepdf[pages=-]{my_doc}
+\lstinputlisting[language=Python]{code/my_script.py}
+\includestandalone[width=\linewidth]{figs/my_diagram}
+"[..]
+            )
+        );
+    }
+
+    /// A rewritten directory reference (e.g. in `\graphicspath` or `\import`) must lead to
+    /// the new location of every file in it, also if only some of them can be renamed.
+    #[test]
+    fn directory_references_match_renamed_files() {
+        // `my dir/x.png` keeps its name, as `my_dir/x.png` exists
+        let r = renames(&["my dir/x.png", "my dir/y.png", "my_dir/x.png"]);
+        let directory = r
+            .rewrite_reference(b"my dir/")
+            .map(|v| String::from_utf8(v).unwrap())
+            .unwrap_or_else(|| "my dir/".to_string());
+
+        for file in ["x.png", "y.png"] {
+            assert_eq!(
+                Path::new(&format!("{directory}{file}")),
+                r.target(Path::new(&format!("my dir/{file}"))),
+                "{file}"
+            );
+        }
     }
 }
