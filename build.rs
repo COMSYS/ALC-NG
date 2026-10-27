@@ -7,6 +7,13 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 fn main() {
+    // Pdfium is a native dynamic library and cannot be bundled for wasm targets.
+    // The `compare` module that uses it is compiled out there (see lib.rs), so
+    // the build script has nothing to do on wasm.
+    if env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("wasm") {
+        return;
+    }
+
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 

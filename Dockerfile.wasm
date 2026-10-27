@@ -1,0 +1,148 @@
+# Serves the alc-ng web app (web/, built with Vite) from the axum server in
+# wasm-test/server, which also backs the engines' TeX Live requests.
+#
+#   docker build -f Dockerfile.wasm -t alc-ng-wasm .
+#   docker run --rm --read-only -p 8000:8000 alc-ng-wasm
+#   open http://localhost:8000/
+#
+# The patched SwiftLaTeX engines in wasm-test/swiftlatex are gitignored, so
+# they must be present in the build context (see wasm-test/swiftlatex/README.md).
+#
+# TeX Live: the runtime is the full TeX Live image, so the server's kpsewhich
+# resolves the entire distribution — the page needs no local TeX installation
+# and hosts no packages.
+
+# --- alc-ng as wasm32-wasip1 cdylib ----------------------------------------
+FROM rust:1 AS wasm-build
+
+ARG WASI_SDK_VERSION=34
+
+# libclang: tree-sitter's build script runs bindgen on the host (the
+# wasm-target C compilation itself uses the wasi-sdk clang below).
+# nodejs: tree-sitter-latex's build script generates its parser from
+# grammar.js with tree-sitter-cli, which spawns node.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libclang-dev nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# tree-sitter's C sources need a wasm-capable clang and a WASI sysroot.
+RUN set -eux; \
+    arch="$(uname -m | sed 's/aarch64/arm64/')"; \
+    curl -sSfL "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-${arch}-linux.tar.gz" \
+        | tar xz -C /opt; \
+    ln -s "/opt/wasi-sdk-${WASI_SDK_VERSION}.0-${arch}-linux" /opt/wasi-sdk
+
+RUN rustup target add wasm32-wasip1
+
+ENV CC_wasm32_wasip1=/opt/wasi-sdk/bin/clang \
+    AR_wasm32_wasip1=/opt/wasi-sdk/bin/llvm-ar \
+    CFLAGS_wasm32_wasip1=--sysroot=/opt/wasi-sdk/share/wasi-sysroot
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+COPY external ./external
+
+RUN cargo build --target wasm32-wasip1 --lib --release
+
+# --- wasm dev server: static files + /tree/ + kpsewhich TeX Live proxy -------
+# Built against musl so the static binary drops into the TeX Live image
+# regardless of that image's glibc. The musl target follows the build
+# platform (x86_64 or aarch64), like the TeX Live image it runs in; the
+# binary is copied to a fixed path so later stages need not know the triple.
+FROM rust:1 AS server-build
+
+RUN set -eux; \
+    rustup target add "$(uname -m)-unknown-linux-musl"; \
+    apt-get update && apt-get install -y --no-install-recommends musl-tools; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY wasm-test/server ./server
+WORKDIR /server
+RUN set -eux; \
+    target="$(uname -m)-unknown-linux-musl"; \
+    cargo build --release --target "$target"; \
+    cp "target/$target/release/wasm-serve" /server/wasm-serve
+
+# --- the web app (web/, Vite + React) ---------------------------------------
+# Node 24 still ships corepack, which installs the pnpm version package.json
+# pins; the lockfile is frozen so the image builds what the repository tested.
+FROM node:24-alpine AS web-build
+
+RUN corepack enable
+WORKDIR /web
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web ./
+RUN pnpm build
+
+# --- pdfium (wasm) for the page's compare option ---------------------------
+# Pinned to the release the page is tested with: its JS API and archive layout
+# can change between releases. Update the version and checksum together (the
+# checksum is the asset's sha256 digest on the GitHub release page).
+FROM alpine:3 AS pdfium
+
+ARG PDFIUM_VERSION=8111
+ARG PDFIUM_SHA256=ed8ee2e70c628a4bd261fade8e381079aca250aeb5b1f3192c59682f8441fdcd
+
+RUN apk add --no-cache curl
+WORKDIR /pdfium
+RUN set -eux; \
+    curl -sSfL -o /tmp/pdfium-wasm.tgz \
+        "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${PDFIUM_VERSION}/pdfium-wasm.tgz"; \
+    echo "${PDFIUM_SHA256}  /tmp/pdfium-wasm.tgz" | sha256sum -c -; \
+    tar xzf /tmp/pdfium-wasm.tgz; \
+    rm /tmp/pdfium-wasm.tgz
+
+# --- LaTeX format dumps -----------------------------------------------------
+# A .fmt is engine-build specific, so TeX Live's native pdflatex.fmt is useless
+# here: both dumps are built by the wasm engines themselves, headlessly.
+# wasm-test/build-fmt.cjs drives the worker glue under node and fetches every
+# TeX file from the dev server (kpsewhich), exactly like the page would; the
+# result is baked into the image. Nothing is ever uploaded at runtime.
+FROM texlive/texlive:latest-full AS fmt-build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=server-build /server/wasm-serve /usr/local/bin/
+
+WORKDIR /srv
+COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
+COPY wasm-test/build-fmt.cjs ./build-fmt.cjs
+
+RUN (SERVE_HOST=127.0.0.1 wasm-serve 8100 >/tmp/serve.log 2>&1 &) \
+    && sleep 2 \
+    && node build-fmt.cjs ./wasm-test/swiftlatex swiftlatexpdftex.js http://127.0.0.1:8100/texlive/ \
+         wasm-test/fmt-cache/alc_ng_swiftlatexpdftex_fmt_v1__swiftlatexpdftex.fmt \
+    && node build-fmt.cjs ./wasm-test/swiftlatex swiftlatexxetex.js http://127.0.0.1:8100/texlive/ \
+         wasm-test/fmt-cache/alc_ng_swiftlatexxetex_fmt_v1__swiftlatexxetex.fmt \
+    && ls -l wasm-test/fmt-cache
+
+# --- runtime: TeX Live full (the packages kpsewhich answers with) -----------
+FROM texlive/texlive:latest-full AS runtime
+
+# The dev server serves this directory as the site root, read-only: it never
+# writes to disk, so the container can run with --read-only.
+WORKDIR /srv
+COPY --from=wasm-build /app/target/wasm32-wasip1/release/alc_ng.wasm ./target/wasm32-wasip1/release/alc_ng.wasm
+COPY --from=server-build /server/wasm-serve /usr/local/bin/
+COPY --from=pdfium /pdfium ./wasm-test/pdfium
+COPY --from=web-build /web/dist ./web/dist
+COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
+COPY --from=fmt-build /srv/wasm-test/fmt-cache ./wasm-test/fmt-cache
+COPY wasm-test/texlive-extras ./wasm-test/texlive-extras
+COPY wasm-test/sample-nested ./wasm-test/sample-nested
+COPY wasm-test/sample-xelatex ./wasm-test/sample-xelatex
+# Real arXiv sources for the page's sample picker (gitignored — wildcard so a
+# fresh checkout without fixtures/ still builds; COPY skips a no-match glob).
+# Wildcard sources contribute their *contents*, so the destination is the
+# fixtures dir itself.
+COPY wasm-test/fixtures* ./wasm-test/fixtures/
+COPY tests/appendix ./tests/appendix
+
+ENV SERVE_HOST=0.0.0.0
+EXPOSE 8000
+
+ENTRYPOINT ["wasm-serve"]
+CMD ["8000"]
