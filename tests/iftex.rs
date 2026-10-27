@@ -27,7 +27,7 @@ mod tests {
         let stripped = stripped.unwrap();
         assert!(stripped.contains_slice(br"if_content"));
         assert!(stripped.contains_slice(br"else_content"));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -48,7 +48,7 @@ mod tests {
 
         let stripped = stripped.unwrap();
         assert!(stripped.contains_slice(br"if_content"));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -71,7 +71,7 @@ mod tests {
         let stripped = stripped.unwrap();
         assert!(stripped.contains_slice(br"if_content"));
         assert!(!stripped.contains_slice(br"comment"));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -113,6 +113,6 @@ mod tests {
         assert!(!stripped.contains_slice(br"comment5"));
         assert!(!stripped.contains_slice(br"comment6"));
 
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 }

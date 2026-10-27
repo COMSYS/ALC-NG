@@ -186,3 +186,89 @@ Graphics include with options
             (word)))))
     (curly_group_path
       (path))))
+
+================================================================================
+Graphics path declaration
+================================================================================
+
+\graphicspath{{figs/}{my images/}}
+\graphicspath{ {a/} }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (graphics_path_declaration
+    (curly_group_path
+      (path))
+    (curly_group_path
+      (path)))
+  (graphics_path_declaration
+    (curly_group_path
+      (path))))
+
+================================================================================
+File includes of common packages
+================================================================================
+
+\includepdf[pages=-]{my doc}
+\includestandalone[width=\linewidth]{figs/plot}
+\lstinputlisting{code/main.py}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (file_include
+    (brack_group_key_value
+      (key_value_pair
+        (text
+          (word))
+        (value
+          (text
+            (operator)))))
+    (curly_group_path
+      (path)))
+  (file_include
+    (brack_group_key_value
+      (key_value_pair
+        (text
+          (word))
+        (value
+          (generic_command
+            (command_name)))))
+    (curly_group_path
+      (path)))
+  (file_include
+    (curly_group_path
+      (path))))
+
+================================================================================
+Include keywords as command names
+================================================================================
+
+\let\includepdf\relax
+\renewcommand{\graphicspath}[1]{}
+\includepdfmerge{a}
+\graphicspathx{b}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_command_definition
+    (command_name)
+    (command_name))
+  (new_command_definition
+    (curly_group_command_name
+      (command_name))
+    (brack_group_argc
+      (argc))
+    (curly_group_impl))
+  (generic_command
+    (command_name)
+    (curly_group
+      (text
+        (word))))
+  (generic_command
+    (command_name)
+    (curly_group
+      (text
+        (word)))))

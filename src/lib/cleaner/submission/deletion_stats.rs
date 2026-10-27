@@ -8,7 +8,8 @@ pub struct DeletionStats {
     pub suffix_comment: Vec<Vec<u8>>,
     pub line_comment: Vec<Vec<u8>>,
     pub out_of_bounds: Vec<Vec<u8>>,
-    pub comment_definition_deleted: Vec<Vec<u8>>,
+    /// Definitions of comment commands. They are kept, only their invocations are removed.
+    pub comment_definitions: Vec<Vec<u8>>,
     pub comment_invocation_deleted: Vec<Vec<u8>>,
     pub comment_package_include_deleted: Vec<Vec<u8>>,
     pub block_comment_deleted: Vec<Vec<u8>>,
@@ -25,8 +26,7 @@ impl DeletionStats {
         self.suffix_comment.extend(other.suffix_comment);
         self.line_comment.extend(other.line_comment);
         self.out_of_bounds.extend(other.out_of_bounds);
-        self.comment_definition_deleted
-            .extend(other.comment_definition_deleted);
+        self.comment_definitions.extend(other.comment_definitions);
         self.comment_invocation_deleted
             .extend(other.comment_invocation_deleted);
         self.comment_package_include_deleted
@@ -58,8 +58,8 @@ impl DeletionStats {
             verbose,
         );
         self.print_vec_preview(
-            "Comment Definitions",
-            &self.comment_definition_deleted,
+            "Comment Definitions (kept)",
+            &self.comment_definitions,
             3,
             verbose,
         );

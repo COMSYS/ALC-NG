@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use flate2::{Compression, write::GzEncoder};
-use image::DynamicImage;
 use log::{error, info, trace, warn};
 use std::{
     collections::{HashMap, HashSet},
@@ -18,20 +17,39 @@ use crate::{
     arxiv::{FileUsage, ZeroZeroReadMe},
     cleaner::{
         config::CleanerConfig,
-        submission::{deletion_stats::DeletionStats, parsed_file::ParsedFile},
+        file_renames::FileRenames,
+        submission::{
+            comment_commands::CommentCommands, deletion_stats::DeletionStats,
+            parsed_file::ParsedFile,
+        },
     },
-    compare::{Comparer, PixelPerfect},
+    compare::{Comparer, PageDiffs, PixelPerfect},
     exif_tool,
     helper::{SourceFile, find_mains, find_referenced_bsts},
     progress::CompilationSpinner,
 };
 
+pub mod comment_commands;
 pub mod deletion_stats;
 pub mod directives;
 pub mod parsed_file;
 
-type CompareResult =
-    Result<HashMap<String, Option<HashMap<usize, (Option<DynamicImage>, Option<DynamicImage>)>>>>;
+type CompareResult = Result<HashMap<String, Option<PageDiffs>>>;
+
+/// How a file of the submission is copied into the cleaned output directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyMode {
+    /// Copied unchanged, as requested by the 00Readme.
+    Raw,
+    /// Copied unchanged, as it is an ancillary file.
+    Ancillary,
+    /// Copied cleaned, as it is used in the build.
+    Cleaned,
+    /// Not copied, as requested by the 00Readme.
+    Ignored,
+    /// Not copied, as it is not used in the build.
+    Unused,
+}
 
 /// This struct contains all information needed to clean a LaTeX project.
 pub struct Submission {
@@ -67,6 +85,8 @@ pub struct Submission {
     pub grammar_errors: Vec<String>,
     /// Store deleted string
     pub deletion_stats: DeletionStats,
+    /// Files that are renamed in the cleaned project (spaces replaced by underscores).
+    file_renames: FileRenames,
 }
 
 impl Submission {
@@ -180,22 +200,26 @@ impl Submission {
             latex_parameters: latex_parameters.clone(),
             grammar_errors: Vec::new(),
             deletion_stats: DeletionStats::default(),
+            file_renames: FileRenames::default(),
         })
     }
 
     /// Returns a set of main source files to compile.
     ///
-    /// If a `00Readme` was successfully parsed (`zzrm` is `Some`),
-    /// its top‑level files are used as the main files. Otherwise,
+    /// If a `00Readme` was successfully parsed (`zzrm` is `Some`) and declares
+    /// top‑level files, these are used as the main files. Otherwise,
     /// the set of possible main files discovered earlier is returned.
     pub fn get_mains(&self) -> HashSet<SourceFile> {
-        // If a 00Readme exists, use its declared top‑level files.
-        if let Some(zzrm) = &self.zzrm {
-            zzrm.top_level_files(&self.cache_path)
-        } else {
-            // No 00Readme, fall back to the previously found possible mains.
-            self.possible_main_files.clone()
+        // If a 00Readme declares top‑level files, use them.
+        if let Some(zzrm) = &self.zzrm
+            && zzrm.declares_top_level_files()
+        {
+            return zzrm.top_level_files(&self.cache_path);
         }
+
+        // No 00Readme or one that only sets global options (e.g. `nostamp`),
+        // fall back to the previously found possible mains.
+        self.possible_main_files.clone()
     }
 
     /// Creates a temporary cache of the project by copying all input files into
@@ -614,6 +638,77 @@ impl Submission {
         Ok(())
     }
 
+    /// Determines which files are renamed in the cleaned project.
+    ///
+    /// arXiv replaces spaces in file names with underscores, which breaks references
+    /// to these files. Thus, if renaming is enabled, we rename
+    /// them ourselves and rewrite the references.
+    fn determine_file_renames(&mut self) {
+        if !self.cleaner_config.rename_files {
+            return;
+        }
+
+        self.file_renames = FileRenames::new(
+            self.initial_file_list
+                .iter()
+                .map(|f| f.source_file())
+                // Generated .bbl files are copied as well
+                .chain(
+                    self.recorder_inputs
+                        .iter()
+                        .filter(|f| matches!(f.extension(), Some(x) if x == "bbl")),
+                )
+                .map(|f| f.relative().as_path()),
+        );
+
+        let mut renames: Vec<_> = self.file_renames.iter().collect();
+        renames.sort();
+        for (original, renamed) in renames {
+            info!("Renaming {} to {}", original.display(), renamed.display());
+        }
+    }
+
+    /// Returns the path a file is written to in the cleaned project.
+    fn target_path_of(&self, file: &SourceFile) -> PathBuf {
+        self.target_path
+            .join(self.file_renames.target(file.relative()))
+    }
+
+    /// Determines how a file is copied into the cleaned output directory.
+    /// Considers the file usage defined in the 00Readme.
+    fn copy_mode(&self, parsed: &ParsedFile, all_used: &HashSet<&SourceFile>) -> CopyMode {
+        use std::path::Component;
+
+        let zzrm_usage = if let Some(zzrm) = &self.zzrm
+            && let Some(zzrm_source) = zzrm.sources.get(
+                &parsed
+                    .source_file()
+                    .relative()
+                    .to_string_lossy()
+                    .to_string(),
+            ) {
+            zzrm_source.usage.as_ref()
+        } else {
+            None
+        };
+
+        let is_anc_file = parsed.source_file().relative().components().next()
+            == Some(Component::Normal(OsStr::new("anc")));
+
+        // Only copy files that are actually used in the build.
+        match (
+            all_used.contains(parsed.source_file()),
+            zzrm_usage,
+            is_anc_file,
+        ) {
+            (_, Some(FileUsage::Include), _) => CopyMode::Raw,
+            (_, _, true) => CopyMode::Ancillary,
+            (_, Some(FileUsage::TopLevel), _) | (true, _, _) => CopyMode::Cleaned,
+            (_, Some(FileUsage::Ignore), _) => CopyMode::Ignored,
+            (false, _, _) => CopyMode::Unused,
+        }
+    }
+
     /// Copies only the files that were actually used during the build into the cleaned output directory.
     ///
     /// Unused files are omitted. Additionally, all `.bbl` files produced by BibTeX are preserved.
@@ -641,78 +736,66 @@ impl Submission {
             self.initial_file_list.len()
         );
 
-        for parsed in &self.initial_file_list {
-            let zzrm_usage = if let Some(zzrm) = &self.zzrm
-                && let Some(zzrm_source) = zzrm.sources.get(
-                    &parsed
-                        .source_file()
-                        .relative()
-                        .to_string_lossy()
-                        .to_string(),
-                ) {
-                zzrm_source.usage.as_ref()
-            } else {
-                None
-            };
+        let copy_modes: Vec<_> = self
+            .initial_file_list
+            .iter()
+            .map(|parsed| (parsed, self.copy_mode(parsed, &all_used)))
+            .collect();
 
-            use std::path::Component;
+        // Comment commands are determined from all LaTeX files of the cleaned project,
+        // as they may be defined in one file and invoked in another.
+        let latex_files: Vec<_> = copy_modes
+            .iter()
+            .filter_map(|(parsed, mode)| match (parsed, mode) {
+                (
+                    ParsedFile::LatexLike(file),
+                    CopyMode::Raw | CopyMode::Ancillary | CopyMode::Cleaned,
+                ) => Some((file, file.cleaning_name())),
+                _ => None,
+            })
+            .collect();
+        let analyzed_files: Vec<_> = latex_files
+            .iter()
+            .map(|(file, filename)| file.analyzed(filename))
+            .collect();
+        let comment_commands =
+            CommentCommands::analyze(&analyzed_files, self.cleaner_config.clone());
 
-            let is_anc_file = parsed.source_file().relative().components().next()
-                == Some(Component::Normal(OsStr::new("anc")));
+        for (parsed, mode) in copy_modes {
+            match mode {
+                CopyMode::Raw | CopyMode::Ancillary | CopyMode::Cleaned => {
+                    if mode == CopyMode::Ancillary {
+                        trace!(
+                            "Including file {} as it is an ancillary file",
+                            parsed.source_file().relative().display()
+                        );
+                    }
 
-            // Only copy files that are actually used in the build.
-            // Consider the file usage defined in the 00Readme.
-            let _ = match (
-                all_used.contains(parsed.source_file()),
-                zzrm_usage,
-                is_anc_file,
-            ) {
-                (_, Some(FileUsage::Include), _) => {
-                    let target = self.target_path.join(parsed.source_file().relative());
+                    let target = self.target_path_of(parsed.source_file());
                     // Ensure the parent directory exists before writing.
                     if let Some(parent) = target.parent() {
                         create_dir_all(parent)
                             .context(format!("Could not create directory {}", parent.display()))?;
                     }
-                    parsed.copy_raw_to(&target)?;
 
-                    Some(target)
-                }
-                (_, _, true) => {
-                    trace!(
-                        "Including file {} as it is an ancillary file",
-                        parsed.source_file().relative().display()
-                    );
-                    let target = self.target_path.join(parsed.source_file().relative());
-                    // Ensure the parent directory exists before writing.
-                    if let Some(parent) = target.parent() {
-                        create_dir_all(parent)
-                            .context(format!("Could not create directory {}", parent.display()))?;
+                    if mode == CopyMode::Cleaned {
+                        parsed.copy_cleaned_to(
+                            &target,
+                            &mut self.deletion_stats,
+                            &self.file_renames,
+                            &comment_commands,
+                        )?;
+                    } else {
+                        parsed.copy_raw_to(&target, &self.file_renames)?;
                     }
-                    parsed.copy_raw_to(&target)?;
-
-                    Some(target)
                 }
-                (_, Some(FileUsage::TopLevel), _) | (true, _, _) => {
-                    let target = self.target_path.join(parsed.source_file().relative());
-                    // Ensure the parent directory exists before writing.
-                    if let Some(parent) = target.parent() {
-                        create_dir_all(parent)
-                            .context(format!("Could not create directory {}", parent.display()))?;
-                    }
-                    parsed.copy_cleaned_to(&target, &mut self.deletion_stats)?;
-
-                    Some(target)
-                }
-                (_, Some(FileUsage::Ignore), _) => {
+                CopyMode::Ignored => {
                     trace!(
                         "Ignoring file {} due to 00Readme",
                         parsed.source_file().relative().display()
                     );
-
-                    None
                 }
-                (false, _, _) => {
+                CopyMode::Unused => {
                     trace!(
                         "File {} is not used in the build",
                         parsed.source_file().relative().display()
@@ -720,10 +803,8 @@ impl Submission {
                     self.deletion_stats
                         .files_deleted
                         .push(parsed.source_file().relative().display().to_string());
-
-                    None
                 }
-            };
+            }
         }
 
         // Copy all .bbl files that were used during the LaTeX build into the cleaned output directory.
@@ -736,7 +817,7 @@ impl Submission {
             use std::fs::copy;
 
             // Determine the destination path for the backup file in the cleaned target directory.
-            let target = self.target_path.join(file.relative());
+            let target = self.target_path_of(file);
             // Copy the original .bbl file to the target location
             copy(file.full(), &target)
                 .context(format!("Could not backup file {}", target.display()))?;
@@ -744,7 +825,7 @@ impl Submission {
 
         if !self.cleaner_config.skip_watermark {
             for file in &self.possible_main_files {
-                let target = self.target_path.join(file.relative());
+                let target = self.target_path_of(file);
                 let version = env!("CARGO_PKG_VERSION");
                 let watermark = format!(
                     "\n% Processed with alc-ng ({}) (https://github.com/COMSYS/ALC-NG)",
@@ -945,7 +1026,7 @@ impl Submission {
                 cmd.args(&self.latex_parameters);
 
                 // Target the main TeX file.
-                cmd.arg(main_file.relative());
+                cmd.arg(self.file_renames.target(main_file.relative()));
 
                 // Execute the command in the cache directory.
                 cmd.current_dir(&compile_folder);
@@ -956,7 +1037,9 @@ impl Submission {
 
                 (
                     main_file,
-                    spinner.run_piped(&mut cmd).is_ok_and(|o| o.status.success()),
+                    spinner
+                        .run_piped(&mut cmd)
+                        .is_ok_and(|o| o.status.success()),
                 )
             })
             .collect();
@@ -978,7 +1061,7 @@ impl Submission {
                 let original = f.full().with_extension("pdf");
                 let new_version = compile_folder
                     .path()
-                    .join(f.relative().with_extension("pdf"));
+                    .join(self.file_renames.target(f.relative()).with_extension("pdf"));
 
                 if !original.exists() || !new_version.exists() {
                     return Ok((f.relative().display().to_string(), None));
@@ -1016,6 +1099,14 @@ impl Submission {
             None => find_mains(self.cache_path.path())?,
         };
 
+        // Top-level files of the 00README that do not exist cannot be compiled
+        if let Some(zzrm) = &self.zzrm
+            && zzrm.declares_top_level_files()
+            && self.get_mains().is_empty()
+        {
+            bail!("The 00README declares top-level files, but none of them exists in the project");
+        }
+
         if !std::io::stderr().is_terminal() {
             info!(
                 "Found the following main TeX file(s):\n{}",
@@ -1035,6 +1126,9 @@ impl Submission {
 
         // Determine BibTeX references that were not recorded by the LaTeX compiler.
         self.determine_latexmk_bib_references();
+
+        // Replace spaces in file names of the tar archive, as arXiv would do on upload.
+        self.determine_file_renames();
 
         // Copy only the files that were actually used into the cleaned output directory.
         info!("Copying cleaned project");

@@ -15,3 +15,4 @@
 /_f
 /dist
 /.zig-cache
+/test_output

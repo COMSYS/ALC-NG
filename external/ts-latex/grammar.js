@@ -383,7 +383,7 @@ module.exports = grammar({
     curly_group_uri: $ => seq('{', field('uri', $.uri), '}'),
 
     curly_group_command_name: $ =>
-      seq('{', field('command', $.command_name), '}'),
+      seq('{', field('command', choice($.command_name, $.active_character)), '}'),
 
     curly_group_key_value: $ =>
       seq('{', sepBy(field('pair', $.key_value_pair), ','), '}'),
@@ -440,6 +440,11 @@ module.exports = grammar({
     word: $ => /[^\s\\%\{\},\$\[\]\(\)=\#&_\^\-\+\/\*]+/,
 
     placeholder: $ => /#+\d|#{2,}/,
+
+    parameter_delimiter: $ => /[^\s\\\{\}%#]+/,
+
+    // A character made active via \catcode, e.g. `\newcommand{"}{...}`
+    active_character: $ => /[^\s\\\{\}%#]/,
 
     value_literal: $ => /-?(\d+\.)?\d+/,
 
@@ -507,21 +512,37 @@ module.exports = grammar({
     _math_delimiter_part: $ =>
       choice($.word, $.command_name, '[', ']', '(', ')', '|'),
 
+    // The halves may be unbalanced within a group, e.g. when an environment
+    // definition opens `\left` in its begin code and closes `\right` in its
+    // end code.
     math_delimiter: $ =>
-      prec.left(
-        seq(
-          field(
-            'left_command',
-            choice('\\left', '\\bigl', '\\Bigl', '\\biggl', '\\Biggl'),
+      choice(
+        prec.right(
+          seq(
+            $._math_delimiter_left,
+            repeat($._root_content),
+            optional($._math_delimiter_right),
           ),
-          field('left_delimiter', $._math_delimiter_part),
-          repeat($._root_content),
-          field(
-            'right_command',
-            choice('\\right', '\\bigr', '\\Bigr', '\\biggr', '\\Biggr'),
-          ),
-          field('right_delimiter', $._math_delimiter_part),
         ),
+        prec(-1, $._math_delimiter_right),
+      ),
+
+    _math_delimiter_left: $ =>
+      seq(
+        field(
+          'left_command',
+          choice('\\left', '\\bigl', '\\Bigl', '\\biggl', '\\Biggl'),
+        ),
+        field('left_delimiter', $._math_delimiter_part),
+      ),
+
+    _math_delimiter_right: $ =>
+      seq(
+        field(
+          'right_command',
+          choice('\\right', '\\bigr', '\\Bigr', '\\biggr', '\\Biggr'),
+        ),
+        field('right_delimiter', $._math_delimiter_part),
       ),
 
     text_mode: $ =>
@@ -701,6 +722,8 @@ module.exports = grammar({
         $.inkscape_include,
         $.verbatim_include,
         $.import_include,
+        $.file_include,
+        $.graphics_path_declaration,
         $.caption,
         $.citation,
         $.counter_declaration,
@@ -954,6 +977,26 @@ module.exports = grammar({
         field('file', $.curly_group_path),
       ),
 
+    // File inputs of common packages (pdfpages, standalone, listings)
+    file_include: $ =>
+      seq(
+        field(
+          'command',
+          choice('\\includepdf', '\\includestandalone', '\\lstinputlisting'),
+        ),
+        field('options', optional($.brack_group_key_value)),
+        field('path', $.curly_group_path),
+      ),
+
+    // Search paths of graphicx, e.g. `\graphicspath{{figs/}{img/}}`
+    graphics_path_declaration: $ =>
+      seq(
+        field('command', '\\graphicspath'),
+        '{',
+        repeat(field('path', $.curly_group_path)),
+        '}',
+      ),
+
     caption: $ =>
       prec.right(
         choice(
@@ -1175,7 +1218,12 @@ module.exports = grammar({
       seq(
         field('command', choice('\\def', '\\gdef', '\\edef', '\\xdef')),
         field('declaration', $.command_name),
-        field('args', repeat($.placeholder)),
+        // TeX parameter text: placeholders may be delimited by arbitrary
+        // tokens, e.g. `\def\foo(#1,#2):{...}` or `\def\foo#1\par{...}`
+        field(
+          'args',
+          repeat(choice($.placeholder, $.command_name, $.parameter_delimiter)),
+        ),
         field('implementation', $.curly_group_impl),
       ),
 

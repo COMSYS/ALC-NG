@@ -18,7 +18,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from(b"Text\r\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -35,7 +35,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from(b"Text\r\n\r\n\r\n\r\n\r\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
     }
 
     #[test]
@@ -51,6 +51,23 @@ mod tests {
         .unwrap();
 
         assert_eq!(stripped, Some(Vec::from(b"Text\r\nafter")));
-        assert!(_deletion_stats.grammar_errors.len() == 0);
+        assert!(_deletion_stats.grammar_errors.is_empty());
+    }
+
+    #[test]
+    fn indented_deletion_with_windows_newlines() {
+        let input = b"Text\r\n    \\iffalse x\\fi\r\nMore\r\n";
+        let tree = parse(input).unwrap();
+        let (stripped, deletion_stats) = ContentStripper::clean(
+            input,
+            tree.root_node(),
+            "test.tex",
+            Arc::new(CleanerConfig::default()),
+        )
+        .unwrap();
+
+        // Neither the indentation nor a lone `\r` of the deleted line remains
+        assert_eq!(stripped, Some(Vec::from(b"Text\r\nMore\r\n")));
+        assert!(deletion_stats.grammar_errors.is_empty());
     }
 }

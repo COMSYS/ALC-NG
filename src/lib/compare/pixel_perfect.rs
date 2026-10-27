@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufWriter, Read, Write},
     path::Path,
@@ -15,7 +14,7 @@ use pdfium_render::prelude::{PdfPageRenderRotation, PdfRenderConfig, Pdfium};
 use sha3::{Digest, Sha3_256};
 use temp_dir::TempDir;
 
-use crate::compare::comparer::Comparer;
+use crate::compare::comparer::{Comparer, PageDiffs};
 
 static DY_LIB_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libpdfium.gz"));
 static EXPECTED_CHECKSUM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libpdfium.sha3"));
@@ -106,10 +105,7 @@ impl PixelPerfect {
 }
 
 impl Comparer for PixelPerfect {
-    fn diff<S: AsRef<Path>, T: AsRef<Path>>(
-        left: S,
-        right: T,
-    ) -> anyhow::Result<HashMap<usize, (Option<DynamicImage>, Option<DynamicImage>)>> {
+    fn diff<S: AsRef<Path>, T: AsRef<Path>>(left: S, right: T) -> anyhow::Result<PageDiffs> {
         let left_images = Self::pdfimages(left).context("Failed to handle left images")?;
         let right_images = Self::pdfimages(right).context("Failed to handle right images")?;
 
