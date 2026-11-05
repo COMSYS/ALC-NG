@@ -12,6 +12,23 @@
 # resolves the entire distribution — the page needs no local TeX installation
 # and hosts no packages.
 
+# The TeX Live the engine reads its packages from, and that the format dumps
+# are built against. It is pinned to the distribution arXiv itself runs, for
+# two reasons:
+#
+#   - the engine is SwiftLaTeX's pdfTeX 1.40.21 (TeX Live 2020), so a current
+#     distribution is years ahead of it. A package that asks the LaTeX
+#     format's date rather than the engine whether a primitive exists then
+#     guesses wrong: microtype's \IfFormatAtLeastTF{2024/06/01} branch calls
+#     \partokencontext (an engine primitive since TeX Live 2023), and every
+#     document whose fonts microtype has to measure dies at "Undefined
+#     control sequence". A 2023 kernel takes microtype's other branch.
+#   - a submission on arXiv was built against this distribution, so it is the
+#     one most likely to compile its sources unchanged.
+#
+# Raising it means raising the engine too, or the mismatch above comes back.
+ARG TEXLIVE_IMAGE=texlive/texlive:TL2023-historic
+
 # --- alc-ng as wasm32-wasip1 cdylib ----------------------------------------
 FROM rust:1 AS wasm-build
 
@@ -108,7 +125,7 @@ RUN sh /wasm-test/fetch-texlyre.sh
 # wasm-test/build-fmt.cjs drives the worker glue under node and fetches every
 # TeX file from the dev server (kpsewhich), exactly like the page would; the
 # result is baked into the image. Nothing is ever uploaded at runtime.
-FROM texlive/texlive:latest-full AS fmt-build
+FROM ${TEXLIVE_IMAGE} AS fmt-build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs curl ca-certificates \
@@ -129,7 +146,7 @@ RUN (SERVE_HOST=127.0.0.1 wasm-serve 8100 >/tmp/serve.log 2>&1 &) \
     && ls -l wasm-test/fmt-cache
 
 # --- runtime: TeX Live full (the packages kpsewhich answers with) -----------
-FROM texlive/texlive:latest-full AS runtime
+FROM ${TEXLIVE_IMAGE} AS runtime
 
 # The dev server serves this directory as the site root, read-only: it never
 # writes to disk, so the container can run with --read-only.
@@ -143,14 +160,16 @@ COPY wasm-test/texlyre ./wasm-test/texlyre
 COPY --from=texlyre /wasm-test/texlyre/ ./wasm-test/texlyre/
 COPY --from=fmt-build /srv/wasm-test/fmt-cache ./wasm-test/fmt-cache
 COPY wasm-test/texlive-extras ./wasm-test/texlive-extras
+# The submissions the page's sample picker offers (web/shared/lib/samples.ts).
+# They live in the repository on purpose: a deployment whose "try it first"
+# path 404s is worse than no sample at all, so the build checks them here
+# instead of letting the page find out.
 COPY wasm-test/sample-nested ./wasm-test/sample-nested
 COPY wasm-test/sample-xelatex ./wasm-test/sample-xelatex
-# Real arXiv sources for the page's sample picker (gitignored — wildcard so a
-# fresh checkout without fixtures/ still builds; COPY skips a no-match glob).
-# Wildcard sources contribute their *contents*, so the destination is the
-# fixtures dir itself.
-COPY wasm-test/fixtures* ./wasm-test/fixtures/
 COPY tests/appendix ./tests/appendix
+RUN for sample in wasm-test/sample-nested wasm-test/sample-xelatex tests/appendix; do \
+      [ -n "$(ls -A "$sample" 2>/dev/null)" ] || { echo "sample $sample is missing"; exit 1; }; \
+    done
 
 ENV SERVE_HOST=0.0.0.0
 EXPOSE 8000
