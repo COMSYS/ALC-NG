@@ -66,12 +66,19 @@ button, input, select { font: inherit; color: inherit; }
   background: linear-gradient(180deg, #f0f4ff 0%, var(--color-bg) 100%);
   border-bottom: 1px solid var(--color-border);
 }
-.hero-logo { max-width: var(--max-width-wide); margin: 0 auto 8px; text-align: right; }
-.hero-logo img { height: 40px; }
+/* the brand lockup: ALC-NG's own mark left, the group's logo right */
+.hero-brands {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  max-width: var(--max-width-wide); margin: 0 auto 24px;
+}
+.hero-brands img { display: block; }
+.hero-mark img { height: 46px; }
+.hero-affil img { height: 34px; }
+.hero-brands a:hover { opacity: 0.85; }
 .hero-badge {
   display: inline-block; margin-bottom: 20px; padding: 6px 18px; border-radius: 100px;
   background: var(--color-accent-light); color: var(--color-accent-dark);
-  font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  font-size: 13px; font-weight: 600;
 }
 .hero h1 {
   max-width: 820px; margin: 0 auto 10px;
@@ -136,7 +143,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .section-label {
   display: flex; align-items: center; gap: 8px;
-  font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-accent);
+  font-size: 12px; font-weight: 700; color: var(--color-accent);
 }
 .section-label .count { margin-left: auto; color: var(--color-faint); font-weight: 500; letter-spacing: 0; text-transform: none; }
 .sectionToggle {
@@ -167,6 +174,13 @@ h3 { font-family: var(--font-serif); font-size: 19px; font-weight: 600; line-hei
 .input:hover:not(:disabled), .select:hover:not(:disabled) { border-color: #cfcfcf; }
 .input:focus, .select:focus-visible { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-light); }
 .input:disabled, .select:disabled { background: var(--color-bg); color: var(--color-faint); cursor: not-allowed; }
+/* the arXiv identifier and its fetch button, on one line */
+.arxivRow { display: flex; gap: 8px; }
+.arxivRow .input { min-width: 0; }
+.arxivRow .button { flex: none; height: 38px; padding: 0 16px; }
+.arxivRow .button:hover:not(:disabled) { transform: none; }
+.arxivRow .spinner { width: 12px; height: 12px; }
+
 .colorField { display: flex; align-items: center; gap: 10px; }
 .colorField input[type="color"] {
   flex: none; width: 38px; height: 38px; padding: 3px;
@@ -221,7 +235,7 @@ fieldset > legend { padding: 0; margin-bottom: 8px; font-size: 14px; font-weight
 .options { border-top: 1px solid var(--color-border); padding-top: 14px; }
 .options > summary {
   display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none;
-  font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-secondary);
+  font-size: 12px; font-weight: 700; color: var(--color-text-secondary);
 }
 .options > summary::-webkit-details-marker { display: none; }
 .options > summary svg { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform 0.15s; }
@@ -239,7 +253,7 @@ fieldset > legend { padding: 0; margin-bottom: 8px; font-size: 14px; font-weight
 .callout-success { background: var(--color-success-soft); border: 1px solid var(--color-success-border); }
 .callout-warning { background: var(--color-warn-soft); border: 1px solid #fcd34d; }
 .callout-error { background: var(--color-fail-soft); border: 1px solid var(--color-fail-border); }
-.callout strong { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.callout strong { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 700; }
 .callout-info strong { color: var(--color-accent-dark); }
 .callout-success strong { color: #065f46; }
 .callout-warning strong { color: #92400e; }
@@ -336,7 +350,7 @@ fieldset > legend { padding: 0; margin-bottom: 8px; font-size: 14px; font-weight
 /* run progress */
 .runHead { display: flex; align-items: baseline; gap: 12px; }
 .runHead .elapsed { margin-left: auto; font: 700 24px/1 var(--font-serif); color: var(--color-accent); font-variant-numeric: tabular-nums; }
-.runHead .elapsed small { margin-left: 4px; font: 600 11px var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-text-secondary); }
+.runHead .elapsed small { margin-left: 4px; font: 600 11px var(--font-sans); color: var(--color-text-secondary); }
 .runBar { height: 4px; margin-top: 14px; border-radius: 99px; background: var(--color-row); overflow: hidden; }
 .runBar i { display: block; height: 100%; border-radius: 99px; background: var(--color-accent); transition: width 0.4s ease; }
 .steps { margin: 18px 0 0; padding: 0; list-style: none; }
@@ -511,7 +525,7 @@ mark.wins { background: var(--color-success-border); color: #14532d; border-radi
    ════════════════════════════════════════ */
 .log { border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-code-bg); }
 .logHead { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 18px; }
-.logHead .sectionToggle { flex: none; color: var(--color-text-secondary); font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.logHead .sectionToggle { flex: none; color: var(--color-text-secondary); font-size: 12px; font-weight: 700; }
 .logLast { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-secondary); font: 12.5px var(--font-mono); }
 .logHead .linkButton { flex: none; margin-left: auto; font-size: 13px; font-weight: 600; }
 .logPane {
@@ -540,7 +554,9 @@ footer {
 
 @media (max-width: 640px) {
   .hero { padding: 20px 16px 32px; }
-  .hero-logo img { height: 30px; }
+  .hero-brands { margin-bottom: 18px; }
+  .hero-mark img { height: 32px; }
+  .hero-affil img { height: 24px; }
   .appMain { padding: 24px 12px 36px; }
   .btn-row { gap: 8px; }
   .btn { padding: 8px 14px; font-size: 13px; }

@@ -35,7 +35,7 @@ export function RunSteps() {
 
   // a stopped clock shows the end of the last settled step
   const end = ticking ? now : Math.max(run.t0, ...rows.filter((r) => r.ms !== null).map((r) => r.t0 + (r.ms ?? 0)))
-  const state = run.failure !== null ? 'Run failed' : resolved < rows.length ? 'Running' : 'Finished'
+  const state = run.cancelled ? 'Run cancelled' : run.failure !== null ? 'Run failed' : resolved < rows.length ? 'Running' : 'Finished'
 
   return (
     <section className="run" aria-live="polite">
@@ -56,9 +56,9 @@ export function RunSteps() {
         ))}
       </ol>
       {run.failure !== null && (
-        <p className="callout callout-error">
+        <p className={`callout ${run.cancelled ? 'callout-info' : 'callout-error'}`}>
           {run.failure}
-          {!/log/i.test(run.failure) && ' See the log below for details.'}
+          {!run.cancelled && !/log/i.test(run.failure) && ' See the log below for details.'}
         </p>
       )}
     </section>

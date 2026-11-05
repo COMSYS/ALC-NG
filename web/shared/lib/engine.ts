@@ -238,6 +238,16 @@ export async function loadEngine(engine: EngineName = 'pdftex', backend: Backend
   }
 }
 
+// Stops the engine worker on the spot. The call in flight rejects, so the
+// pipeline unwinds through its own error path, and the next run spawns a
+// fresh worker (which loads the alc_ng module again). This is what the
+// page's Cancel button does: a wasm compile cannot be interrupted from the
+// outside, only thrown away with the worker running it.
+export function stopEngine() {
+  for (const hook of resetHooks) hook()
+  dropEngine()
+}
+
 // Terminates the engine worker; a call still waiting for it is rejected, so
 // nothing hangs on a worker that can no longer answer.
 function dropEngine() {

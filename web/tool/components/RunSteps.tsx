@@ -35,7 +35,13 @@ export function RunSteps() {
 
   // a stopped clock shows the end of the last settled step
   const end = ticking ? now : Math.max(run.t0, ...rows.filter((r) => r.ms !== null).map((r) => r.t0 + (r.ms ?? 0)))
-  const heading = run.failure !== null ? `Run on ${run.label} failed` : resolved < rows.length ? `Running on ${run.label}` : `Finished ${run.label}`
+  const heading = run.cancelled
+    ? `Run on ${run.label} cancelled`
+    : run.failure !== null
+      ? `Run on ${run.label} failed`
+      : resolved < rows.length
+        ? `Running on ${run.label}`
+        : `Finished ${run.label}`
 
   return (
     <section className="run" aria-live="polite">
@@ -52,9 +58,9 @@ export function RunSteps() {
         ))}
       </ol>
       {run.failure !== null && (
-        <p className="runError">
+        <p className={run.cancelled ? 'runNote' : 'runError'}>
           {run.failure}
-          {!/log/i.test(run.failure) && ' See the log below for details.'}
+          {!run.cancelled && !/log/i.test(run.failure) && ' See the log below for details.'}
         </p>
       )}
     </section>

@@ -18,7 +18,7 @@ function Composition({ stats }: { stats: Stats }) {
   ]
   return (
     <section>
-      <h3>Where the Original Bytes Went</h3>
+      <h3>Overview of (cleaned) contents</h3>
       <div className="composition" role="img" aria-label={parts.map(([, b, l]) => `${fmtSize(b)} ${l}`).join(', ')}>
         {parts
           .filter(([, bytes]) => bytes > 0)
@@ -55,7 +55,7 @@ export function StatsTab() {
     <div className="stats">
       <div>
         <div className="section-label">Statistics</div>
-        <h2>What the Cleaner Removed</h2>
+        <h2>Summary of removed contents</h2>
       </div>
       <div className="stats-row">
         <div className="stat-card">

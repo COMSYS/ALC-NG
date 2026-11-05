@@ -29,3 +29,6 @@
 /wasm-test/texlyre/*
 !/wasm-test/texlyre/README.md
 !/wasm-test/texlyre/alc-texlyre-worker.js
+
+# Working design review; not published.
+/web/DESIGN-REVIEW.md

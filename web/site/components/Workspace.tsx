@@ -69,8 +69,9 @@ function ReviewPane() {
       <div className="section-label">Get started</div>
       <h2>Clean a Submission Before You Upload It</h2>
       <p className="secondary">
-        Choose the folder of your LaTeX sources, or load a sample, and run ALC-NG. It compiles the sources here in your browser, removes what
-        the build does not need, and lists every changed file with a line diff, the compiled PDF and a pixel comparison of the result.
+        Choose the folder of your LaTeX sources, drop the .zip or .tar.gz they came in, fetch a paper from arXiv by its identifier, or load a
+        sample — then run ALC-NG. It compiles the sources here in your browser, removes what the build does not need, and lists every changed
+        file with a line diff, the compiled PDF and a pixel comparison of the result.
       </p>
       <div className="accent-cards">
         <div className="accent-card">

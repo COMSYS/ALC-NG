@@ -24,18 +24,19 @@
 //! Map answers (format 11) additionally get the tracked fallback lines from
 //! wasm-test/texlive-extras/<mapname> appended — the engine honours the last
 //! map entry, so those override bitmap-only fonts the cached map cannot serve.
+
 //!
 //! Usage (from the repository root):
 //!
 //!     cargo run --release --manifest-path wasm-test/server/Cargo.toml -- [port]
 //!
 //! Then open:  http://localhost:<port>/
-//! (The app's build, web/dist, is served at the site root: an overview at
-//! /, the app in its two designs at /tool/ and /site/, and the hashed
-//! bundles under /assets/. Build it with `pnpm --dir web
-//! build`; during development `pnpm --dir web dev` serves the app itself and
-//! forwards everything else to this server. The former /wasm-test/ location
-//! forwards to /, and all repository files stay served under their paths.)
+//! (The app's build, web/dist, is served at the site root: the app itself
+//! at /, its alternative design at /tool/, and the hashed bundles under
+//! /assets/. Build it with `pnpm --dir web build`; during development
+//! `pnpm --dir web dev` serves the app itself and forwards everything else
+//! to this server. The former /site/ and /wasm-test/ locations forward to
+//! /, and all repository files stay served under their paths.)
 //!
 //! SERVE_ROOT=<dir> serves a different repository root, SERVE_WEB=<dir> a
 //! different app build (default: <root>/web/dist), SERVE_HOST=0.0.0.0
@@ -158,7 +159,7 @@ fn kpsewhich_available() -> bool {
 struct App {
     /// Repository root: everything below it is served statically.
     root: PathBuf,
-    /// The web app's build: index.html for the site root, assets/ for /assets/.
+    /// The web app's build: site/index.html for the site root, assets/ for /assets/.
     web: PathBuf,
     /// kpsewhich hits per lookup, so repeated requests skip the process
     /// spawn. Only paths are kept; the bytes are read from TeX Live each time.
@@ -298,16 +299,26 @@ fn build_router(app: Arc<App>) -> Router {
         // before it considers building the format itself, so a fresh
         // browser skips the multi-minute INITEX run.
         .route("/fmt/{key}/{name}", get(get_fmt));
-    // The app lives at the site root: an overview there, each design under
-    // its own folder. The former /wasm-test/ location forwards to the root;
-    // the files under wasm-test/ themselves keep being served by the static
-    // fallback.
+    // The app lives at the site root: the default design answers / itself,
+    // every other design sits under its own folder. The default design's own
+    // folder and the former /wasm-test/ location forward to the root, so the
+    // page has one address; the files under wasm-test/ themselves keep being
+    // served by the static fallback.
     let mut pages = Router::new()
         .route("/tree/{*dir}", get(tree))
-        .route("/", get(|State(app)| page(app, "index.html")))
+        .route(
+            "/",
+            get(|State(app)| page(app, format!("{DEFAULT_DESIGN}/index.html"))),
+        )
         .route("/wasm-test", get(moved_to_root))
         .route("/wasm-test/", get(moved_to_root));
     for design in DESIGNS {
+        if design == DEFAULT_DESIGN {
+            pages = pages
+                .route(&format!("/{design}"), get(moved_to_root))
+                .route(&format!("/{design}/"), get(moved_to_root));
+            continue;
+        }
         pages = pages
             .route(
                 &format!("/{design}/"),
@@ -331,7 +342,7 @@ fn build_router(app: Arc<App>) -> Router {
 async fn main() -> Result<()> {
     let (port, host, app) = configure()?;
     println!("Serving {} on http://localhost:{port}", app.root.display());
-    if !is_file(&app.web.join("index.html")).await {
+    if !is_file(&app.web.join(format!("{DEFAULT_DESIGN}/index.html"))).await {
         println!(
             "no app build at {} - run `pnpm --dir web build`, or `pnpm --dir web dev` for development",
             app.web.display()
@@ -351,8 +362,12 @@ async fn main() -> Result<()> {
 }
 
 /// The app in its two designs, each a page of the build in its own folder
-/// (web/tool/, web/site/); the overview at the root links to both.
+/// (web/tool/, web/site/).
 const DESIGNS: [&str; 2] = ["tool", "site"];
+
+/// The design served at the root: the project page, which is the app as
+/// visitors meet it. The other design stays reachable under its own folder.
+const DEFAULT_DESIGN: &str = "site";
 
 /// A page of the app build (`rel` below it): read at request time, so a new
 /// build shows up after a plain reload (it answers no-cache; the bundles it
@@ -379,7 +394,8 @@ async fn page(app: Arc<App>, rel: impl AsRef<Path>) -> Response {
     }
 }
 
-/// The page moved from /wasm-test/ to the root; keep old links working.
+/// Forwards the old /wasm-test/ location and the default design's own
+/// folder to the root, where that design is served; keeps old links working.
 /// Temporary, so a relocated page never sticks in a browser's cache.
 async fn moved_to_root() -> Response {
     Redirect::temporary("/").into_response()
@@ -956,9 +972,9 @@ async fn tree(State(app): State<Arc<App>>, UrlPath(dir): UrlPath<String>) -> Res
 /// GET /tree/<dir> -> {"dir": "<dir>", "files": ["a.tex", "figs/a.png", ...]}
 ///
 /// Paths are relative to <dir> and sorted, so the page can hand a whole
-/// submission folder to the same fetch loop it uses for the small samples;
-/// a fixture dropped under wasm-test/fixtures/ then needs one line in
-/// SAMPLES. Hidden files and symlinks are skipped. Local dev server, but the
+/// submission folder to the same fetch loop it uses for the small samples:
+/// a sample folder in the repository needs one line in SAMPLES and nothing
+/// else. Hidden files and symlinks are skipped. Local dev server, but the
 /// listing stays inside the repository and never follows out of it.
 fn list_tree(app: &App, dir: &str) -> Result<String, (StatusCode, &'static str)> {
     let rel = dir.trim_matches('/');
@@ -1164,7 +1180,6 @@ mod tests {
         fs::write(outside.0.join("secret.txt"), "secret").unwrap();
         fs::create_dir_all(root.0.join("wasm-test/fmt-cache")).unwrap();
         fs::create_dir_all(root.0.join("web/dist/assets")).unwrap();
-        fs::write(root.0.join("web/dist/index.html"), "<html></html>").unwrap();
         for design in DESIGNS {
             fs::create_dir_all(root.0.join(format!("web/dist/{design}"))).unwrap();
             fs::write(root.0.join(format!("web/dist/{design}/index.html")), design).unwrap();
@@ -1289,7 +1304,8 @@ mod tests {
         build_router(app.clone()).oneshot(request).await.unwrap()
     }
 
-    /// The app build: the overview at the root, a page per design below it,
+    /// The app build: the default design at the root, every other design
+    /// below it, the default design's own folder forwarding to the root,
     /// hashed bundles under /assets/ with a permanent cache, and nothing
     /// hidden or outside the build.
     #[tokio::test]
@@ -1300,8 +1316,19 @@ mod tests {
         let index = get_response(&app, "/").await;
         assert_eq!(index.status(), StatusCode::OK);
         assert_eq!(index.headers()[header::CACHE_CONTROL], NO_CACHE);
+        let body = axum::body::to_bytes(index.into_body(), 1024).await.unwrap();
+        assert_eq!(body, DEFAULT_DESIGN.as_bytes());
 
         for design in DESIGNS {
+            if design == DEFAULT_DESIGN {
+                // the design served at the root has one address
+                for uri in [format!("/{design}"), format!("/{design}/")] {
+                    let moved = get_response(&app, &uri).await;
+                    assert_eq!(moved.status(), StatusCode::TEMPORARY_REDIRECT, "GET {uri}");
+                    assert_eq!(moved.headers()[header::LOCATION], "/");
+                }
+                continue;
+            }
             let page = get_response(&app, &format!("/{design}/")).await;
             assert_eq!(page.status(), StatusCode::OK);
             assert_eq!(page.headers()[header::CACHE_CONTROL], NO_CACHE);

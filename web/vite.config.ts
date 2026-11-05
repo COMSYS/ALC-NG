@@ -9,9 +9,12 @@ import { defineConfig } from 'vitest/config'
 // server (wasm-test/server): the TeX Live proxy, the prebuilt format dumps,
 // the /tree/ listings, the patched SwiftLaTeX workers and pdfium under
 // /wasm-test/, the alc_ng.wasm build under /target/, and the samples under
-// /wasm-test/fixtures/ and /tests/. `pnpm dev` forwards those paths to it;
+// /wasm-test/ and /tests/. `pnpm dev` forwards those paths to it;
 // ALC_SERVER points elsewhere than the server's default port.
 const server = process.env.ALC_SERVER ?? 'http://127.0.0.1:8000'
+
+// The design served at the site root, as `DEFAULT_DESIGN` in the server.
+const DEFAULT_DESIGN = 'site'
 const proxied = ['/texlive', '/fmt', '/tree', '/wasm-test', '/target', '/tests']
 
 // pdf.js loads some data on demand from plain URLs: CMaps for CJK text,
@@ -56,23 +59,45 @@ function pdfjsData(): Plugin {
   }
 }
 
+// The site design is the app: in production the server answers / with
+// web/dist/site/index.html and forwards /site/ there (see wasm-test/server),
+// and the dev server does the same, so both have one address for the page.
+function siteAtRoot(): Plugin {
+  return {
+    name: 'alc-ng:site-at-root',
+    configureServer(dev) {
+      dev.middlewares.use((req, res, next) => {
+        const url = req.url ?? '/'
+        const path = url.split('?')[0]
+        if (path === '/site' || path === '/site/') {
+          res.statusCode = 307
+          res.setHeader('Location', `/${url.slice(path.length)}`)
+          res.end()
+          return
+        }
+        if (path === '/') req.url = `/${DEFAULT_DESIGN}/index.html${url.slice(1)}`
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), pdfjsData()],
+  plugins: [react(), pdfjsData(), siteAtRoot()],
   server: {
     proxy: Object.fromEntries(proxied.map((path) => [path, { target: server }])),
   },
   build: {
-    // The server serves the build from web/dist: the overview index.html
-    // at the site root, one page per design under /tool/ and /site/, and
-    // the hashed bundles of both under /assets/ (see wasm-test/server).
-    // The code under shared/ ends up in chunks both pages load.
+    // The server serves the build from web/dist: the site design at the
+    // root, the tool design under /tool/, and the hashed bundles of both
+    // under /assets/ (see wasm-test/server). The code under shared/ ends up
+    // in chunks both pages load.
     outDir: 'dist',
     assetsDir: 'assets',
     rollupOptions: {
       input: {
-        index: 'index.html',
+        site: `${DEFAULT_DESIGN}/index.html`,
         tool: 'tool/index.html',
-        site: 'site/index.html',
       },
     },
   },

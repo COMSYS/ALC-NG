@@ -1,9 +1,9 @@
 import { BACKENDS } from '../../shared/lib/engine'
-import { loadSampleFolder } from '../../shared/lib/folder'
-import { runAlcNg } from '../../shared/lib/pipeline'
+import { loadArxivSubmission, loadSampleFolder } from '../../shared/lib/folder'
+import { cancelRun, runAlcNg } from '../../shared/lib/pipeline'
 import { SAMPLES } from '../../shared/lib/samples'
 import { useStore } from '../../shared/lib/store'
-import { IDLE_STATUS, setFlag, setSubmissionOpen, uiStore, type Flags, type Status } from '../../shared/state/ui'
+import { IDLE_STATUS, setArxiv, setFlag, setSubmissionOpen, uiBusy, uiStore, type Flags, type Status } from '../../shared/state/ui'
 import { ChevronIcon, FolderIcon } from './icons'
 import { FolderDrop } from '../../shared/components/FolderDrop'
 import { Select } from '../../shared/components/Select'
@@ -118,9 +118,48 @@ function Options({ flags }: { flags: Flags }) {
   )
 }
 
+// Fetching a submission from arXiv by its identifier. The download is the
+// browser's own request to export.arxiv.org (which allows cross-origin
+// reads), so the sources go straight into this tab.
+function ArxivField({ id, loading, disabled }: { id: string; loading: boolean; disabled: boolean }) {
+  const fetchIt = () => {
+    if (id.trim() !== '') void loadArxivSubmission(id)
+  }
+  return (
+    <div className="field">
+      <label htmlFor="arxiv-id">Or fetch a paper from arXiv</label>
+      <div className="arxivRow">
+        <input
+          id="arxiv-id"
+          className="input"
+          type="text"
+          inputMode="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="2303.12712, or an arxiv.org link"
+          value={id}
+          disabled={disabled}
+          onChange={(ev) => setArxiv(ev.target.value)}
+          onKeyDown={(ev) => {
+            if (ev.key !== 'Enter') return
+            ev.preventDefault()
+            fetchIt()
+          }}
+        />
+        <button type="button" className="button" disabled={disabled || id.trim() === ''} onClick={fetchIt}>
+          {loading && <span className="spinner" aria-hidden="true" />}
+          {loading ? 'Fetching…' : 'Fetch'}
+        </button>
+      </div>
+      <p className="help">Downloaded by your browser from export.arxiv.org — the sources do not pass through this site.</p>
+    </div>
+  )
+}
+
 export function SubmissionPanel() {
   const ui = useStore(uiStore, (s) => s)
-  const canRun = !!ui.folder && ui.mainSel.length > 0 && !ui.running && !ui.sampleLoading
+  const busy = uiBusy(ui)
+  const canRun = !!ui.folder && ui.mainSel.length > 0 && !busy
   const open = ui.submissionOpen
 
   return (
@@ -134,7 +173,9 @@ export function SubmissionPanel() {
       </div>
       {/* hidden rather than unmounted, so the options keep their open state */}
       <div hidden={!open} className="sideSectionBody">
-        <FolderDrop icon={<FolderIcon />} folder={ui.folder} disabled={ui.running || ui.sampleLoading} running={ui.running} />
+        <FolderDrop icon={<FolderIcon />} folder={ui.folder} disabled={busy} running={ui.running} />
+
+        <ArxivField id={ui.arxiv} loading={ui.arxivLoading} disabled={busy} />
 
         <div className="field">
           <span className="fieldLabel">Or load a sample</span>
@@ -144,7 +185,7 @@ export function SubmissionPanel() {
             placeholder="Choose a sample"
             value={ui.sample}
             loading={ui.sampleLoading}
-            disabled={ui.running || ui.sampleLoading}
+            disabled={busy}
             options={SAMPLES.map((s, i) => ({ value: i, label: s.pick, hint: s.blurb }))}
             onChange={(i) => void loadSampleFolder(i)}
           />
@@ -186,6 +227,13 @@ export function SubmissionPanel() {
           {ui.running && <span className="spinner" aria-hidden="true" />}
           {ui.running ? 'Running…' : 'Run alc-ng'}
         </button>
+        {/* a wasm compile cannot be interrupted, so cancelling throws the
+            engine worker away; the next run starts a fresh one */}
+        {ui.running && (
+          <button type="button" className="button block" onClick={cancelRun}>
+            Cancel
+          </button>
+        )}
       </div>
     </section>
   )

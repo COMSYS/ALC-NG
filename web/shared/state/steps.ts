@@ -43,6 +43,8 @@ export interface RunState {
   current: StepKey | null
   rows: Record<StepKey, StepRow>
   failure: string | null
+  // a run the reader stopped: the sheet stays, but nothing went wrong
+  cancelled: boolean
 }
 
 const freshRows = () =>
@@ -58,6 +60,7 @@ export const runStore = createStore<RunState>({
   current: null,
   rows: freshRows(),
   failure: null,
+  cancelled: false,
 })
 
 let active = false
@@ -80,7 +83,16 @@ export const steps = {
     this.reset()
     active = true
     generation += 1
-    runStore.set({ visible: true, leaving: false, label, t0: performance.now(), current: null, rows: freshRows(), failure: null })
+    runStore.set({
+      visible: true,
+      leaving: false,
+      label,
+      t0: performance.now(),
+      current: null,
+      rows: freshRows(),
+      failure: null,
+      cancelled: false,
+    })
     // The sheet takes the workspace's main column for the run's duration; the
     // previous run's review steps aside. The review tab is where the sheet
     // lives, so a run always brings it into view.
@@ -178,9 +190,19 @@ export const steps = {
     runStore.set({ current: null, failure: text })
   },
 
+  // a run the reader stopped: the step it got to is left unfinished rather
+  // than marked failed, and the sheet says so
+  cancel(text: string) {
+    if (!active) return
+    active = false
+    const { current, rows } = runStore.get()
+    if (current) patchRow(current, { state: 'skipped', ms: performance.now() - rows[current].t0 })
+    runStore.set({ current: null, failure: text, cancelled: true })
+  },
+
   reset() {
     active = false
     generation += 1
-    runStore.set({ visible: false, leaving: false, current: null, rows: freshRows(), failure: null })
+    runStore.set({ visible: false, leaving: false, current: null, rows: freshRows(), failure: null, cancelled: false })
   },
 }

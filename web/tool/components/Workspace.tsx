@@ -68,8 +68,8 @@ function ReviewPane() {
     <div className="empty">
       <h2>No results yet</h2>
       <p>
-        Choose the folder of a LaTeX submission, or load a sample, then run alc-ng. It compiles the sources, removes what the build does not
-        use, and lists every changed file here with a line diff.
+        Choose the folder of a LaTeX submission, drop its .zip or .tar.gz, fetch one from arXiv by its identifier, or load a sample, then
+        run alc-ng. It compiles the sources, removes what the build does not use, and lists every changed file here with a line diff.
       </p>
     </div>
   )

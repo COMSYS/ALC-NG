@@ -119,6 +119,11 @@ button, input, select { font: inherit; color: inherit; }
   border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg);
   font-size: 13px;
 }
+/* the arXiv identifier and its fetch button, on one line */
+.arxivRow { display: flex; gap: 0.4rem; }
+.arxivRow .input { min-width: 0; }
+.arxivRow .button { flex: none; height: 30px; }
+.arxivRow .spinner { width: 11px; height: 11px; }
 .input:hover:not(:disabled), .select:hover:not(:disabled) { border-color: #b8bfc7; }
 .input:focus, .select:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .input:disabled, .select:disabled { background: var(--line-soft); color: var(--faint); cursor: not-allowed; }
@@ -284,6 +289,11 @@ fieldset > legend { padding: 0; margin-bottom: 0.3rem; font-weight: 500; font-si
 .runError {
   margin-top: 0.75rem; padding: 0.55rem 0.7rem; border-left: 3px solid var(--bad);
   background: var(--bad-soft); font-size: 13px; overflow-wrap: anywhere;
+}
+/* a cancelled run: the same block, without the alarm */
+.runNote {
+  margin-top: 0.75rem; padding: 0.55rem 0.7rem; border-left: 3px solid var(--line);
+  background: var(--line-soft); font-size: 13px; overflow-wrap: anywhere;
 }
 
 /* result of a finished run */

@@ -7,10 +7,17 @@ pipeline built for `wasm32-wasip1` inside the engine worker, and shows the
 result as a file-by-file review, the compiled PDF, a pixel comparison of the
 original and the cleaned PDF, and statistics.
 
-The app exists in two designs, side by side: `tool/` is a plain working tool
-(form on the left, result on the right, log underneath), `site/` takes the
-look of the project page arxiv.comsys.rwth-aachen.de. Both run the same code
-from `shared/`; `index.html` at the root links to the two.
+A submission comes in as a folder, as the archive it is held in (`.zip`,
+`.tar`, `.tar.gz`, or a single gzipped file — `shared/lib/archive.ts`, no
+dependency, `DecompressionStream` does the work), as an arXiv identifier
+(`shared/lib/arxiv.ts` downloads the sources from export.arxiv.org, which
+allows the cross-origin read, so the bytes never pass through this server),
+or as one of the bundled samples.
+
+The app exists in two designs: `site/` is the default — the app in the look
+of the project page arxiv.comsys.rwth-aachen.de, served at the root — and
+`tool/` is a plain working tool (form on the left, result on the right, log
+underneath) kept under `/tool/`. Both run the same code from `shared/`.
 
 Everything besides the app bundle comes from the axum server in
 `wasm-test/server`: the TeX Live proxy (`/texlive/`), prebuilt format dumps
@@ -40,15 +47,24 @@ pnpm --dir web install
 pnpm --dir web dev
 ```
 
-The designs are at http://localhost:5173/tool/ and http://localhost:5173/site/.
+The app is at http://localhost:5173/ (`/site/` forwards there), the tool
+design at http://localhost:5173/tool/.
 
 `ALC_SERVER=http://host:port pnpm dev` points the dev server at a backend on
 another address. `VITE_ALC_NG_WASM=<url>` loads `alc_ng.wasm` from somewhere
-other than `/target/wasm32-wasip1/release/alc_ng.wasm`.
+other than `/target/wasm32-wasip1/release/alc_ng.wasm`. `VITE_SITE_URL`
+(`.env`, `https://alc.ng/`) is the address the build is deployed at: it
+fills the canonical link and the og:/twitter: tags of `site/index.html`,
+which need absolute URLs for a shared link to unfurl with its card.
 
 Query parameters for testing: `?sample=<index>` loads a bundled sample on
 start, `?preload=1` starts the engine worker right away, and `?wasitrace=1`
 traces the WASI calls of the alc-ng module.
+
+The samples the picker offers (`shared/lib/samples.ts`) are folders of this
+repository, so they work in every deployment; `Dockerfile.wasm` copies
+exactly those and fails the build if one is missing. No real paper is
+bundled — the arXiv field fetches any of them on demand.
 
 The PDF tab renders with pdf.js (`pdfjs-dist`), so it does not depend on the
 browser's own PDF viewer. Its worker is bundled; its CMaps, standard fonts and
@@ -62,10 +78,10 @@ pnpm --dir web build   # writes web/dist
 cargo run --release --manifest-path wasm-test/server/Cargo.toml
 ```
 
-The server serves the overview `web/dist/index.html` at `/`, the designs at
-`/tool/` and `/site/`, and the hashed bundles of both under `/assets/`
-(`SERVE_WEB` points it at another build). `Dockerfile.wasm` builds
-the app in its own stage and ships it with the server.
+The server serves `web/dist/site/index.html` at `/` (`/site/` forwards
+there), the tool design at `/tool/`, and the hashed bundles of both under
+`/assets/` (`SERVE_WEB` points it at another build). `Dockerfile.wasm`
+builds the app in its own stage and ships it with the server.
 
 ## Checks
 
@@ -87,6 +103,11 @@ pnpm --dir web test
 - `shared/components/` — the views both designs use unchanged: the diff, the
   pdf.js viewer, the folder drop zone and the sample picker (which take their
   icon from the design)
+- `public/assets/` — the files a build copies verbatim into `dist/assets/`:
+  the ALC-NG mark for the tab icon and the link-preview card. Everything
+  under `/assets/` is served immutably, so these names carry a version
+  (`-v1`) that a replacement has to bump
 - `shared/start.tsx` — mounts a design's app and reads the query parameters
-- `tool/`, `site/` — one design each: `index.html`, `main.tsx`, `App.tsx`,
+- `site/`, `tool/` — one design each: `index.html`, `main.tsx`, `App.tsx`,
   `index.css` and the components whose markup differs between the designs
+  (`site/` is the one served at the root)

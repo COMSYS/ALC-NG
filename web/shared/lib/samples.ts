@@ -1,20 +1,15 @@
-// Bundled samples: a comment-removal fixture and one real arXiv submission
-// (Bubeck et al.'s “Sparks of AGI”, under wasm-test/fixtures/ and kept out of
-// git, like any real paper content).
+// Bundled samples: small submissions kept in the repository, so the picker
+// works in every deployment (the Docker image copies exactly these — see
+// Dockerfile.wasm, which fails the build when one of them is missing).
 //
 // A sample names its folder (`dir`); it either lists its files (`files`,
 // fetched as <dir>/<file>) or lets the server list the folder with
-// GET /tree/<dir> — so a fresh submission only needs to be unpacked under
-// wasm-test/fixtures/ and named here. `pick`/`blurb` are what the sample
-// picker in the sidebar shows.
+// GET /tree/<dir>. `pick`/`blurb` are what the sample picker shows: say what
+// the sample demonstrates, not what it is called on disk.
 //
-// fixtures/bubeck is arXiv-2303.12712v5 unpacked, with one repair: its
-// contents/3_code.tex includes figures/DV3_plot_{1,2,3}.png, which on disk are
-// dv3_plot_{1,2,3}.png. macOS resolves that, the engine's case-sensitive FS
-// (like arXiv's Linux) does not, so the three references were lower-cased.
-// The v5 minted cache (minted-cache/, frozen via frozencache=true) covers all
-// 29 minted chunks of this version, so the engine compiles it without Python
-// or shell-escape.
+// Real papers are deliberately not bundled. Someone else's submission shown
+// as an example of hidden content is a pillory, and the arXiv field fetches
+// any paper on demand anyway.
 export interface Sample {
   label: string
   pick: string
@@ -24,12 +19,23 @@ export interface Sample {
 }
 
 export const SAMPLES: Sample[] = [
-  { label: 'bubeck', pick: 'bubeck', blurb: 'Sparks of AGI, 118 files (arXiv 2303.12712v5)', dir: '/wasm-test/fixtures/bubeck' },
   {
-    label: 'tests/appendix',
-    pick: 'appendix',
-    blurb: 'comment-removal cases, paper.tex + example.bib',
+    label: 'comments',
+    pick: 'Comments and hidden text',
+    blurb: '2 files, pdfLaTeX — comments, dropped \\if branches, text after \\end{document}',
     dir: '/tests/appendix',
     files: ['paper.tex', 'example.bib'],
+  },
+  {
+    label: 'nested',
+    pick: 'Unused files in subfolders',
+    blurb: '11 files, pdfLaTeX — editor backups, logs and an include nothing uses',
+    dir: '/wasm-test/sample-nested',
+  },
+  {
+    label: 'xelatex',
+    pick: 'Figures and Unicode (XeLaTeX)',
+    blurb: '5 files, XeLaTeX — an unused figure and an unused input; slower first run',
+    dir: '/wasm-test/sample-xelatex',
   },
 ]

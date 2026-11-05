@@ -1,6 +1,8 @@
 import { logErr, logInfo, logv } from '../state/log'
 import { IDLE_STATUS, setFolderStatus, setSubmissionOpen, uiStore } from '../state/ui'
-import { fmtKB, plural } from './format'
+import { looksLikeArchive, unpackArchive, type Unpacked } from './archive'
+import { fetchArxivSources, parseArxivId } from './arxiv'
+import { dlNote, fmtKB, fmtSize, plural } from './format'
 import { baseOf, dirOf, encPath, stripTexComments } from './paths'
 import { resetReview } from './review'
 import { SAMPLES } from './samples'
@@ -55,11 +57,65 @@ export async function setFolder(fileList: Iterable<File>, label: string) {
   setFolderStatus(`${files.size} ${plural(files.size, 'file')} loaded.`, 'ok')
 }
 
-// The files of an <input webkitdirectory> selection.
+// The files of an <input webkitdirectory> selection, or a single archive
+// from the file picker next to it.
 export function setFolderFromInput(list: FileList) {
   const files = [...list]
   if (files.length === 0) return
+  if (files.length === 1 && !files[0].webkitRelativePath && looksLikeArchive(files[0].name)) {
+    void setFolderFromArchive(files[0])
+    return
+  }
   void setFolder(files, files[0].webkitRelativePath.split('/')[0] || 'folder')
+}
+
+// An archive is how a submission is usually held: Overleaf hands out a .zip,
+// arXiv a .tar.gz. Unpacked here, it becomes an ordinary submission.
+export async function setFolderFromArchive(file: File) {
+  uiStore.set({ unpacking: true })
+  setFolderStatus(`Unpacking ${file.name}…`)
+  logInfo(`unpacking ${file.name} (${fmtSize(file.size)})`)
+  try {
+    await setFolderFromUnpacked(await unpackArchive(file.name, await file.arrayBuffer()))
+  } catch (err) {
+    logErr(`could not unpack ${file.name}: ${(err as Error).message}`)
+    setFolderStatus(`${file.name} could not be unpacked: ${(err as Error).message}`, 'err')
+  }
+  uiStore.set({ unpacking: false })
+}
+
+// Downloads a submission from arXiv by its identifier and loads it. The
+// bytes come from export.arxiv.org to this tab directly (it allows
+// cross-origin reads); nothing passes through our server.
+export async function loadArxivSubmission(input: string) {
+  const id = parseArxivId(input)
+  if (!id) {
+    setFolderStatus(`"${input.trim()}" is not an arXiv identifier. Try 2303.12712, or paste the abs URL.`, 'err')
+    return
+  }
+  uiStore.set({ arxivLoading: true, arxiv: id })
+  setFolderStatus(`Downloading the sources of arXiv:${id}…`)
+  logInfo(`fetching arXiv:${id} from export.arxiv.org`)
+  try {
+    const unpacked = await fetchArxivSources(id, (loaded, total) =>
+      setFolderStatus(`Downloading the sources of arXiv:${id}, ${dlNote(loaded, total)}…`),
+    )
+    await setFolderFromUnpacked(unpacked)
+  } catch (err) {
+    logErr(`arXiv fetch failed: ${(err as Error).message}`)
+    setFolderStatus(`${(err as Error).message.charAt(0).toUpperCase()}${(err as Error).message.slice(1)}`, 'err')
+  }
+  uiStore.set({ arxivLoading: false })
+}
+
+// The files of an unpacked archive, as a submission. setFolder() strips the
+// leading folder name of every path, so the label goes in front again.
+async function setFolderFromUnpacked({ files, label }: Unpacked) {
+  logv(`unpacked ${files.length} file(s) as "${label}"`)
+  await setFolder(
+    files.map((f) => withRelativePath(new File([f.bytes as BlobPart], baseOf(f.rel)), `${label}/${f.rel}`)),
+    label,
+  )
 }
 
 // The files of a drop: a single folder is the submission itself; anything
@@ -70,6 +126,12 @@ export async function setFolderFromDrop(dt: DataTransfer) {
     .map((item) => item.webkitGetAsEntry?.())
     .filter((entry): entry is FileSystemEntry => !!entry)
   if (entries.length === 0) return
+  // one dropped archive is the submission, packed
+  if (entries.length === 1 && entries[0].isFile && looksLikeArchive(entries[0].name)) {
+    const file = await new Promise<File>((resolve, reject) => (entries[0] as FileSystemFileEntry).file(resolve, reject))
+    await setFolderFromArchive(file)
+    return
+  }
   const single = entries.length === 1 && entries[0].isDirectory
   const label = single ? entries[0].name : 'dropped files'
   const files: File[] = []
@@ -97,7 +159,7 @@ async function collectEntry(entry: FileSystemEntry, rel: string, out: File[], ro
 // Drops the current selection, leaving the flags as they are.
 export function clearFolder() {
   folder = null
-  uiStore.set({ folder: null, mainFiles: [], mainSel: [], status: IDLE_STATUS, sample: null })
+  uiStore.set({ folder: null, mainFiles: [], mainSel: [], status: IDLE_STATUS, sample: null, arxiv: '' })
   setSubmissionOpen(true)
   resetReview()
   logInfo('folder selection cleared')

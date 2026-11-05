@@ -12,6 +12,7 @@ import {
   engineSpecFor,
   loadEngine,
   onEngineReset,
+  stopEngine,
   texCall,
   texReady,
   type BackendName,
@@ -117,6 +118,22 @@ async function ensureWorkerAlcModule() {
   steps.detail('cleaner', 'Cleaner ready')
 }
 
+// Set by cancelRun() for the duration of the unwind, so the error the
+// stopped worker raises is reported as a cancellation and not as a failure.
+let cancelling = false
+
+/**
+ * Stops the run in flight. A wasm compile cannot be interrupted from the
+ * outside, so the engine worker running it is terminated: its pending call
+ * rejects and runAlcNg() unwinds through its catch.
+ */
+export function cancelRun() {
+  if (!uiStore.get().running || cancelling) return
+  cancelling = true
+  logInfo('run cancelled')
+  stopEngine()
+}
+
 export async function runAlcNg() {
   const folder = currentFolder()
   if (!folder || uiStore.get().running) return
@@ -193,13 +210,20 @@ export async function runAlcNg() {
   } catch (err) {
     const engineErr = err as EngineError
     const detail = engineErr.engineData?.error ?? engineErr.message ?? String(err)
-    logErr(`alc-ng run failed: ${detail}`)
-    setFolderStatus(`The run failed: ${detail}`, 'err')
-    breadcrumb('RUNERR', detail)
-    // A wasm trap leaves the loaded module unusable; the shim says so.
-    if (engineErr.engineData?.reloadRequired) alcModule.loaded = false
-    steps.fail(detail)
+    if (cancelling) {
+      logInfo('run stopped before it finished')
+      setFolderStatus('The run was cancelled. Nothing was written.')
+      steps.cancel('The run was cancelled.')
+    } else {
+      logErr(`alc-ng run failed: ${detail}`)
+      setFolderStatus(`The run failed: ${detail}`, 'err')
+      breadcrumb('RUNERR', detail)
+      // A wasm trap leaves the loaded module unusable; the shim says so.
+      if (engineErr.engineData?.reloadRequired) alcModule.loaded = false
+      steps.fail(detail)
+    }
     setSubmissionOpen(true)  // the status alert lives in that panel
   }
+  cancelling = false
   uiStore.set({ running: false })
 }

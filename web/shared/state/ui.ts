@@ -38,6 +38,11 @@ export interface UiState {
   running: boolean
   sample: number | null
   sampleLoading: boolean
+  // what the arXiv field holds, and whether its fetch is in flight
+  arxiv: string
+  arxivLoading: boolean
+  // an archive (.zip, .tar.gz) is being read into a submission
+  unpacking: boolean
   mainFiles: MainFileOption[]
   mainSel: string[]
   flags: Flags
@@ -48,7 +53,14 @@ export interface UiState {
   pdf: { bytes: Uint8Array; url: string } | null
 }
 
-export const IDLE_STATUS: Status = { text: 'Pick a folder to clean, or load a bundled sample.', tone: 'info' }
+export const IDLE_STATUS: Status = {
+  text: 'Choose a folder or an archive, fetch a paper from arXiv, or load a sample.',
+  tone: 'info',
+}
+
+// One submission at a time: while any source is being read — a sample, an
+// archive, an arXiv download — or a run is going, the controls are off.
+export const uiBusy = (s: UiState) => s.running || s.sampleLoading || s.arxivLoading || s.unpacking
 
 export const uiStore = createStore<UiState>({
   folder: null,
@@ -56,6 +68,9 @@ export const uiStore = createStore<UiState>({
   running: false,
   sample: null,
   sampleLoading: false,
+  arxiv: '',
+  arxivLoading: false,
+  unpacking: false,
   mainFiles: [],
   mainSel: [],
   flags: {
@@ -90,6 +105,8 @@ export function setFolderStatus(msg: string | null, cls?: 'ok' | 'err') {
 }
 
 export const showTab = (tab: Tab) => uiStore.set({ tab })
+
+export const setArxiv = (arxiv: string) => uiStore.set({ arxiv })
 
 // A run needs the controls only before it starts: once compile and clean
 // have succeeded, the panel folds away by itself and the rail shows the

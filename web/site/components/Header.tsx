@@ -1,4 +1,5 @@
-import logo from '../assets/rwth_comsys.svg'
+import alcng from '../assets/alcng-logo.svg'
+import comsys from '../assets/rwth_comsys.svg'
 import { ChartIcon, GitHubIcon, PdfFileIcon } from './icons'
 
 // The header of the project page "Hidden Secrets in the arXiv", which this
@@ -6,9 +7,15 @@ import { ChartIcon, GitHubIcon, PdfFileIcon } from './icons'
 export function Header() {
   return (
     <header className="hero">
-      <div className="hero-logo">
-        <a href="https://www.comsys.rwth-aachen.de" target="_blank" rel="noopener">
-          <img src={logo} alt="COMSYS / RWTH Aachen University" />
+      {/* The tool's own mark first (logo.svg: the broom sweeping \alcng{}),
+          the group it comes from second — the same lockup as the repository,
+          so a visitor arriving from GitHub recognizes the page. */}
+      <div className="hero-brands">
+        <a className="hero-mark" href="https://github.com/COMSYS/ALC-NG" target="_blank" rel="noopener">
+          <img src={alcng} alt="ALC-NG" />
+        </a>
+        <a className="hero-affil" href="https://www.comsys.rwth-aachen.de" target="_blank" rel="noopener">
+          <img src={comsys} alt="COMSYS / RWTH Aachen University" />
         </a>
       </div>
       <div className="hero-badge">ALC-NG in the browser</div>
@@ -16,8 +23,8 @@ export function Header() {
         Clean Your <span className="highlight">arXiv</span> Sources
       </h1>
       <p className="subtitle">
-        Remove comments, unused files and other hidden content from your LaTeX sources before you upload them. Everything runs in this
-        browser tab; your files are never uploaded.
+        Before you publish your LaTeX sources to arXiv, alc-ng strips out comments, unused files and other hidden content. The cleaner
+        runs fully in your browser, so your secret paper contents remain secret!
       </p>
       <div className="btn-row">
         <a className="btn" href="https://arxiv.comsys.rwth-aachen.de/">
