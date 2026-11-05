@@ -36,6 +36,8 @@ importScripts("busytex_biber.js", "busytex_pipeline.js", "../swiftlatex/alc-wasi
 const ENGINE = new URL(self.location.href).searchParams.get("engine") === "xetex" ? "xetex" : "pdftex";
 const DRIVER = ENGINE === "xetex" ? "xetex_bibtex8_dvipdfmx" : "pdftex_bibtex8";
 const WORK = "/work";  // the pipeline's project directory, like the SwiftLaTeX workers'
+const PDFTEX_MAP_MARKER = "% alc-ng pdftex.map fallbacks";
+const PDFTEX_MAP_DIR = "/alc-ng-fontmaps";  // writable (root MEMFS), outside /work
 
 const here = (name) => new URL(name, self.location.href).href;
 const post = (message, transfer) => self.postMessage(message, transfer || []);
@@ -68,6 +70,7 @@ let live = false;
 let accessLog = [];  // {p, m} per distinct open since the last openlog drain
 const accessSeen = new Set();
 let recording = false;
+let pdftexMapFallback = "";
 
 const texliveEndpoint = () => `${texliveBase}${texliveBase.endsWith("/") ? "" : "/"}${ENGINE}`;
 const mainRel = () => (mainFile.dir ? `${mainFile.dir}/${mainFile.name}` : mainFile.name);
@@ -89,6 +92,16 @@ async function init() {
   }
   const biber = (await exists(here("biber.js"))) && (await exists(here("biber.wasm"))) && (await exists(here("biber.data")));
 
+  // `texlive-basic.data` already contains pdftex.map, so its bundled copy
+  // wins before kpathsea ever asks the server for /texlive/pdftex/11/pdftex.map.
+  // Load the same tracked overrides the server appends to remote maps and
+  // patch the mounted copy directly below.
+  if (ENGINE === "pdftex") {
+    const response = await fetch(here("../texlive-extras/pdftex.map"));
+    if (!response.ok) throw new Error(`pdftex.map fallbacks unavailable (HTTP ${response.status})`);
+    pdftexMapFallback = (await response.text()).trim();
+  }
+
   // Only `basic` goes to the pipeline: the rest of TeX Live comes from the
   // proxy on demand, and the package resolver would otherwise download the
   // multi-hundred-MB recommended/extra sets for any \usepackage it can match.
@@ -106,20 +119,34 @@ async function init() {
   pipeline.preload = true;
   pipeline.project_dir = WORK;
 
+  // The bundled TeX Live tree is a read-only LZ4 mount (writes throw EIO), so
+  // the patched pdftex.map lives in a writable MEMFS dir searched first. The
+  // trailing ':' splices in texmf.cnf's default TEXFONTMAPS. Must be in the
+  // env before the module exists: Emscripten caches environ on first use.
+  if (ENGINE === "pdftex") pipeline.env.TEXFONTMAPS = `.:${PDFTEX_MAP_DIR}:`;
+
   // Every module the pipeline creates gets the access log hook, and the
   // log only records while an applet runs: the pipeline stages the
   // submission with FS.writeFile, which must not count as engine output.
   const reload = pipeline.reload_module.bind(pipeline);
   pipeline.reload_module = async (...args) => {
     const module = await reload(...args);
+    if (ENGINE === "pdftex") patchBundledPdftexMap(module);
     hookOpen(module.FS);
     return module;
   };
+  // BusyTeX runs TeX with --halt-on-error and counts "! Undefined control
+  // sequence." as fatal, so a recoverable error (e.g. `\pdfoutput=1` under
+  // XeTeX, common in arXiv sources) aborts the run. TeX Live and the
+  // SwiftLaTeX workers carry on in nonstop/batch mode, so do the same here;
+  // genuinely fatal errors still match the remaining patterns.
   const runCmd = pipeline._run_cmd.bind(pipeline);
-  pipeline._run_cmd = (...args) => {
+  pipeline._run_cmd = (Module, FS, cmd, errorMessages, ...rest) => {
+    if (/latex$/.test(cmd[0])) cmd = cmd.filter((arg) => arg !== "--halt-on-error");
+    errorMessages = errorMessages.filter((message) => message !== "! Undefined control sequence.");
     recording = true;
     try {
-      return runCmd(...args);
+      return runCmd(Module, FS, cmd, errorMessages, ...rest);
     } finally {
       recording = false;
     }
@@ -127,6 +154,41 @@ async function init() {
 
   pipeline.Module = pipeline.reload_module(pipeline.env, WORK, [basic], true);
   await pipeline.Module;
+}
+
+// BusyTeX's preloaded data package includes a local map, which means the
+// server-side map extension is never requested. Append the tracked fallback
+// lines to the actual map kpathsea resolves, so pdfTeX selects the available
+// Type 1 substitutes instead of requesting unavailable generated PK fonts.
+function patchBundledPdftexMap(module) {
+  const before = new Set(module.FS.streams.filter((stream) => stream).map((stream) => stream.fd));
+  const memHeader = Uint8Array.from(module.HEAPU8.slice(0, pipeline.mem_header_size));
+  let mapPath = "";
+  try {
+    const result = module.callMainWithRedirects(
+      ["kpsewhich", "-engine=pdftex", "-progname=pdflatex", "-format=map", "pdftex.map"],
+      false,
+    );
+    mapPath = result.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) =>
+      line.endsWith("/pdftex.map") && module.FS.analyzePath(line).exists,
+    ) || "";
+  } finally {
+    for (const stream of module.FS.streams) {
+      if (stream && !before.has(stream.fd)) module.FS.close(stream);
+    }
+    module.HEAPU8.fill(0);
+    module.HEAPU8.set(memHeader);
+  }
+
+  if (!mapPath) throw new Error("BusyTeX could not locate its bundled pdftex.map");
+  const FS = module.FS;
+  const map = FS.readFile(mapPath, { encoding: "utf8" });
+  if (map.includes(PDFTEX_MAP_MARKER)) return;
+  const separator = map && !map.endsWith("\n") ? "\n" : "";
+  const target = `${PDFTEX_MAP_DIR}/pdftex.map`;
+  mkdirs(FS, PDFTEX_MAP_DIR);
+  FS.writeFile(target, `${map}${separator}${PDFTEX_MAP_MARKER}\n${pdftexMapFallback}\n`);
+  workerlog("log", `Installed pdfTeX font-map fallbacks in ${target} (bundled: ${mapPath})`);
 }
 
 // --- file helpers -----------------------------------------------------------

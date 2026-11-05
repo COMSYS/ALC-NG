@@ -26,6 +26,15 @@ and the review code are shared. Differences, reflected in the engine specs:
   xdvipdfmx — the reply carries a PDF, there is no separate dvipdfmx worker.
 - The LaTeX formats ship prebuilt in `texlive-basic`; nothing is built or
   seeded.
+- `texlive-basic.data` also bundles `pdftex.map`, so pdfTeX will not request
+  that map from the TeX Live proxy. The bundled tree is a read-only LZ4 mount,
+  so at startup the worker copies the bundled map plus the tracked
+  `../texlive-extras/pdftex.map` fallbacks to `/alc-ng-fontmaps/pdftex.map`
+  (MEMFS) and puts that dir first in `TEXFONTMAPS`; this prevents bitmap-only Computer Modern fonts from requiring unavailable
+  `mktexpk` generation in the browser.
+- BusyTeX's `--halt-on-error` and its "Undefined control sequence is fatal"
+  rule are dropped, so recoverable TeX errors (e.g. `\pdfoutput=1` under
+  XeTeX) no longer abort the run, matching TeX Live and the SwiftLaTeX workers.
 - The access log is recorded at `FS.open` while an applet runs (the
   `-recorder` file never appears in this build), so BibTeX and xdvipdfmx opens
   are covered as with the SwiftLaTeX syscall hook.
