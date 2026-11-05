@@ -1,6 +1,6 @@
 services:
   alc-ng:
-    image: ${ALC_NG_IMAGE:?set by the deploy job in .env}
+    image: ${SERVICE_IMAGE:?set by the deploy job in .env}
     container_name: alc-ng
     restart: unless-stopped
     networks:

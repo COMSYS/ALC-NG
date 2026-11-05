@@ -1,16 +1,17 @@
-include:
-  - project: 'comsys-staff/websites/ci-templates'
-    file: 'global_vars.gitlab-ci.yml'
+variables:
+  SERVICE: alc-ng
+  DOCKERFILE: Dockerfile.wasm
+  SWIFTLATEX_URL: https://github.com/SwiftLaTeX/SwiftLaTeX/releases/download/v20022022/20-02-2022.zip
+  SWIFTLATEX_SHA256: cf5535ffe9cdf42f7c4522e96bba4d33db10c418a7ceb24e5d80504be7de7150
 
 stages:
   - engines
   - build
   - deploy
 
-variables:
-  SERVICE: alc-ng
-  SWIFTLATEX_URL: https://github.com/SwiftLaTeX/SwiftLaTeX/releases/download/v20022022/20-02-2022.zip
-  SWIFTLATEX_SHA256: cf5535ffe9cdf42f7c4522e96bba4d33db10c418a7ceb24e5d80504be7de7150
+include:
+  - project: "comsys-staff/websites/ci-templates"
+    file: "docker-image.gitlab-ci.yml"
 
 engines:
   stage: engines
@@ -28,75 +29,6 @@ engines:
       - wasm-test/swiftlatex/
     expire_in: 1 day
 
-build_image:
-  stage: build
-  image:
-    name: moby/buildkit:v0.34.2-rootless
-    entrypoint: [""]
-  variables:
-    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
-  before_script:
-    - mkdir -p "$HOME/.docker"
-    - |
-      printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
-        "$CI_REGISTRY" \
-        "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
-        > "$HOME/.docker/config.json"
-  script:
-    - |
-      if [ -z "$CI_REGISTRY_IMAGE" ]; then
-        echo "CI_REGISTRY_IMAGE is empty - enable the Container Registry under" \
-             "Settings > General > Visibility, project features, permissions"
-        exit 1
-      fi
-    - IMAGE="$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-    - |
-      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
-        MOVING="$CI_REGISTRY_IMAGE:latest"
-      else
-        MOVING="$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
-      fi
-    - echo "building $IMAGE (also tagged $MOVING)"
-    - |
-      buildctl-daemonless.sh build \
-        --frontend dockerfile.v0 \
-        --local context=. \
-        --local dockerfile=. \
-        --opt filename=Dockerfile.wasm \
-        --output "type=image,\"name=$IMAGE,$MOVING\",push=true" \
-        --import-cache "type=registry,ref=$CI_REGISTRY_IMAGE:buildcache" \
-        --export-cache "type=registry,ref=$CI_REGISTRY_IMAGE:buildcache,mode=max,ignore-error=true"
-
-deploy_live:
-  stage: deploy
-  image: $DEPLOY_IMAGE
+deploy_staging:
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  before_script:
-    - echo "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_ed25519
-    - chmod 400 ~/.ssh/id_ed25519
-    - echo "$SSH_SERVER_HOSTKEYS" > ~/.ssh/known_hosts
-  script:
-    - |
-      set -e
-      if [ -z "$SERVICE" ]; then echo "SERVICE is not defined"; exit 1; fi
-      IMAGE_REF="$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-
-      for target in $(echo "$TARGETS_LIVE" | tr "," "\n"); do
-        echo "== deploying $IMAGE_REF to $target"
-        ssh "$target" "mkdir -p /opt/services/$SERVICE"
-        scp docker-compose.yaml "$target:/opt/services/$SERVICE/"
-        ssh "$target" "cd /opt/services/$SERVICE && printf '%s\n' \"ALC_NG_IMAGE=$IMAGE_REF\" > .env"
-
-        printf '%s' "$CI_REGISTRY_PASSWORD" | ssh "$target" "
-          set -e
-          DOCKER_CONFIG=\$(mktemp -d)
-          export DOCKER_CONFIG
-          trap 'rm -rf \"\$DOCKER_CONFIG\"' EXIT
-          docker login -u '$CI_REGISTRY_USER' --password-stdin '$CI_REGISTRY'
-          cd /opt/services/$SERVICE
-          docker pull '$IMAGE_REF'
-          docker compose up -d --no-build
-        "
-        ssh "$target" "docker compose -f /opt/services/$SERVICE/docker-compose.yaml ps"
-      done
+    - when: never
