@@ -1,3 +1,4 @@
+import { BACKENDS } from '../../shared/lib/engine'
 import { loadSampleFolder } from '../../shared/lib/folder'
 import { runAlcNg } from '../../shared/lib/pipeline'
 import { SAMPLES } from '../../shared/lib/samples'
@@ -89,6 +90,14 @@ function Options({ flags }: { flags: Flags }) {
             <option value="auto">Automatic</option>
             <option value="pdftex">pdfLaTeX</option>
             <option value="xetex">XeLaTeX</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="opt-backend">Engine build</label>
+          <select id="opt-backend" className="input" value={flags.backend} onChange={(ev) => setFlag('backend', ev.target.value as Flags['backend'])}>
+            {Object.entries(BACKENDS).map(([name, backend]) => (
+              <option key={name} value={name}>{backend.label}</option>
+            ))}
           </select>
         </div>
         <div className="field">

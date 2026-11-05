@@ -1,7 +1,7 @@
 import { logErr, logInfo, logLine, logOk, logv } from '../state/log'
 import { steps } from '../state/steps'
 
-// --- SwiftLaTeX engine (drives the engine worker directly) ------------------
+// --- TeX engine workers (driven directly) -----------------------------------
 //
 // The official PdfTeXEngine.js wrapper misbehaves here, so the page speaks
 // the worker protocol from swiftlatexpdftex.js (pre.js) itself:
@@ -14,33 +14,95 @@ import { steps } from '../state/steps'
 //
 // Two engines speak this protocol. XeTeX writes an XDV (handed back in the
 // reply's `pdf` field); a separate dvipdfmx worker turns it into the PDF.
+// The TeXlyre backend (wasm-test/texlyre/alc-texlyre-worker.js) answers the
+// same commands on top of BusyTeX; see the spec flags of its engines below.
 
 export type EngineName = 'pdftex' | 'xetex'
 
+// Two engine builds run side by side, behind the same worker protocol:
+//  - swiftlatex: the patched SwiftLaTeX v20022022 workers (TeX Live 2020 era
+//    engines, one TeX pass per compilelatex, XeTeX hands back an XDV for the
+//    separate dvipdfmx worker, the LaTeX format is built on first use)
+//  - texlyre: TeXlyre's BusyTeX (TeX Live 2026) behind
+//    wasm-test/texlyre/alc-texlyre-worker.js, which answers the same commands;
+//    a compilelatex is the whole run (passes, BibTeX, xdvipdfmx), the formats
+//    ship prebuilt
+export type BackendName = 'swiftlatex' | 'texlyre'
+
 export interface EngineSpec {
+  backend: BackendName
   label: string
+  // "SwiftLaTeX pdfTeX", "TeXlyre XeTeX" — for log lines
+  fullLabel: string
   worker: string
   fmtName: string
   fmtKey: string
+  // compilelatex returns an XDV that dvipdfmx has to turn into the PDF
   xdv: boolean
+  // compilelatex runs every pass itself (no page-side rerun loop)
+  ownPasses: boolean
+  // the LaTeX format ships with the engine (no build, no seeding)
+  prebuiltFmt: boolean
 }
 
-export const ENGINES: Record<EngineName, EngineSpec> = {
-  pdftex: {
-    label: 'pdfTeX',
-    worker: '/wasm-test/swiftlatex/swiftlatexpdftex.js',
-    fmtName: 'swiftlatexpdftex.fmt',
-    fmtKey: 'alc_ng_swiftlatexpdftex_fmt_v1',
-    xdv: false,
+export const BACKENDS: Record<BackendName, { label: string; engines: Record<EngineName, EngineSpec> }> = {
+  swiftlatex: {
+    label: 'SwiftLaTeX (TeX Live 2020)',
+    engines: {
+      pdftex: {
+        backend: 'swiftlatex',
+        label: 'pdfTeX',
+        fullLabel: 'SwiftLaTeX pdfTeX',
+        worker: '/wasm-test/swiftlatex/swiftlatexpdftex.js',
+        fmtName: 'swiftlatexpdftex.fmt',
+        fmtKey: 'alc_ng_swiftlatexpdftex_fmt_v1',
+        xdv: false,
+        ownPasses: false,
+        prebuiltFmt: false,
+      },
+      xetex: {
+        backend: 'swiftlatex',
+        label: 'XeTeX',
+        fullLabel: 'SwiftLaTeX XeTeX',
+        worker: '/wasm-test/swiftlatex/swiftlatexxetex.js',
+        fmtName: 'swiftlatexxetex.fmt',
+        fmtKey: 'alc_ng_swiftlatexxetex_fmt_v1',
+        xdv: true,
+        ownPasses: false,
+        prebuiltFmt: false,
+      },
+    },
   },
-  xetex: {
-    label: 'XeTeX',
-    worker: '/wasm-test/swiftlatex/swiftlatexxetex.js',
-    fmtName: 'swiftlatexxetex.fmt',
-    fmtKey: 'alc_ng_swiftlatexxetex_fmt_v1',
-    xdv: true,
+  texlyre: {
+    label: 'TeXlyre BusyTeX (TeX Live 2026)',
+    engines: {
+      pdftex: {
+        backend: 'texlyre',
+        label: 'pdfTeX',
+        fullLabel: 'TeXlyre pdfTeX',
+        worker: '/wasm-test/texlyre/alc-texlyre-worker.js?engine=pdftex',
+        fmtName: '',
+        fmtKey: '',
+        xdv: false,
+        ownPasses: true,
+        prebuiltFmt: true,
+      },
+      xetex: {
+        backend: 'texlyre',
+        label: 'XeTeX',
+        fullLabel: 'TeXlyre XeTeX',
+        worker: '/wasm-test/texlyre/alc-texlyre-worker.js?engine=xetex',
+        fmtName: '',
+        fmtKey: '',
+        xdv: false,  // BusyTeX runs xdvipdfmx itself
+        ownPasses: true,
+        prebuiltFmt: true,
+      },
+    },
   },
 }
+
+export const engineSpecFor = (backend: BackendName, engine: EngineName) => BACKENDS[backend].engines[engine]
 
 // Every reply field any command of the engine or dvipdfmx workers sends.
 export interface WorkerReply {
@@ -89,6 +151,7 @@ interface Pending {
 interface TexWorker {
   worker: Worker
   engine: EngineName
+  backend: BackendName
   ready: boolean
   pending: Pending | null
   // the format dump seeded into this worker, once provided
@@ -107,7 +170,8 @@ export const onEngineReset = (hook: () => void) => resetHooks.push(hook)
 
 export const texReady = () => texWorker !== null && texWorker.ready
 export const currentEngine = () => texWorker?.engine ?? null
-export const engineSpec = () => ENGINES[texWorker?.engine ?? 'pdftex']
+export const currentBackend = () => texWorker?.backend ?? null
+export const engineSpec = () => engineSpecFor(texWorker?.backend ?? 'swiftlatex', texWorker?.engine ?? 'pdftex')
 export const engineWorker = () => texWorker
 
 // Serialized call queues: the workers answer one call at a time, and the
@@ -143,20 +207,20 @@ export function forwardWorkerLog(data: WorkerReply, label: string) {
   logLine(`[${label}] ${text}`, data.level === 'error' ? 'error' : 'verbose')
 }
 
-// Spawns the worker of `engine`, replacing the current one. The alc_ng module
-// lives inside the engine worker, so a switch also drops it
+// Spawns the worker of `engine` from `backend`, replacing the current one. The
+// alc_ng module lives inside the engine worker, so a switch also drops it
 // (ensureWorkerAlcModule loads it again).
-export async function loadEngine(engine: EngineName = 'pdftex') {
-  const spec = ENGINES[engine]
+export async function loadEngine(engine: EngineName = 'pdftex', backend: BackendName = 'swiftlatex') {
+  const spec = engineSpecFor(backend, engine)
   for (const hook of resetHooks) hook()
   dropEngine()
 
   // No cache-bust query on purpose: the server answers these static files
   // `no-cache` with `Last-Modified`, so every load revalidates and gets a 304
   // unless the worker script actually changed.
-  logInfo(`spawning ${spec.label} engine worker ${spec.worker}`)
+  logInfo(`spawning ${spec.fullLabel} engine worker ${spec.worker}`)
   const worker = new Worker(spec.worker)
-  const mine: TexWorker = { worker, engine, ready: false, pending: null }
+  const mine: TexWorker = { worker, engine, backend, ready: false, pending: null }
   texWorker = mine
   bindWorkerMessages(worker)
 
@@ -166,7 +230,7 @@ export async function loadEngine(engine: EngineName = 'pdftex') {
     // {result: "ok"} after its runtime initialized.
     await awaitWorkerReply(null, 'engine worker did not initialize')
     worker.postMessage({ cmd: 'settexliveurl', url: '/texlive/' })
-    logOk(`${spec.label} engine ready in ${(performance.now() - t0).toFixed(0)} ms`)
+    logOk(`${spec.fullLabel} engine ready in ${(performance.now() - t0).toFixed(0)} ms`)
     mine.ready = true
   } catch (err) {
     logErr(`engine load failed: ${(err as Error).message}`)

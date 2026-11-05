@@ -17,9 +17,13 @@ import { stageIntoEngine, type StagedFile } from './stage'
 // max_repeat). Returns the last pass's reply; a failed pass ends the loop.
 const MAX_PASSES = 5
 
+//
+// The TeXlyre backend runs every pass (and BibTeX, makeindex) inside one
+// compilelatex, so it is called once.
 async function compileLatexPasses(main: string, what: string): Promise<WorkerReply> {
   const stem = stemOf(main)
-  let previous = await auxSnapshot(stem)
+  const ownPasses = engineSpec().ownPasses
+  let previous = ownPasses ? '' : await auxSnapshot(stem)
   for (let pass = 1; ; pass++) {
     steps.detail('compile', `Pass ${pass} (at most ${MAX_PASSES})`)
     let result: WorkerReply
@@ -32,6 +36,10 @@ async function compileLatexPasses(main: string, what: string): Promise<WorkerRep
       logErr(`${what}: compilelatex rejected in pass ${pass}: ${(err as Error).message}`)
     }
     if (result.result !== 'ok' || result.pdf === undefined) return result
+    if (ownPasses) {
+      logInfo(`${what}: ${engineSpec().fullLabel} ran its passes itself`)
+      return result
+    }
     const current = await auxSnapshot(stem)
     if (current === previous) {
       logInfo(`${what}: ${pass} pass(es), .aux/.bbl settled`)
@@ -65,7 +73,7 @@ const setEngineMainFile = (rel: string) => texCall({ cmd: 'setmainfile', url: ba
 export type CompileResult = ({ failed: false } & CompileRun) | { failed: true; main: string }
 
 // Flushes previous artifacts, stages the folder at /work, compiles every
-// checked main file with the SwiftLaTeX engine, shows the PDF, and drains the
+// checked main file with the selected engine backend, shows the PDF, and drains the
 // engine's file access log split into submission-relative inputs and outputs.
 export async function compileFolderInEngine(folder: Folder, mains: string[]): Promise<CompileResult> {
   steps.start('stage', 'Clearing the previous run')
@@ -108,7 +116,7 @@ export async function compileFolderInEngine(folder: Folder, mains: string[]): Pr
     // Each main gets its own compile step run, so its pass progress and
     // failure details have a running step to attach to.
     steps.start('compile')
-    logInfo(`${what} with SwiftLaTeX ${engineSpec().label} (tex packages downloaded from the server on demand)`)
+    logInfo(`${what} with ${engineSpec().fullLabel} (tex packages downloaded from the server on demand)`)
     await setEngineMainFile(main)
     const result = await compileLatexPasses(main, what)
     log = String(result.log ?? '')
@@ -176,7 +184,7 @@ export async function compileFolderInEngine(folder: Folder, mains: string[]): Pr
   if (!primary || !pdf) {
     // nothing compiled: report the first failure
     const err = firstError ?? { main: mains[0], status: '?', log: '' }
-    if (/format file/.test(err.log)) await dropFmt(engineSpec().fmtKey)
+    if (/format file/.test(err.log) && !engineSpec().prebuiltFmt) await dropFmt(engineSpec().fmtKey)
     logErr(`compile of ${err.main} failed (status ${err.status}) — TeX log tail below`)
     await logEngineTeXLog(err.main)
     return { failed: true, main: err.main }
@@ -262,7 +270,7 @@ export async function compileCleanedInEngine(cfg: PipelineConfig, main: string):
   await provideFormatDump()
   await drainEngineOpenLog()
   await stageIntoEngine(files.sort((a, b) => (a.rel < b.rel ? -1 : 1)), texCall)
-  logInfo(`compiling cleaned "${cleanedMain}" (${files.length} file(s)) with SwiftLaTeX ${engineSpec().label}`)
+  logInfo(`compiling cleaned "${cleanedMain}" (${files.length} file(s)) with ${engineSpec().fullLabel}`)
   const t0 = performance.now()
   await setEngineMainFile(cleanedMain)
   const result = await compileLatexPasses(cleanedMain, 'cleaned compile')

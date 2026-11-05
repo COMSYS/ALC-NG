@@ -23,6 +23,9 @@ Everything besides the app bundle comes from the axum server in
   (see `.github/workflows/wasm.yml` for the wasi-sdk setup)
 - the patched SwiftLaTeX engines in `wasm-test/swiftlatex/` and pdfium in
   `wasm-test/pdfium/` (see the READMEs there)
+- optionally the TeXlyre BusyTeX engines (TeX Live 2026) in
+  `wasm-test/texlyre/`, `sh wasm-test/fetch-texlyre.sh`; the page's **Engine
+  build** option picks between the two builds
 - a local TeX Live with `kpsewhich`, which the server resolves files with
 - Node.js and pnpm (the version is pinned in `package.json`)
 

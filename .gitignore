@@ -26,3 +26,6 @@
 !/wasm-test/pdfium/README.md
 /wasm-test/fmt-cache
 /wasm-test/__pycache__
+/wasm-test/texlyre/*
+!/wasm-test/texlyre/README.md
+!/wasm-test/texlyre/alc-texlyre-worker.js

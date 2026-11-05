@@ -93,6 +93,15 @@ RUN set -eux; \
     tar xzf /tmp/pdfium-wasm.tgz; \
     rm /tmp/pdfium-wasm.tgz
 
+# --- TeXlyre BusyTeX engines (TeX Live 2026, the page's second engine build) --
+# Downloaded from the pinned release in wasm-test/fetch-texlyre.sh; the tracked
+# adapter worker next to them is copied into the runtime image separately.
+FROM alpine:3 AS texlyre
+
+RUN apk add --no-cache curl
+COPY wasm-test/fetch-texlyre.sh /wasm-test/fetch-texlyre.sh
+RUN sh /wasm-test/fetch-texlyre.sh
+
 # --- LaTeX format dumps -----------------------------------------------------
 # A .fmt is engine-build specific, so TeX Live's native pdflatex.fmt is useless
 # here: both dumps are built by the wasm engines themselves, headlessly.
@@ -130,6 +139,8 @@ COPY --from=server-build /server/wasm-serve /usr/local/bin/
 COPY --from=pdfium /pdfium ./wasm-test/pdfium
 COPY --from=web-build /web/dist ./web/dist
 COPY wasm-test/swiftlatex ./wasm-test/swiftlatex
+COPY wasm-test/texlyre ./wasm-test/texlyre
+COPY --from=texlyre /wasm-test/texlyre/ ./wasm-test/texlyre/
 COPY --from=fmt-build /srv/wasm-test/fmt-cache ./wasm-test/fmt-cache
 COPY wasm-test/texlive-extras ./wasm-test/texlive-extras
 COPY wasm-test/sample-nested ./wasm-test/sample-nested

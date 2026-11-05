@@ -6,13 +6,15 @@ import { clearPdfView, setFolderStatus, setSubmissionOpen, showTab, uiStore } fr
 import { runCompare } from './compare'
 import { cleanCompileArtifacts, compileFolderInEngine, flsFromAccessLog, synthesizeFlsFromLog } from './compile'
 import {
-  ENGINES,
   alcModule,
+  currentBackend,
   currentEngine,
+  engineSpecFor,
   loadEngine,
   onEngineReset,
   texCall,
   texReady,
+  type BackendName,
   type EngineError,
   type EngineName,
 } from './engine'
@@ -24,8 +26,8 @@ import { buildReview } from './review'
 
 // --- full alc-ng pipeline (behaves like the native CLI) ---------------------
 //
-// Stage the folder in the engine worker's filesystem, compile with SwiftLaTeX
-// (the wasm stand-in for latexmk), synthesize the recorder file from the
+// Stage the folder in the engine worker's filesystem, compile with the chosen
+// backend, SwiftLaTeX or TeXlyre BusyTeX (the wasm stand-in for latexmk), synthesize the recorder file from the
 // access log and write it into the staged input, then run the real pipeline
 // (alc_ng_run) in that same worker via the WASI shim
 // (wasm-test/swiftlatex/alc-wasi.js). strip_exif needs exiftool and is
@@ -133,13 +135,15 @@ export async function runAlcNg() {
     steps.detail('locate', mains.join(', '))
     steps.start('engine')
     const { engine, why } = await chooseEngine(folder, mains[0])
-    logInfo(`engine: ${ENGINES[engine].label} (${why})`)
-    if (!texReady() || currentEngine() !== engine) {
-      steps.detail('engine', `Starting ${ENGINES[engine].label}`)
-      await loadEngine(engine)
+    const backend: BackendName = uiStore.get().flags.backend
+    const spec = engineSpecFor(backend, engine)
+    logInfo(`engine: ${spec.fullLabel} (${why})`)
+    if (!texReady() || currentEngine() !== engine || currentBackend() !== backend) {
+      steps.detail('engine', `Starting ${spec.fullLabel}`)
+      await loadEngine(engine, backend)
     }
     if (!texReady()) throw new Error('engine unavailable')
-    steps.detail('engine', `${ENGINES[engine].label}, ${why === 'default' ? 'the default' : why}`)
+    steps.detail('engine', `${spec.fullLabel}, ${why === 'default' ? 'the default' : why}`)
 
     const run = await compileFolderInEngine(folder, mains)
     if (run.failed) throw new Error('compile failed — see the processing log')

@@ -38,7 +38,7 @@ async function fetchServerFmt(spec: EngineSpec): Promise<Uint8Array | null> {
   }
 }
 
-export async function provideFormatDump(): Promise<Uint8Array> {
+export async function provideFormatDump(): Promise<Uint8Array | null> {
   const worker = engineWorker()
   if (!worker) throw new Error('engine not loaded')
   if (worker.fmtBytes !== undefined) {
@@ -46,6 +46,8 @@ export async function provideFormatDump(): Promise<Uint8Array> {
     return worker.fmtBytes
   }
   const spec = engineSpec()
+  // The TeXlyre build ships its formats inside the engine's data package.
+  if (spec.prebuiltFmt) return null
 
   // One dump from one source: remember it for the session, cache it and seed
   // the engine's kpathsea hook. `note` is the log line naming the source.

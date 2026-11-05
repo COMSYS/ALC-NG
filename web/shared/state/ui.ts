@@ -3,6 +3,7 @@ import { createStore } from '../lib/store'
 export type Tone = 'info' | 'success' | 'error'
 export type Tab = 'review' | 'pdf' | 'compare' | 'stats'
 export type EngineChoice = 'auto' | 'pdftex' | 'xetex'
+export type BackendChoice = 'swiftlatex' | 'texlyre'
 export type PipelineLogLevel = 'off' | 'info' | 'trace'
 
 export interface Status {
@@ -23,6 +24,7 @@ export interface Flags {
   diffColor: string
   logLevel: PipelineLogLevel
   engine: EngineChoice
+  backend: BackendChoice
 }
 
 export interface MainFileOption {
@@ -69,6 +71,7 @@ export const uiStore = createStore<UiState>({
     diffColor: '#ff0000',
     logLevel: 'info',
     engine: 'auto',
+    backend: 'swiftlatex',
   },
   tab: 'review',
   submissionOpen: true,

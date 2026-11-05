@@ -15,7 +15,9 @@
 //!    (PK requests are answered only by real `.pk` files — never by extension
 //!    fallbacks); resolved paths are remembered in memory,
 //! 2. a 301 — the mirror protocol's "file does not exist" marker, which the
-//!    workers cache as a negative. The dead mirror fetch this used to end in
+//!    workers cache as a negative (the TeXlyre worker asks for a 404 with
+//!    `?miss=404` instead, which is what BusyTeX remembers). The dead mirror
+//!    fetch this used to end in
 //!    is gone; Dockerfile.wasm runs the server inside the TeX Live full
 //!    image, where step 1 answers the entire distribution.
 //!
@@ -78,7 +80,7 @@ use anyhow::{Context, Result};
 use axum::{
     Router,
     body::Body,
-    extract::{Path as UrlPath, Request, State},
+    extract::{Path as UrlPath, RawQuery, Request, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
@@ -613,9 +615,19 @@ async fn texlive(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     UrlPath(rel): UrlPath<String>,
+    RawQuery(query): RawQuery,
 ) -> Response {
+    // The TeXlyre BusyTeX module records negatives for 404 instead (the
+    // adapter worker adds the query, see wasm-test/texlyre/).
+    let not_found = || {
+        if query.as_deref() == Some(MISS_AS_404) {
+            no_cache_error(StatusCode::NOT_FOUND, "not found".into())
+        } else {
+            proxy_not_found()
+        }
+    };
     let Some(request) = parse_texlive_request(&rel) else {
-        return proxy_not_found();
+        return not_found();
     };
     match serve_texlive(&app, &request).await {
         // The engine worker derives its /tex cache path from the fileid/pkid
@@ -655,7 +667,7 @@ async fn texlive(
                 &[("etag", etag), ("fileid", fileid.clone()), ("pkid", fileid)],
             )
         }
-        Ok(None) => proxy_not_found(),
+        Ok(None) => not_found(),
         // proxy trouble: report as upstream error
         Err(err) => no_cache_error(
             StatusCode::BAD_GATEWAY,
@@ -729,6 +741,9 @@ fn no_cache_error(status: StatusCode, message: String) -> Response {
     )
         .into_response()
 }
+
+/// The query that asks for a plain 404 as the "file does not exist" answer.
+const MISS_AS_404: &str = "miss=404";
 
 /// Reply 301, the mirror protocol's "file does not exist" marker: the engine
 /// worker caches negatives only for 301, so a plain 404 would be re-requested
