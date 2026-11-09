@@ -1,0 +1,28 @@
+\documentclass{article}
+% The conditionals are defined and set in an \input file
+\input{config/settings}
+% Overrides the value set in config/settings.tex
+\extendedfalse
+\input{config/macros}
+
+\begin{document}
+
+\ifanonymous
+\title{An Anonymous Submission} % secret comment: anonymized title
+\else
+\title{A Named Submission} % secret comment: real title
+\fi
+\maketitle
+
+\input{sections/intro}
+% The disclaimer is loaded twice with different values of \ifdraft
+\input{sections/disclaimer}
+\input{sections/results}
+
+\drafttrue
+\input{sections/disclaimer}
+
+\appendix
+\input{appendix/details}
+
+\end{document}

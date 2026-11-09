@@ -19,7 +19,9 @@ use crate::{
         config::CleanerConfig,
         file_renames::FileRenames,
         submission::{
-            comment_commands::CommentCommands, deletion_stats::DeletionStats,
+            comment_commands::CommentCommands,
+            deletion_stats::DeletionStats,
+            if_trace::{IfTrace, PROBE_NAME, TRACE_EXTENSION, inject_probe},
             parsed_file::ParsedFile,
         },
     },
@@ -32,6 +34,7 @@ use crate::{
 pub mod comment_commands;
 pub mod deletion_stats;
 pub mod directives;
+pub mod if_trace;
 pub mod parsed_file;
 
 type CompareResult = Result<HashMap<String, Option<PageDiffs>>>;
@@ -87,6 +90,8 @@ pub struct Submission {
     pub deletion_stats: DeletionStats,
     /// Files that are renamed in the cleaned project (spaces replaced by underscores).
     file_renames: FileRenames,
+    /// Values of custom conditionals across files, traced while compiling.
+    if_trace: IfTrace,
 }
 
 impl Submission {
@@ -201,6 +206,7 @@ impl Submission {
             grammar_errors: Vec::new(),
             deletion_stats: DeletionStats::default(),
             file_renames: FileRenames::default(),
+            if_trace: IfTrace::default(),
         })
     }
 
@@ -359,6 +365,74 @@ impl Submission {
             })
             // Collect the resulting ParsedFile objects into a HashSet.
             .collect();
+    }
+
+    /// Loads a probe at the start of each main file in the cache, which writes the values of
+    /// the custom conditionals of the project whenever a file is loaded, see [`IfTrace`].
+    fn prepare_if_trace(&mut self) {
+        let names = self
+            .initial_file_list
+            .iter()
+            .filter_map(|parsed| match parsed {
+                ParsedFile::LatexLike(file) => Some(file.conditional_names()),
+                _ => None,
+            })
+            .flatten();
+        self.if_trace = IfTrace::new(names);
+
+        if self.if_trace.names().is_empty() {
+            trace!("No custom conditionals to trace");
+            return;
+        }
+
+        let probe = self.if_trace.probe();
+        for main in self.get_mains() {
+            let inject = || -> Result<()> {
+                let directory = main
+                    .full()
+                    .parent()
+                    .context("The main file has no parent directory")?;
+                let probe_path = directory.join(format!("{PROBE_NAME}.tex"));
+                if probe_path.exists() {
+                    bail!("{} already exists", probe_path.display());
+                }
+
+                std::fs::write(&probe_path, &probe)?;
+                let content = std::fs::read(main.full())?;
+                std::fs::write(main.full(), inject_probe(&content))?;
+                Ok(())
+            };
+
+            if let Err(err) = inject() {
+                warn!(
+                    "Could not trace custom conditionals of {}: {err}. Conditionals are evaluated per file.",
+                    main.relative().display()
+                );
+                self.if_trace.mark_incomplete();
+            }
+        }
+    }
+
+    /// Reads the values of custom conditionals written by the probe while compiling.
+    fn read_if_traces(&mut self) {
+        if self.if_trace.names().is_empty() || !self.if_trace.is_complete() {
+            return;
+        }
+
+        for main in self.get_mains() {
+            let path = main.full().with_extension(TRACE_EXTENSION);
+            match std::fs::read_to_string(&path) {
+                Ok(trace) => self.if_trace.add_main(main.full(), &trace),
+                Err(err) => {
+                    // E.g. LaTeX older than 2020-10, which lacks the file hooks
+                    warn!(
+                        "Could not read the values of custom conditionals traced while compiling {} ({err}). Conditionals are evaluated per file.",
+                        main.relative().display()
+                    );
+                    self.if_trace.mark_incomplete();
+                }
+            }
+        }
     }
 
     /// Compiles the identified LaTeX main files and records the compiler output.
@@ -754,9 +828,14 @@ impl Submission {
                 _ => None,
             })
             .collect();
+        let if_states: Vec<_> = latex_files
+            .iter()
+            .map(|(file, _)| self.if_trace.state(file.source_file.full()))
+            .collect();
         let analyzed_files: Vec<_> = latex_files
             .iter()
-            .map(|(file, filename)| file.analyzed(filename))
+            .zip(&if_states)
+            .map(|((file, filename), if_state)| file.analyzed(filename, if_state.as_ref()))
             .collect();
         let comment_commands =
             CommentCommands::analyze(&analyzed_files, self.cleaner_config.clone());
@@ -784,6 +863,7 @@ impl Submission {
                             &mut self.deletion_stats,
                             &self.file_renames,
                             &comment_commands,
+                            &self.if_trace,
                         )?;
                     } else {
                         parsed.copy_raw_to(&target, &self.file_renames)?;
@@ -1118,8 +1198,13 @@ impl Submission {
             );
         }
 
+        // Trace the values of custom conditionals across files while compiling.
+        self.prepare_if_trace();
+
         // Compile the identified main files using LaTeX.
         self.compile();
+
+        self.read_if_traces();
 
         // Process LaTeX recorder files (.fls) to gather input and output files.
         self.process_recorder_files()?;
