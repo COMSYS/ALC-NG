@@ -716,6 +716,10 @@ enum NodeHandling {
     /// The node was an if block that was evaluated but the appropriate case was empty.
     /// The bool denotes if it was originally fullline.
     IfEvaluatedEmpty(Vec<u8>, bool),
+    /// The node was a conditional (or ends with one) that was evaluated to the kept branch,
+    /// see [`ContentStripper::keep_branch`]. TeX skips the spaces and the newline after
+    /// the closing `\fi`, thus they are dropped from the following node.
+    IfBranchKept(Vec<u8>),
     /// The node was after \end{document} and was deleted.
     OutOfBounds,
     /// The node was an invocation of a comment command in math mode that was deleted.
@@ -735,6 +739,7 @@ impl NodeHandling {
             FullLineCommentDeleted(text) => Some(text),
             IfEvaluated(ws) => Some(ws),
             IfEvaluatedEmpty(ws, _) => Some(ws),
+            IfBranchKept(text) => Some(text),
             CommandInvocationDeleted(ws, _) => Some(ws),
             CommentPackageIncludeDeleted(ws, _) => Some(ws),
             BlockCommentDeleted(ws, _) => Some(ws),
@@ -762,6 +767,7 @@ impl NodeHandling {
             FullLineCommentDeleted(ws) => ws,
             IfEvaluated(ws) => ws,
             IfEvaluatedEmpty(ws, _) => ws,
+            IfBranchKept(text) => text,
             CommandInvocationDeleted(ws, _) => ws,
             CommentPackageIncludeDeleted(ws, _) => ws,
             BlockCommentDeleted(ws, _) => ws,
@@ -785,6 +791,7 @@ impl NodeHandling {
 
         match &prev {
             OutOfBounds => (),
+            IfBranchKept(_) => existing.extend_from_slice(skip_after_control_word(own_text)),
             BlockCommentDeleted(_, false) => {
                 // Drop the newline if it exists as it is consumed by the comment env
                 // This code is complex as Rust does not offer another way to drop a prefix in-place
@@ -1246,6 +1253,11 @@ impl<'a> ContentStripper<'a> {
                     i += 1;
                 }
 
+                // The node following this one must skip the whitespace after the closing `\fi`
+                if matches!(prev_node, IfBranchKept(_)) {
+                    return Ok(IfBranchKept(new_content));
+                }
+
                 Ok(Kept(new_content))
             }
             // Handle block comments seperatly
@@ -1482,8 +1494,7 @@ impl<'a> ContentStripper<'a> {
                             .push(self.content[if_content.byte_range()].to_owned());
                     }
 
-                    // The preserved content dictates the behavior of the following contents.
-                    return self.handle_node(else_content, previous_node);
+                    return self.keep_branch(else_content, whitespaces);
                 }
 
                 // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
@@ -1506,8 +1517,7 @@ impl<'a> ContentStripper<'a> {
                             .push(self.content[else_content.byte_range()].to_owned());
                     }
 
-                    // The preserved content dictates the behavior of the following contents.
-                    self.handle_node(if_content, previous_node)
+                    self.keep_branch(if_content, whitespaces)
                 } else {
                     // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
                     let fullline = self.is_fullline(&node);
@@ -1588,6 +1598,58 @@ impl<'a> ContentStripper<'a> {
                 Ok(IfEvaluatedEmpty(whitespaces, fullline))
             }
         }
+    }
+
+    /// Keeps the branch of an evaluated conditional, which is removed otherwise.
+    ///
+    /// The result keeps the meaning of the document:
+    /// - The whitespace in front of the conditional (`whitespaces`) is kept.
+    /// - TeX skips the spaces and the newline after the `\ifX` or `\else` in front of the branch,
+    ///   thus they are dropped. A following empty line starts a paragraph and is kept.
+    /// - The whitespace between the branch and the following `\else` or `\fi` belongs to the
+    ///   branch and is kept.
+    /// - TeX skips the spaces and the newline after the closing `\fi`, which the following
+    ///   node drops, see [`IfBranchKept`].
+    fn keep_branch(&mut self, branch: Node<'a>, whitespaces: Vec<u8>) -> Result<NodeHandling> {
+        let mut kept = whitespaces;
+
+        let whitespace_before = self.content[..branch.start_byte()]
+            .iter()
+            .rev()
+            .take_while(|b| b.is_ascii_whitespace())
+            .count();
+        let gap_before =
+            &self.content[branch.start_byte() - whitespace_before..branch.start_byte()];
+        if gap_before.iter().filter(|&&b| b == b'\n').count() > 1 {
+            kept.extend_from_slice(gap_before);
+        }
+
+        let result = self.handle_node(branch, NoNode)?;
+        let ends_with_conditional = matches!(result, IfBranchKept(_));
+
+        // The branch starts with the whitespace after an `\else` or `\iftrue` token in front
+        // of it, which is skipped as well
+        let leading = self.whitespace_to_previous_node(&branch);
+        let text = result.text();
+        let text = match text.strip_prefix(leading.as_slice()) {
+            Some(rest) if leading.iter().all(u8::is_ascii_whitespace) => rest,
+            _ => text,
+        };
+        kept.extend_from_slice(text);
+
+        if let Some(next) = branch.next_sibling() {
+            let gap_after = &self.content[branch.end_byte()..next.start_byte()];
+            if gap_after.iter().all(u8::is_ascii_whitespace) {
+                // A nested conditional ends the branch, TeX skips the whitespace after its `\fi`
+                kept.extend_from_slice(if ends_with_conditional {
+                    skip_after_control_word(gap_after)
+                } else {
+                    gap_after
+                });
+            }
+        }
+
+        Ok(IfBranchKept(kept))
     }
 
     /// Handles a custom `\if` block, evaluating its condition
@@ -1703,8 +1765,7 @@ impl<'a> ContentStripper<'a> {
                     .push(self.content[else_content.byte_range()].to_owned());
             }
 
-            // The preserved content dictates the behavior of the following contents.
-            return self.handle_node(c, previous_node);
+            return self.keep_branch(c, new_content);
         }
 
         if let Some(c) = else_content
@@ -1715,8 +1776,8 @@ impl<'a> ContentStripper<'a> {
                     .if_evaluated
                     .push(self.content[if_content.byte_range()].to_owned());
             }
-            // The preserved content dictates the behavior of the following contents.
-            return self.handle_node(c, previous_node);
+
+            return self.keep_branch(c, new_content);
         }
 
         // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
@@ -1763,7 +1824,13 @@ impl<'a> ContentStripper<'a> {
                 last_byte_of_source_file += 1;
             }
 
-            new_content.extend_from_slice(&self.content[last_byte_of_source_file..]);
+            let rest = &self.content[last_byte_of_source_file..];
+            // TeX skips the whitespace after the closing `\fi` of an evaluated conditional
+            let rest = match prev_node {
+                IfBranchKept(_) => skip_after_control_word(rest),
+                _ => rest,
+            };
+            new_content.extend_from_slice(rest);
         }
 
         Ok(Kept(new_content))
@@ -2205,6 +2272,17 @@ fn strip_rest_of_blank_line(content: &[u8]) -> &[u8] {
         Some(&b) if is_newline(b) => strip_leading_newline(&content[indentation..]),
         _ => content,
     }
+}
+
+/// Strips what TeX skips after a control word: spaces or tabs and one newline.
+/// A following empty line still starts a new paragraph.
+fn skip_after_control_word(content: &[u8]) -> &[u8] {
+    let spaces = content
+        .iter()
+        .take_while(|&&b| is_horizontal_whitespace(b))
+        .count();
+
+    strip_leading_newline(&content[spaces..])
 }
 
 /// Strips trailing spaces or tabs, i.e. the indentation of a deleted line.
