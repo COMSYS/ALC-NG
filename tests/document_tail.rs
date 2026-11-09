@@ -28,11 +28,24 @@ mod tests {
 
     /// The parser pairs `\begin{document}` with `\end{minipage}` after the stray brace
     /// (minimized from arXiv 0710.4345). The rest of the document must not be treated as tail.
+    /// The stray brace is a grammar error, thus cleaning requires `force`.
     #[test]
     fn document_paired_with_other_end_keeps_rest() {
-        let cleaned =
-            clean(b"\\begin{document}\nText\n}\\end{minipage}\nMore text\n\\end{document}\n");
+        let input = b"\\begin{document}\nText\n}\\end{minipage}\nMore text\n\\end{document}\n";
+        let tree = parse(input).unwrap();
+        let (stripped, stats) = ContentStripper::clean(
+            input,
+            tree.root_node(),
+            "test.tex",
+            Arc::new(CleanerConfig {
+                force: true,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let cleaned = String::from_utf8(stripped.unwrap()).unwrap();
 
+        assert!(!stats.grammar_errors.is_empty());
         assert!(cleaned.contains("More text"));
         assert!(cleaned.contains("\\end{document}"));
     }

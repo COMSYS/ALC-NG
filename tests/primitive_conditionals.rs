@@ -83,9 +83,35 @@ mod tests {
 
     #[test]
     fn conditionals_in_unparsable_environments_are_kept() {
-        assert_eq!(
-            clean(PROOF_ENVIRONMENTS),
-            String::from_utf8_lossy(PROOF_ENVIRONMENTS)
+        let tree = parse(PROOF_ENVIRONMENTS).unwrap();
+        let (stripped, stats) = ContentStripper::clean(
+            PROOF_ENVIRONMENTS,
+            tree.root_node(),
+            "test.tex",
+            Arc::new(CleanerConfig {
+                force: true,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        assert!(!stats.grammar_errors.is_empty());
+        assert_eq!(stripped.unwrap(), PROOF_ENVIRONMENTS);
+    }
+
+    /// The parser cannot pair the environments, thus cleaning requires `force`.
+    #[test]
+    fn conditionals_in_unparsable_environments_require_force() {
+        let tree = parse(PROOF_ENVIRONMENTS).unwrap();
+
+        assert!(
+            ContentStripper::clean(
+                PROOF_ENVIRONMENTS,
+                tree.root_node(),
+                "test.tex",
+                Arc::new(CleanerConfig::default()),
+            )
+            .is_err()
         );
     }
 

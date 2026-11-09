@@ -927,6 +927,8 @@ impl<'a> ContentStripper<'a> {
             return Ok((Some(content), stripper.deletion_stats));
         }
 
+        stripper.check_grammar_errors(root)?;
+
         let result = stripper
             .handle_node(root, NoNode)
             .map(|v| (v.into_inner(), stripper.deletion_stats));
@@ -1004,17 +1006,8 @@ impl<'a> ContentStripper<'a> {
         match grammar_name {
             // An error node was hit, this means that there was a parsing error. This can be attributed to a malformed latex document or an issue with the tree-sitter grammar.
             // The content of the node is simply preserved.
+            // The error was reported before cleaning, see [`ContentStripper::check_grammar_errors`].
             "ERROR" => {
-                let g_err = format!(
-                    "Found ERROR node when traversing tree-sitter tree of file '{}:{}:{}' with content: {:?}",
-                    self.filename,
-                    node.start_position().row + 1,
-                    node.start_position().column,
-                    String::from_utf8_lossy(node_content)
-                );
-
-                self.deletion_stats.grammar_errors.push(g_err);
-
                 // Whole document has a large parsing error
                 // If first node is ERROR, treat it as source file
                 // We will usually find another (more specific) ERROR node down in the tree
@@ -1369,6 +1362,69 @@ impl<'a> ContentStripper<'a> {
         }
 
         complete_group_name == b"document"
+    }
+
+    /// Reports the parse errors of the file before cleaning it.
+    ///
+    /// The cleaner copies content it cannot parse without cleaning it, including comments,
+    /// conditionals and invocations of comment commands. A single parse error, e.g. a missing
+    /// `\fi`, can span the whole document body. Thus, parse errors are an error unless the
+    /// cleaning is forced. Errors in the removed tail after `\end{document}` are ignored.
+    fn check_grammar_errors(&mut self, root: Node<'a>) -> Result<()> {
+        let tail_start = if self.directives.keep_tail {
+            None
+        } else {
+            self.document_end(root)
+        };
+        let errors = grammar_errors(root, self.content, self.filename, tail_start);
+
+        if errors.is_empty() {
+            return Ok(());
+        }
+
+        const LISTED: usize = 10;
+        let mut listed = errors
+            .iter()
+            .take(LISTED)
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if errors.len() > LISTED {
+            listed.push_str(&format!("\n  ... and {} more", errors.len() - LISTED));
+        }
+
+        let hint = if self.cleaner_config.force {
+            "Check the cleaned file manually."
+        } else {
+            "Fix the LaTeX source (e.g. a missing \\fi or brace), keep the file as is with a `% !ALC-NG keep-all` directive, or continue with --force."
+        };
+        let message = anyhow!(
+            "Found {} grammar error(s) in {}. Content that cannot be parsed is copied without cleaning, including its comments and conditionals:\n{}\n{} If the LaTeX is valid, please open an issue at https://github.com/COMSYS/ALC-NG/issues",
+            errors.len(),
+            self.filename,
+            listed,
+            hint
+        );
+
+        self.deletion_stats.grammar_errors.extend(errors);
+
+        self.exception(message, ())
+    }
+
+    /// Returns the end of the top-level document environment, after which content is removed.
+    fn document_end(&self, root: Node<'a>) -> Option<usize> {
+        let mut cursor = root.walk();
+        root.children(&mut cursor)
+            .find(|child| {
+                child.grammar_name() == "generic_environment"
+                    && child
+                        .child_by_field_name("begin")
+                        .is_some_and(|begin| self.is_document_environment_name(begin))
+                    && child
+                        .child_by_field_name("end")
+                        .is_some_and(|end| self.is_document_environment_name(end))
+            })
+            .map(|document| document.end_byte())
     }
 
     /// Reports an error that is ignored if the cleaning is forced, see [`exception`].
@@ -2080,6 +2136,80 @@ const ALIGNMENT_ENVIRONMENTS: [&[u8]; 19] = [
     b"NiceTabular*",
     b"array",
 ];
+
+/// Describes the parse errors of the tree: `ERROR` nodes, whose content the parser could not
+/// match, and zero-width `MISSING` nodes the parser inserted to recover, e.g. a missing `\fi`.
+/// Errors that start after `ignore_after` (the removed document tail) are skipped.
+fn grammar_errors(
+    root: Node,
+    content: &[u8],
+    filename: &str,
+    ignore_after: Option<usize>,
+) -> Vec<String> {
+    const EXCERPT_CHARS: usize = 60;
+
+    let mut errors = Vec::new();
+    if !root.has_error() {
+        return errors;
+    }
+
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        let ignored = ignore_after.is_some_and(|end| node.start_byte() > end);
+
+        if !ignored && (node.is_error() || node.is_missing()) {
+            let position = node.start_position();
+            let excerpt = |node: Node| {
+                let text = String::from_utf8_lossy(&content[node.byte_range()]);
+                let text = text.trim();
+                let first_line = text.lines().next().unwrap_or_default().trim_end();
+                let mut excerpt: String = first_line.chars().take(EXCERPT_CHARS).collect();
+                if excerpt.len() < text.len() {
+                    excerpt.push_str("...");
+                }
+                excerpt
+            };
+
+            let description = match node.parent() {
+                // The parser inserts the missing token where it gives up, e.g. at the end of
+                // the file, thus point to the construct that is not closed.
+                Some(parent) if node.is_missing() => format!(
+                    "missing `{}` to close {:?} at {}:{}",
+                    node.kind(),
+                    excerpt(parent),
+                    parent.start_position().row + 1,
+                    parent.start_position().column
+                ),
+                _ if node.is_missing() => format!("missing `{}`", node.kind()),
+                _ => format!(
+                    "cannot parse {} byte(s) starting with {:?}",
+                    node.byte_range().len(),
+                    excerpt(node)
+                ),
+            };
+
+            errors.push(format!(
+                "{}:{}:{}: {}",
+                filename,
+                position.row + 1,
+                position.column,
+                description
+            ));
+        }
+
+        // Only subtrees with errors need to be visited
+        if !ignored && node.has_error() && cursor.goto_first_child() {
+            continue;
+        }
+
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return errors;
+            }
+        }
+    }
+}
 
 /// Returns the name of an environment, e.g. `document`.
 fn environment_name<'c>(environment: &Node, content: &'c [u8]) -> Option<&'c [u8]> {

@@ -308,6 +308,22 @@ Due to the way that removing metadata can affect the rendering of images (e.g. r
 We currently only clean `.tex` files by default. You can turn on cleaning of other latex-like files (like `.sty` and `.cls`) with the `--clean-classes` flag.
 We found class files regularly not containing sensitive information, but carrying complex latex code causing grammar parsing errors.
 Depending on the result error, the cleaned file can be broken. This is for example the case for the IEEE class file.
+As grammar errors stop the cleaner unless `--force` is set (see below), cleaning such class files requires `--force` or a `% !ALC-NG keep-all` directive in the file.
+
+### Grammar errors stop the cleaner
+
+Content that the LaTeX grammar cannot parse is copied without cleaning, including its comments and conditionals.
+A single mistake, such as a missing `\fi` or an unclosed environment, can make the whole document body unparsable, even though LaTeX still compiles the document.
+Thus, the cleaner reports all grammar errors of a file and stops unless `--force` is set:
+
+```text
+Error: Found 1 grammar error(s) in main.tex. Content that cannot be parsed is copied without cleaning, including its comments and conditionals:
+  - main.tex:10:0: missing `\fi` to close "\\ifdraft..." at 4:0
+```
+
+Fix the LaTeX source, keep the file as is with a `% !ALC-NG keep-all` [directive](#per-file-directives), or continue with `--force` and check the cleaned file manually.
+Errors in the content after `\end{document}`, which is removed, are ignored.
+If your LaTeX is valid, please open an issue so we can improve the grammar.
 
 ### Supported new-command definitions
 
