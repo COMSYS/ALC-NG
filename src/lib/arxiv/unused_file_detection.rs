@@ -27,9 +27,10 @@ fn find_tex_input(input_line: &str) -> Option<String> {
 
     for tex_input_re in [&*TEX_INPUT_1, &*TEX_INPUT_2] {
         if let Some(captures) = tex_input_re.captures(input_line)
-            && let Some(matched) = captures.get(1) {
-                return Some(matched.as_str().trim().to_string());
-            }
+            && let Some(matched) = captures.get(1)
+        {
+            return Some(matched.as_str().trim().to_string());
+        }
     }
     None
 }
@@ -49,9 +50,10 @@ fn find_tex_thing(tex_line: &str, pattern: &Regex, needles: &[&str]) -> Option<S
 
     // Search for pattern match
     if let Some(captures) = pattern.captures(tex_line)
-        && let Some(matched) = captures.get(1) {
-            return Some(matched.as_str().to_string());
-        }
+        && let Some(matched) = captures.get(1)
+    {
+        return Some(matched.as_str().to_string());
+    }
 
     None
 }

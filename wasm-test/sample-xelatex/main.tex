@@ -1,0 +1,19 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{graphicx}
+\newfontfamily\heros{texgyreheros-regular.otf}
+% \input{unused} stays commented out: the cleaner drops unused.tex.
+\begin{document}
+\section{Unicode with XeLaTeX}
+Grüße aus dem Browser — “typographic quotes”, ligatures (fi, fl), and math $e^{i\pi}+1=0$.
+
+{\heros This line is set in TeX Gyre Heros, loaded by file name.}
+
+\input{used}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.3\linewidth]{figures/square}
+  \caption{A PNG placed by dvipdfmx.}
+\end{figure}
+\end{document}

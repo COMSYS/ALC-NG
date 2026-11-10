@@ -1,0 +1,34 @@
+variables:
+  SERVICE: alc-ng
+  DOCKERFILE: Dockerfile.wasm
+  SWIFTLATEX_URL: https://github.com/SwiftLaTeX/SwiftLaTeX/releases/download/v20022022/20-02-2022.zip
+  SWIFTLATEX_SHA256: cf5535ffe9cdf42f7c4522e96bba4d33db10c418a7ceb24e5d80504be7de7150
+
+stages:
+  - engines
+  - build
+  - deploy
+
+include:
+  - project: "comsys-staff/websites/ci-templates"
+    file: "docker-image.gitlab-ci.yml"
+
+engines:
+  stage: engines
+  image: python:3.13-alpine
+  script:
+    - apk add --no-cache curl unzip
+    - curl -sSL --retry 3 -o /tmp/swiftlatex.zip "$SWIFTLATEX_URL"
+    - echo "$SWIFTLATEX_SHA256  /tmp/swiftlatex.zip" | sha256sum -c -
+    - unzip -q /tmp/swiftlatex.zip -d /tmp/swiftlatex
+    - cp /tmp/swiftlatex/swiftlatex*.wasm wasm-test/swiftlatex/
+    - python3 -I wasm-test/patch-swiftlatex.py /tmp/swiftlatex wasm-test/swiftlatex
+    - ls -l wasm-test/swiftlatex/
+  artifacts:
+    paths:
+      - wasm-test/swiftlatex/
+    expire_in: 1 day
+
+deploy_staging:
+  rules:
+    - when: never

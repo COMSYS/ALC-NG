@@ -1,0 +1,6 @@
+INPUT ./main.tex
+INPUT ./used.tex
+INPUT ./sub/used2.tex
+OUTPUT ./main.pdf
+OUTPUT ./main.log
+OUTPUT ./main.aux

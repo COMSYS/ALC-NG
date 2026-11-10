@@ -1,0 +1,15 @@
+services:
+  alc-ng:
+    image: ${SERVICE_IMAGE:?set by the deploy job in .env}
+    container_name: alc-ng
+    restart: unless-stopped
+    networks:
+      proxy:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+
+networks:
+  proxy:
+    external: true

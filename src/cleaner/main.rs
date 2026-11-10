@@ -1,20 +1,35 @@
+// The CLI requires a native host with a LaTeX compiler; on wasm targets the
+// binary is a stub pointing at the library API. All items below are therefore
+// gated on non-wasm targets.
+#[cfg(not(target_family = "wasm"))]
 use alc_ng::{
-    cleaner::{config::CleanerConfig, file_renames::FileRenames, submission::Submission},
+    cleaner::{
+        config::{CleanerConfig, DEFAULT_IM_SIZE},
+        file_renames::FileRenames,
+        submission::Submission,
+    },
     exif_tool,
     helper::{image_diff, parse_hex_color},
 };
 
+#[cfg(not(target_family = "wasm"))]
 use clap::{ArgAction, Parser, ValueHint};
+#[cfg(not(target_family = "wasm"))]
 use itertools::Itertools;
-use log::{LevelFilter, info, trace, warn};
+#[cfg(not(target_family = "wasm"))]
+use log::{info, trace, warn, LevelFilter};
+#[cfg(not(target_family = "wasm"))]
 use std::{
     fs::remove_dir_all,
     path::PathBuf,
     sync::{Arc, LazyLock},
 };
+#[cfg(not(target_family = "wasm"))]
 use temp_dir::TempDir;
+#[cfg(not(target_family = "wasm"))]
 use walkdir::WalkDir;
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
 pub struct Config {
@@ -57,7 +72,7 @@ pub struct Config {
     pub resize_images: bool,
     /// Size of the output images (in pixels, longest side).
     /// Fine tune this to get as close to 10MB as possible.
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = DEFAULT_IM_SIZE)]
     pub im_size: u32,
     /// Also clean .sty and .cls latex files.
     #[arg(long, default_value_t = false)]
@@ -85,6 +100,7 @@ pub struct Config {
     pub diff_color: String,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Config {
     pub fn to_cleaner_config(&self) -> CleanerConfig {
         CleanerConfig {
@@ -130,6 +146,7 @@ impl Config {
 }
 
 /// Global configuration parsed from command‑line arguments.
+#[cfg(not(target_family = "wasm"))]
 static CONFIG: LazyLock<Config> = LazyLock::new(Config::parse);
 
 /// Ensures that all prerequisites for running the program are satisfied.
@@ -137,6 +154,7 @@ static CONFIG: LazyLock<Config> = LazyLock::new(Config::parse);
 /// successfully. If the check fails, the program panics with a helpful error message.
 /// # Panics
 /// Panics if the LaTeX command cannot be executed or returns a non‑zero exit status.
+#[cfg(not(target_family = "wasm"))]
 pub fn ensure_requirements() {
     use std::process::{Command, Stdio};
 
@@ -159,6 +177,7 @@ pub fn ensure_requirements() {
 
 /// Counts the files in `root` whose names would be renamed by
 /// [`FileRenames`] (i.e. paths that contain spaces).
+#[cfg(not(target_family = "wasm"))]
 fn count_renamable_files(root: &std::path::Path) -> usize {
     let relative_paths: Vec<PathBuf> = WalkDir::new(root)
         .into_iter()
@@ -177,6 +196,7 @@ fn count_renamable_files(root: &std::path::Path) -> usize {
 ///
 /// The prompt is skipped when renaming is already enabled, when `--force` is
 /// set, or when no TTY is attached (CI, piped input).
+#[cfg(not(target_family = "wasm"))]
 fn suggest_rename_files(config: &mut Config) -> anyhow::Result<()> {
     if config.tar.is_none() || config.rename_files || config.force {
         return Ok(());
@@ -211,6 +231,22 @@ fn suggest_rename_files(config: &mut Config) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<(), anyhow::Error> {
+    #[cfg(target_family = "wasm")]
+    {
+        eprintln!(
+            "The alc-ng CLI is not supported on wasm targets. Use the alc_ng library API instead."
+        );
+        std::process::exit(1);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    run_cli()
+}
+
+/// The CLI implementation. Requires a native host with a LaTeX compiler
+/// (and optionally exiftool) available.
+#[cfg(not(target_family = "wasm"))]
+fn run_cli() -> anyhow::Result<(), anyhow::Error> {
     let log_level = match CONFIG.verbose {
         0 => log::LevelFilter::Info,
         1 => log::LevelFilter::Debug,
