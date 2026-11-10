@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ffi::OsStr,
     fmt::Debug,
     fs::read,
@@ -17,6 +16,7 @@ use crate::{
             comment_commands::{AnalyzedFile, CommentCommand, CommentCommands, EmptyDefinition},
             deletion_stats::DeletionStats,
             directives::{FileDirectives, directive_keywords, parse_directives},
+            if_trace::{FileIfState, IfTrace, IfValue, IfValues},
         },
     },
     helper::{SourceFile, exception, is_empty, is_newline},
@@ -420,6 +420,7 @@ impl LatexLikeFile {
         deletion_stats: &mut DeletionStats,
         file_renames: &FileRenames,
         comment_commands: &Arc<CommentCommands>,
+        if_state: Option<FileIfState>,
     ) -> Result<()> {
         use std::fs::File;
 
@@ -432,6 +433,7 @@ impl LatexLikeFile {
             self.cleaner_config.clone(),
             Some(file_renames),
             comment_commands.clone(),
+            if_state,
         )?;
 
         deletion_stats.merge(stats);
@@ -455,11 +457,50 @@ impl LatexLikeFile {
     }
 
     /// The file as input of the comment command analysis.
-    pub fn analyzed<'a>(&'a self, filename: &'a str) -> AnalyzedFile<'a> {
+    pub fn analyzed<'a>(
+        &'a self,
+        filename: &'a str,
+        if_state: Option<&'a FileIfState>,
+    ) -> AnalyzedFile<'a> {
         AnalyzedFile {
             content: &self.original_content,
             root: self.tree.root_node(),
             filename,
+            if_state,
+        }
+    }
+
+    /// The names of the custom conditionals defined or used in the file (without `\if`),
+    /// except the conditionals of TeX and the iftex package.
+    pub fn conditional_names(&self) -> Vec<Vec<u8>> {
+        let content = self.original_content.as_slice();
+        let mut names = Vec::new();
+        let mut cursor = self.tree.walk();
+
+        loop {
+            let node = cursor.node();
+            let name = match node.grammar_name() {
+                "new_if" => content[node.byte_range()]
+                    .strip_prefix(b"\\newif\\if")
+                    .map(<[u8]>::trim_ascii),
+                "general_if" => custom_if_name(node, content).map(|(_, name)| name),
+                _ => None,
+            };
+            if let Some(name) = name
+                && !PRIMITIVE_CONDITIONALS.contains(&name)
+                && !IF_TEX_CONDITIONALS.contains(&name)
+            {
+                names.push(name.to_vec());
+            }
+
+            if cursor.goto_first_child() {
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return names;
+                }
+            }
         }
     }
 
@@ -637,6 +678,7 @@ impl ParsedFile {
         deletion_stats: &mut DeletionStats,
         file_renames: &FileRenames,
         comment_commands: &Arc<CommentCommands>,
+        if_trace: &IfTrace,
     ) -> Result<()> {
         match self {
             ParsedFile::LatexLike(latex_like_file) => latex_like_file.copy_cleaned_to(
@@ -644,6 +686,7 @@ impl ParsedFile {
                 deletion_stats,
                 file_renames,
                 comment_commands,
+                if_trace.state(latex_like_file.source_file.full()),
             ),
             ParsedFile::Bib(bib) => {
                 if bib.cleaner_config.keep_bib {
@@ -838,7 +881,15 @@ pub struct ContentStripper<'a> {
     cleaner_config: Arc<CleanerConfig>,
     filename: &'a str,
     content: &'a [u8],
-    if_values: HashMap<Vec<u8>, bool>,
+    /// Values of the custom conditionals at the current point of the file.
+    if_values: IfValues,
+    /// Values traced while compiling the project, see [`IfTrace`].
+    if_state: Option<FileIfState>,
+    /// Index of the first return of a loaded file in `if_state` that is not applied yet.
+    next_return: usize,
+    /// Depth of constructs whose content may not be executed at this point, i.e. conditionals
+    /// whose branches are both kept and definitions. Assignments in them make a conditional unknown.
+    uncertain_depth: usize,
     /// Commands whose invocations are removed, see [`CommentCommands`].
     comment_commands: Arc<CommentCommands>,
     /// Only collect the definitions of comment commands instead of cleaning.
@@ -885,6 +936,7 @@ impl<'a> ContentStripper<'a> {
                 content,
                 root,
                 filename,
+                if_state: None,
             }],
             cleaner_config.clone(),
         );
@@ -896,11 +948,13 @@ impl<'a> ContentStripper<'a> {
             cleaner_config,
             file_renames,
             comment_commands,
+            None,
         )
     }
 
     /// Like [`ContentStripper::clean_with_renames`], but with the comment commands
-    /// determined for the whole submission.
+    /// determined for the whole submission and the values of custom conditionals traced
+    /// while compiling (see [`IfTrace`]).
     pub fn clean_with_comment_commands(
         content: &'a [u8],
         root: Node<'a>,
@@ -908,6 +962,7 @@ impl<'a> ContentStripper<'a> {
         cleaner_config: Arc<CleanerConfig>,
         file_renames: Option<&'a FileRenames>,
         comment_commands: Arc<CommentCommands>,
+        if_state: Option<FileIfState>,
     ) -> Result<(Option<Vec<u8>>, DeletionStats)> {
         trace!("Starting content stripping for file: {}", filename);
         trace!("Content size: {} bytes", content.len());
@@ -916,6 +971,7 @@ impl<'a> ContentStripper<'a> {
         stripper.file_renames = file_renames;
         stripper.comment_commands = comment_commands;
         stripper.directives = parse_directives(root, content);
+        stripper.set_if_state(if_state);
 
         if !stripper.directives.is_empty() {
             info!(
@@ -960,11 +1016,13 @@ impl<'a> ContentStripper<'a> {
         filename: &'a str,
         cleaner_config: Arc<CleanerConfig>,
         comment_commands: Arc<CommentCommands>,
+        if_state: Option<&FileIfState>,
     ) -> Result<Vec<EmptyDefinition>> {
         let mut stripper = Self::new(content, filename, cleaner_config);
         stripper.comment_commands = comment_commands;
         stripper.collecting = true;
         stripper.directives = parse_directives(root, content);
+        stripper.set_if_state(if_state.cloned());
 
         if stripper.directives.keep_all {
             return Ok(Vec::new());
@@ -981,6 +1039,9 @@ impl<'a> ContentStripper<'a> {
             content,
             cleaner_config,
             if_values: Default::default(),
+            if_state: None,
+            next_return: 0,
+            uncertain_depth: 0,
             comment_commands: Default::default(),
             collecting: false,
             empty_definitions: Vec::new(),
@@ -997,6 +1058,9 @@ impl<'a> ContentStripper<'a> {
     fn handle_node(&mut self, node: Node<'a>, previous_node: NodeHandling) -> Result<NodeHandling> {
         let node_content = &self.content[node.byte_range()];
         let grammar_name = node.grammar_name();
+
+        // Files loaded on previous lines have returned at this point
+        self.apply_returns_before(node.start_position().row + 1);
 
         // Remove text that is present after a \end{document} block
         if let Some(last_byte_of_document_block) = self.last_byte_of_document_block
@@ -1236,15 +1300,28 @@ impl<'a> ContentStripper<'a> {
                 let mut new_content = whitespaces;
                 let mut i = 0;
                 let mut prev_node = previous_node;
+                // The body of an environment definition is executed when the environment is used
+                let is_definition = x == "environment_definition";
 
+                self.uncertain_depth += is_definition as usize;
+                let mut result = Ok(());
                 while let Some(child) = node.child(i) {
-                    let result = self.handle_node(child, prev_node.clone())?;
+                    let child_result = match self.handle_node(child, prev_node.clone()) {
+                        Ok(r) => r,
+                        Err(err) => {
+                            result = Err(err);
+                            break;
+                        }
+                    };
 
-                    result.append_to(&mut new_content, &prev_node);
+                    child_result.append_to(&mut new_content, &prev_node);
 
-                    prev_node = result;
+                    prev_node = child_result;
                     i += 1;
                 }
+                self.uncertain_depth -= is_definition as usize;
+
+                result?;
 
                 // The node following this one must skip the whitespace after the closing `\fi`
                 if matches!(prev_node, IfBranchKept(_)) {
@@ -1261,7 +1338,7 @@ impl<'a> ContentStripper<'a> {
                     .strip_prefix(b"\\newif\\if")
                     .unwrap()
                     .trim_ascii();
-                self.if_values.insert(name.to_owned(), false);
+                self.assign_if(name, false);
 
                 // We keep the definition even though it will be evaluated for every instance
                 // If the if is used as part of an error node, then the document will break
@@ -1276,7 +1353,7 @@ impl<'a> ContentStripper<'a> {
                     .and_then(|s| s.strip_suffix(b"false"))
                     .unwrap_or_default()
                     .trim_ascii();
-                self.if_values.insert(name.to_owned(), false);
+                self.assign_if(name, false);
 
                 // We keep the definition even though it will be evaluated for every instance
                 // If the if is used as part of an error node, then the document will break
@@ -1292,7 +1369,7 @@ impl<'a> ContentStripper<'a> {
                     .and_then(|s| s.strip_suffix(b"true"))
                     .unwrap_or_default()
                     .trim_ascii();
-                self.if_values.insert(name.to_owned(), true);
+                self.assign_if(name, true);
 
                 // We keep the definition even though it will be evaluated for every instance
                 // If the if is used as part of an error node, then the document will break
@@ -1708,12 +1785,106 @@ impl<'a> ContentStripper<'a> {
         Ok(IfBranchKept(kept))
     }
 
+    /// Applies the traced values after files loaded before `line` (1-based) returned.
+    fn apply_returns_before(&mut self, line: usize) {
+        let Some(state) = &self.if_state else {
+            return;
+        };
+
+        while let Some((returned_at, values)) = state.returns.get(self.next_return)
+            && *returned_at < line
+        {
+            self.if_values
+                .extend(values.iter().map(|(name, value)| (name.clone(), *value)));
+            self.next_return += 1;
+        }
+    }
+
+    /// The value of a custom conditional used at `line` (1-based).
+    fn if_value(&self, name: &[u8], line: usize) -> Option<IfValue> {
+        let current = self.if_values.get(name).copied();
+
+        // A file loaded on the same line may be loaded before or after the conditional
+        let changed_on_line = self.if_state.as_ref().is_some_and(|state| {
+            state.returns[self.next_return..]
+                .iter()
+                .take_while(|(returned_at, _)| *returned_at == line)
+                .any(|(_, values)| values.get(name).is_some_and(|v| Some(*v) != current))
+        });
+
+        if changed_on_line {
+            Some(IfValue::Unknown)
+        } else {
+            current
+        }
+    }
+
+    /// Sets the value of a custom conditional, unless the assignment may not be executed.
+    fn assign_if(&mut self, name: &[u8], value: bool) {
+        let value = if self.uncertain_depth > 0 {
+            IfValue::Unknown
+        } else {
+            IfValue::Known(value)
+        };
+        self.if_values.insert(name.to_owned(), value);
+    }
+
+    /// Initializes the values of custom conditionals with the values at the start of the file.
+    fn set_if_state(&mut self, if_state: Option<FileIfState>) {
+        if let Some(state) = &if_state {
+            self.if_values = state.entry.clone();
+        }
+        self.if_state = if_state;
+        self.next_return = 0;
+    }
+
+    /// Preserves a conditional whose value is not known, but cleans both branches.
+    fn keep_both_branches(
+        &mut self,
+        node: Node<'a>,
+        mut previous_node: NodeHandling,
+        name_with_prefix: &[u8],
+        mut new_content: Vec<u8>,
+    ) -> Result<NodeHandling> {
+        new_content.extend_from_slice(name_with_prefix);
+
+        // Assignments in the branches may not be executed
+        self.uncertain_depth += 1;
+        let mut i = 0;
+        let mut result = Ok(());
+
+        while let Some(child) = node.child(i) {
+            let child_result = match child.grammar_name() {
+                r"\else" | r"\fi" => {
+                    let mut c = self.whitespace_to_previous_node(&child);
+                    c.extend_from_slice(&self.content[child.start_byte()..child.end_byte()]);
+                    NodeHandling::Kept(c)
+                }
+                _ => match self.handle_node(child, previous_node.clone()) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        result = Err(err);
+                        break;
+                    }
+                },
+            };
+
+            child_result.append_to(&mut new_content, &previous_node);
+
+            previous_node = child_result;
+            i += 1;
+        }
+        self.uncertain_depth -= 1;
+
+        result.map(|_| Kept(new_content))
+    }
+
     /// Handles a custom `\if` block, evaluating its condition
     /// based on previously defined `\newif` statements.
     fn handle_if_block(
         &mut self,
         node: Node<'a>,
-        mut previous_node: NodeHandling,
+        previous_node: NodeHandling,
         node_content: &'a [u8],
         mut new_content: Vec<u8>,
     ) -> Result<NodeHandling> {
@@ -1725,28 +1896,29 @@ impl<'a> ContentStripper<'a> {
             return Ok(Kept(new_content));
         }
 
-        let first_byte_of_next_node = match node.child(0) {
-            Some(c) => c.start_byte(),
-            None => match node.next_sibling() {
-                Some(c) => c.start_byte(),
-                None => {
-                    new_content.extend_from_slice(node_content);
-                    return self.exception(
-                        anyhow!("Custom if does not have any child or subsequent nodes."),
-                        Kept(new_content),
-                    );
-                }
-            },
+        let Some((name_with_prefix, name)) = custom_if_name(node, self.content) else {
+            new_content.extend_from_slice(node_content);
+            return self.exception(
+                anyhow!("Custom if does not have any child or subsequent nodes."),
+                Kept(new_content),
+            );
         };
 
-        let name_with_prefix = &self.content[node.start_byte()..first_byte_of_next_node];
-        let name = name_with_prefix
-            .strip_prefix(b"\\if")
-            .unwrap_or(name_with_prefix)
-            .trim_ascii();
-
-        let is_true = match self.if_values.get(name) {
-            Some(b) => b,
+        let is_true = match self.if_value(name, node.start_position().row + 1) {
+            Some(IfValue::Known(b)) => b,
+            // The value depends on where the file is loaded: preserve the if but clean both branches.
+            Some(IfValue::Unknown) => {
+                if !self.collecting {
+                    warn!(
+                        "The value of '\\if{}' at {}:{}:{} is not known, e.g. as the file is loaded with different values. Preserving if but cleaning both branches.",
+                        String::from_utf8_lossy(name),
+                        self.filename,
+                        node.start_position().row + 1,
+                        node.start_position().column
+                    );
+                }
+                return self.keep_both_branches(node, previous_node, name_with_prefix, new_content);
+            }
             // Conditionals of TeX and its engines, or the iftex package: preserve the if but clean both branches.
             None if PRIMITIVE_CONDITIONALS.contains(&name)
                 || IF_TEX_CONDITIONALS.contains(&name) =>
@@ -1770,29 +1942,7 @@ impl<'a> ContentStripper<'a> {
                         node.start_position().column
                     );
                 }
-                new_content.extend_from_slice(name_with_prefix);
-
-                let mut i = 0;
-
-                while let Some(child) = node.child(i) {
-                    let result = match child.grammar_name() {
-                        r"\else" | r"\fi" => {
-                            let mut c = self.whitespace_to_previous_node(&child);
-                            c.extend_from_slice(
-                                &self.content[child.start_byte()..child.end_byte()],
-                            );
-                            NodeHandling::Kept(c)
-                        }
-                        _ => self.handle_node(child, previous_node.clone())?,
-                    };
-
-                    result.append_to(&mut new_content, &previous_node);
-
-                    previous_node = result;
-                    i += 1;
-                }
-
-                return Ok(Kept(new_content));
+                return self.keep_both_branches(node, previous_node, name_with_prefix, new_content);
             }
             None => {
                 new_content.extend_from_slice(node_content);
@@ -1813,7 +1963,7 @@ impl<'a> ContentStripper<'a> {
         let else_content = node.child_by_field_name("else");
 
         if let Some(c) = if_content
-            && *is_true
+            && is_true
         {
             if let Some(else_content) = else_content {
                 self.deletion_stats
@@ -1825,7 +1975,7 @@ impl<'a> ContentStripper<'a> {
         }
 
         if let Some(c) = else_content
-            && !*is_true
+            && !is_true
         {
             if let Some(if_content) = if_content {
                 self.deletion_stats
@@ -2004,21 +2154,27 @@ impl<'a> ContentStripper<'a> {
         let mut prev_node = previous_node;
         let mut i = 0;
 
-        while let Some(child) = node.child(i) {
-            let result = self.handle_node(child, prev_node.clone())?;
+        // The body is executed when the command is used, not here
+        self.uncertain_depth += 1;
+        let result = (|| {
+            while let Some(child) = node.child(i) {
+                let result = self.handle_node(child, prev_node.clone())?;
 
-            if child == implementation
-                && let Some(signature) = &signature
-            {
-                self.record_definition(node, signature, result.text())?;
+                if child == implementation
+                    && let Some(signature) = &signature
+                {
+                    self.record_definition(node, signature, result.text())?;
+                }
+
+                result.append_to(&mut new_content, &prev_node);
+                prev_node = result;
+                i += 1;
             }
+            Ok(())
+        })();
+        self.uncertain_depth -= 1;
 
-            result.append_to(&mut new_content, &prev_node);
-            prev_node = result;
-            i += 1;
-        }
-
-        Ok(Kept(new_content))
+        result.map(|_| Kept(new_content))
     }
 
     /// Records a definition as comment command candidate while collecting,
@@ -2276,6 +2432,22 @@ fn grammar_errors(
             }
         }
     }
+}
+
+/// Returns the `\if` token of a custom conditional (`general_if`) and its name without `\if`.
+fn custom_if_name<'c>(node: Node, content: &'c [u8]) -> Option<(&'c [u8], &'c [u8])> {
+    let first_byte_of_next_node = match node.child(0) {
+        Some(c) => c.start_byte(),
+        None => node.next_sibling()?.start_byte(),
+    };
+
+    let name_with_prefix = &content[node.start_byte()..first_byte_of_next_node];
+    let name = name_with_prefix
+        .strip_prefix(b"\\if")
+        .unwrap_or(name_with_prefix)
+        .trim_ascii();
+
+    Some((name_with_prefix, name))
 }
 
 /// Returns the name of an environment, e.g. `document`.

@@ -18,7 +18,10 @@ use std::{
 use log::{debug, info, trace};
 use tree_sitter::Node;
 
-use crate::cleaner::{config::CleanerConfig, submission::parsed_file::ContentStripper};
+use crate::cleaner::{
+    config::CleanerConfig,
+    submission::{if_trace::FileIfState, parsed_file::ContentStripper},
+};
 
 /// Upper bound of analysis rounds. Each round may find commands whose body only consists of
 /// invocations of comment commands found in the previous round.
@@ -163,6 +166,8 @@ pub struct AnalyzedFile<'a> {
     pub root: Node<'a>,
     /// The name the file is cleaned with.
     pub filename: &'a str,
+    /// The values of custom conditionals traced while compiling, see [`FileIfState`].
+    pub if_state: Option<&'a FileIfState>,
 }
 
 /// The comment commands of a submission, see the module documentation.
@@ -197,6 +202,7 @@ impl CommentCommands {
                     file.filename,
                     cleaner_config.clone(),
                     commands.clone(),
+                    file.if_state,
                 ) {
                     Ok(found) => {
                         for definition in found {
