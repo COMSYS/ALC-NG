@@ -15,14 +15,6 @@ mod tests {
             .collect()
     }
 
-    /// Asserts that the conditional is evaluated: only the `kept` branch remains.
-    /// The whitespace around evaluated conditionals is not checked here.
-    fn assert_evaluated(cleaned: &str, kept: &str, removed: &str) {
-        assert!(cleaned.contains(kept), "{cleaned:?}");
-        assert!(!cleaned.contains(removed), "{cleaned:?}");
-        assert!(!cleaned.contains("\\ifdraft"), "{cleaned:?}");
-    }
-
     fn clean(input: &[u8], if_state: Option<FileIfState>) -> anyhow::Result<String> {
         let tree = parse(input).unwrap();
         let (stripped, _) = ContentStripper::clean_with_comment_commands(
@@ -47,8 +39,10 @@ mod tests {
         };
 
         assert!(clean(input, None).is_err());
-        assert_evaluated(&clean(input, Some(state(true))).unwrap(), "Draft", "Final");
-        assert_evaluated(&clean(input, Some(state(false))).unwrap(), "Final", "Draft");
+        // The comment in front of `\else` ends the branch and is removed with its newline,
+        // which TeX reads the same way
+        assert_eq!(clean(input, Some(state(true))).unwrap(), "Draft ");
+        assert_eq!(clean(input, Some(state(false))).unwrap(), "Final\n");
     }
 
     #[test]
@@ -61,8 +55,7 @@ mod tests {
         };
 
         let cleaned = clean(input, Some(state)).unwrap();
-        assert_evaluated(&cleaned, "B", "A");
-        assert_evaluated(&cleaned, "C", "D");
+        assert_eq!(cleaned, "B\n\\input{settings}\nC\n");
     }
 
     #[test]
@@ -101,7 +94,7 @@ mod tests {
             returns: Vec::new(),
         };
 
-        assert_evaluated(&clean(input, Some(state)).unwrap(), "A", "B");
+        assert_eq!(clean(input, Some(state)).unwrap(), "\\drafttrue\nA\n");
     }
 
     /// The body of a definition is executed when the command is used, not where it is defined.
