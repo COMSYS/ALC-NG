@@ -764,6 +764,10 @@ enum NodeHandling {
     /// see [`ContentStripper::keep_branch`]. TeX skips the spaces and the newline after
     /// the closing `\fi`, thus they are dropped from the following node.
     IfBranchKept(Vec<u8>),
+    /// The node was kept, but its last child spanned complete lines and was deleted, e.g. a
+    /// false conditional before the closing `}` of a group. The rest of that line is dropped
+    /// from the following node.
+    EndsWithDeletedLine(Vec<u8>),
     /// The node was after \end{document} and was deleted.
     OutOfBounds,
     /// The node was an invocation of a comment command in math mode that was deleted.
@@ -784,6 +788,7 @@ impl NodeHandling {
             IfEvaluated(ws) => Some(ws),
             IfEvaluatedEmpty(ws, _) => Some(ws),
             IfBranchKept(text) => Some(text),
+            EndsWithDeletedLine(text) => Some(text),
             CommandInvocationDeleted(ws, _) => Some(ws),
             CommentPackageIncludeDeleted(ws, _) => Some(ws),
             BlockCommentDeleted(ws, _) => Some(ws),
@@ -812,6 +817,7 @@ impl NodeHandling {
             IfEvaluated(ws) => ws,
             IfEvaluatedEmpty(ws, _) => ws,
             IfBranchKept(text) => text,
+            EndsWithDeletedLine(text) => text,
             CommandInvocationDeleted(ws, _) => ws,
             CommentPackageIncludeDeleted(ws, _) => ws,
             BlockCommentDeleted(ws, _) => ws,
@@ -858,6 +864,7 @@ impl NodeHandling {
             | CommandInvocationReplaced(_)
             | CommentPackageIncludeDeleted(_, false) => existing.extend_from_slice(own_text),
             FullLineCommentDeleted(_)
+            | EndsWithDeletedLine(_)
             | BlockCommentDeleted(_, true)
             | IfEvaluatedEmpty(_, true)
             | CommandInvocationDeleted(_, true)
@@ -1354,6 +1361,10 @@ impl<'a> ContentStripper<'a> {
                 // The node following this one must skip the whitespace after the closing `\fi`
                 if matches!(prev_node, IfBranchKept(_)) {
                     return Ok(IfBranchKept(new_content));
+                }
+                // The rest of the deleted line is part of the node following this one
+                if prev_node.is_fullline_deletion() || matches!(prev_node, EndsWithDeletedLine(_)) {
+                    return Ok(EndsWithDeletedLine(new_content));
                 }
 
                 Ok(Kept(new_content))
@@ -2129,6 +2140,9 @@ impl<'a> ContentStripper<'a> {
             // TeX skips the whitespace after the closing `\fi` of an evaluated conditional
             let rest = match prev_node {
                 IfBranchKept(_) => skip_after_control_word(rest, &new_content),
+                // The rest of the deleted line, i.e. trailing spaces and its newline
+                EndsWithDeletedLine(_) => strip_rest_of_blank_line(rest),
+                ref p if p.is_fullline_deletion() => strip_rest_of_blank_line(rest),
                 _ => rest,
             };
             new_content.extend_from_slice(rest);
