@@ -40,6 +40,16 @@ mod tests {
             "Text\nD\n\nafter\n",
         ),
         (
+            "paragraph after the fi",
+            "Text \\ifdraft A\\fi\n\nafter\n",
+            "Text A\n\nafter\n",
+        ),
+        (
+            "paragraph and comment after the fi",
+            "Text \\ifdraft A\\fi\n\n% comment\nafter \\ifdraft B\\fi\n  \nend\n",
+            "Text A\n\nafter B\n  \nend\n",
+        ),
+        (
             "else branch",
             "Text\n\\iffinal\nA\n\\else\nB\n\\fi\nafter\n",
             "Text\nB\nafter\n",

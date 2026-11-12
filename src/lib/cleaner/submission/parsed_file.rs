@@ -834,7 +834,10 @@ impl NodeHandling {
 
         match &prev {
             OutOfBounds => (),
-            IfBranchKept(_) => existing.extend_from_slice(skip_after_control_word(own_text)),
+            IfBranchKept(_) => {
+                let skipped = skip_after_control_word(own_text, existing).to_owned();
+                existing.extend_from_slice(&skipped);
+            }
             BlockCommentDeleted(_, false) => {
                 // Drop the newline if it exists as it is consumed by the comment env
                 // This code is complex as Rust does not offer another way to drop a prefix in-place
@@ -1784,11 +1787,12 @@ impl<'a> ContentStripper<'a> {
             let gap_after = &self.content[branch.end_byte()..next.start_byte()];
             if gap_after.iter().all(u8::is_ascii_whitespace) {
                 // A nested conditional ends the branch, TeX skips the whitespace after its `\fi`
-                kept.extend_from_slice(if ends_with_conditional {
-                    skip_after_control_word(gap_after)
+                let gap = if ends_with_conditional {
+                    skip_after_control_word(gap_after, &kept)
                 } else {
                     gap_after
-                });
+                };
+                kept.extend_from_slice(gap);
             }
         }
 
@@ -2083,7 +2087,7 @@ impl<'a> ContentStripper<'a> {
             let rest = &self.content[last_byte_of_source_file..];
             // TeX skips the whitespace after the closing `\fi` of an evaluated conditional
             let rest = match prev_node {
-                IfBranchKept(_) => skip_after_control_word(rest),
+                IfBranchKept(_) => skip_after_control_word(rest, &new_content),
                 _ => rest,
             };
             new_content.extend_from_slice(rest);
@@ -2674,15 +2678,32 @@ fn strip_rest_of_blank_line(content: &[u8]) -> &[u8] {
     }
 }
 
-/// Strips what TeX skips after a control word: spaces or tabs and one newline.
-/// A following empty line still starts a new paragraph.
-fn skip_after_control_word(content: &[u8]) -> &[u8] {
+/// Strips what TeX skips after a removed control word: spaces or tabs and one newline.
+/// `before` is the cleaned text in front of the control word.
+///
+/// A following empty line still starts a new paragraph. If `before` does not end its line,
+/// the newline would end that line instead and the empty line would vanish, so it is kept:
+/// the space it adds in front of the paragraph end is removed by TeX.
+fn skip_after_control_word<'c>(content: &'c [u8], before: &[u8]) -> &'c [u8] {
     let spaces = content
         .iter()
         .take_while(|&&b| is_horizontal_whitespace(b))
         .count();
 
-    strip_leading_newline(&content[spaces..])
+    let next_line_is_empty = rest
+        .iter()
+        .find(|&&b| !is_horizontal_whitespace(b))
+        .is_some_and(|&b| is_newline(b));
+    let line_ended = before
+        .iter()
+        .rev()
+        .find(|&&b| !is_horizontal_whitespace(b))
+        .is_none_or(|&b| is_newline(b));
+    if next_line_is_empty && !line_ended && rest.len() < content.len() - spaces {
+        &content[spaces..]
+    } else {
+        rest
+    }
 }
 
 /// Strips trailing spaces or tabs, i.e. the indentation of a deleted line.
@@ -2706,3 +2727,4 @@ pub fn strip_leading_newline(content: &[u8]) -> &[u8] {
         _ => content,
     }
 }
+    let rest = strip_leading_newline(&content[spaces..]);
