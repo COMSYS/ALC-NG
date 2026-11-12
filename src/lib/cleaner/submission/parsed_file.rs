@@ -1868,6 +1868,26 @@ impl<'a> ContentStripper<'a> {
         }
     }
 
+    /// The command around `node` that stores its argument to expand it later, e.g. `\author`
+    /// whose argument is expanded by `\maketitle`.
+    fn stored_argument(&self, node: Node<'a>) -> Option<Node<'a>> {
+        let mut parent = node.parent();
+        while let Some(p) = parent {
+            let stores = match p.kind() {
+                "title_declaration" | "author_declaration" => true,
+                "generic_command" => p
+                    .child_by_field_name("command")
+                    .is_some_and(|c| STORING_COMMANDS.contains(&&self.content[c.byte_range()])),
+                _ => false,
+            };
+            if stores {
+                return Some(p);
+            }
+            parent = p.parent();
+        }
+        None
+    }
+
     /// Sets the value of a custom conditional, unless the assignment may not be executed.
     fn assign_if(&mut self, name: &[u8], value: bool) {
         let value = if self.uncertain_depth > 0 {
@@ -1953,10 +1973,16 @@ impl<'a> ContentStripper<'a> {
             );
         };
 
-        let value = if self.definitions.is_empty() {
-            self.if_value(name, node.start_position().row + 1)
-        } else {
+        let value = if !self.definitions.is_empty() {
             self.if_value_in_definition(name)
+        } else if let Some(command) = self.stored_argument(node) {
+            // The argument is stored and expanded later, like the body of a definition
+            self.enter_definition(command, None);
+            let value = self.if_value_in_definition(name);
+            self.definitions.pop();
+            value
+        } else {
+            self.if_value(name, node.start_position().row + 1)
         };
         let is_true = match value {
             Some(IfValue::Known(b)) => b,
@@ -2437,6 +2463,25 @@ struct Signature<'a> {
     /// The first argument is optional.
     optional: bool,
 }
+
+/// Commands that store their argument to expand it later, besides `\title` and `\author`.
+const STORING_COMMANDS: &[&[u8]] = &[
+    br"\date",
+    br"\thanks",
+    br"\subtitle",
+    br"\address",
+    br"\affiliation",
+    br"\affil",
+    br"\institute",
+    br"\email",
+    br"\keywords",
+    br"\markboth",
+    br"\markright",
+    br"\AtBeginDocument",
+    br"\AtEndDocument",
+    br"\AtEndOfClass",
+    br"\AtEndOfPackage",
+];
 
 /// `\newcommand`-like definitions that can define comment commands.
 /// `\providecommand` is missing as it keeps an existing definition.
