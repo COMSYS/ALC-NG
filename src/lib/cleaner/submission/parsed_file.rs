@@ -1602,6 +1602,34 @@ impl<'a> ContentStripper<'a> {
 
     /// Handles a block comment node, which may contain nested conditional
     /// expressions and other sub‑nodes.
+    /// Returns `false` if a block comment like `\iffalse ... \fi` must be kept as it is:
+    /// - Without its `\fi`, e.g. `\def\bco{\iffalse}`, it is a part of another conditional.
+    /// - TeX reads the braces of the skipped branch inside a definition or argument, e.g. the
+    ///   `\iffalse{\fi` that balances the braces of a definition.
+    /// - `\if0` and `\if1` compare the digit with the next token: they are false if a space
+    ///   follows, but `\if0\blind` depends on the expansion of `\blind`. As `\if1` is false,
+    ///   its `\else` branch, which is parsed as comment, is the one that TeX shows.
+    fn is_constant_conditional(&self, node: Node<'a>, begin: Node<'a>) -> bool {
+        let content = &self.content[node.byte_range()];
+
+        let has_fi = node
+            .child((node.child_count() as u32).saturating_sub(1))
+            .is_some_and(|c| c.grammar_name() == r"\fi");
+        if matches!(begin.grammar_name(), r"\iffalse" | r"\if0" | r"\iftrue" | r"\if1")
+            && (!has_fi || !braces_balanced(content))
+        {
+            return false;
+        }
+
+        match begin.grammar_name() {
+            r"\if0" => self.content[begin.end_byte()..]
+                .first()
+                .is_some_and(u8::is_ascii_whitespace),
+            r"\if1" => false,
+            _ => true,
+        }
+    }
+
     fn handle_block_comment(
         &mut self,
         node: Node<'a>,
@@ -1644,6 +1672,12 @@ impl<'a> ContentStripper<'a> {
             return Ok(Kept(kept));
         }
 
+        if !self.is_constant_conditional(node, first_child) {
+            let mut kept = whitespaces;
+            kept.extend_from_slice(&self.content[node.byte_range()]);
+            return Ok(Kept(kept));
+        }
+
         match grammar_name {
             r"\iffalse" | r"\if0" => {
                 // First node is content
@@ -1672,12 +1706,9 @@ impl<'a> ContentStripper<'a> {
                 Ok(IfEvaluatedEmpty(whitespaces, fullline))
             }
             r"\iftrue" => {
-                // First node is content (content should be kept)
-                // Second node is \else or \fi
-                // Third node is content of else block if present (should be deleted)
-                // Fourth node is \fi if present
-                if let Some(if_content) = node.child(1) {
-                    if let Some(else_content) = node.child(3) {
+                // The `then` branch is kept, the `comment` (`\else` branch) is deleted
+                if let Some(if_content) = node.child_by_field_name("then") {
+                    if let Some(else_content) = node.child_by_field_name("comment") {
                         self.deletion_stats
                             .if_evaluated
                             .push(self.content[else_content.byte_range()].to_owned());
@@ -2847,6 +2878,31 @@ fn percent_catcode(rest: &[u8]) -> Option<Option<u32>> {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Returns `true` if every `{` in `content` is closed by a `}`, ignoring escaped braces
+/// (`\{`) and comments.
+fn braces_balanced(content: &[u8]) -> bool {
+    let mut depth = 0usize;
+    let mut i = 0;
+    while let Some(&b) = content.get(i) {
+        match b {
+            b'\\' => i += 1,
+            b'%' => {
+                while content.get(i + 1).is_some_and(|&c| !is_newline(c)) {
+                    i += 1;
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return false,
+            },
+            _ => (),
+        }
+        i += 1;
+    }
+    depth == 0
 }
 
 fn strip_rest_of_blank_line(content: &[u8]) -> &[u8] {

@@ -89,8 +89,13 @@ static bool is_letter(int32_t c) {
 // Skips the branch of a conditional like TeX does: up to the `\fi` (or with `stop_at_else`
 // the `\else`) that closes it, not one in a comment, in a longer command name (`\fill`) or of
 // a nested conditional. The token ends in front of the `\` of that `\fi` or `\else`.
+//
+// A `}` that closes a group opened in front of the conditional ends the scan without a token:
+// the conditional is inside a definition or argument, e.g. `\def\bco{\iffalse}`, and its `\fi`
+// is elsewhere.
 static bool scan_conditional_branch(TSLexer *lexer, bool stop_at_else) {
   unsigned depth = 0;
+  unsigned braces = 0;
 
   while (!lexer->eof(lexer)) {
     lexer->mark_end(lexer);
@@ -101,6 +106,15 @@ static bool scan_conditional_branch(TSLexer *lexer, bool stop_at_else) {
         lexer->advance(lexer, false);
       }
       continue;
+    }
+
+    if (lexer->lookahead == '{') {
+      braces++;
+    } else if (lexer->lookahead == '}') {
+      if (braces == 0) {
+        return false;
+      }
+      braces--;
     }
 
     if (lexer->lookahead != '\\') {
