@@ -1241,7 +1241,9 @@ impl<'a> ContentStripper<'a> {
                     }
                 };
 
-                if &self.content[path.byte_range()] == b"comment" && !self.directives.keep_comments
+                if &self.content[path.byte_range()] == b"comment"
+                    && !self.directives.keep_comments
+                    && !needs_comment_package(node, self.content)
                 {
                     // Only spaces or tabs separate the node from the surrounding newlines, thus, we are fullline.
                     let fullline = self.is_fullline(&node);
@@ -2878,6 +2880,50 @@ fn percent_catcode(rest: &[u8]) -> Option<Option<u32>> {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Returns `true` if the `comment` package is still needed after cleaning: a command of the
+/// package is used, or a `comment` environment is not parsed as such, e.g. in content that
+/// cannot be parsed and is copied as it is.
+fn needs_comment_package(node: Node, content: &[u8]) -> bool {
+    const COMMANDS: [&[u8]; 4] = [
+        br"\excludecomment",
+        br"\includecomment",
+        br"\specialcomment",
+        br"\processcomment",
+    ];
+    if COMMANDS.iter().any(|c| find(content, c).is_some()) {
+        return true;
+    }
+
+    let mut root = node;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+
+    let begin = br"\begin{comment}";
+    let mut search = 0;
+    while let Some(offset) = find(&content[search..], begin) {
+        let start = search + offset;
+        search = start + begin.len();
+
+        // Content in an error node is copied as it is, unless the error starts the file
+        let mut current = root.descendant_for_byte_range(start, start + 1);
+        let mut removed = false;
+        while let Some(n) = current {
+            match n.kind() {
+                "ERROR" if n.start_byte() > 0 => return true,
+                "comment_environment" | "line_comment" => removed = true,
+                _ => (),
+            }
+            current = n.parent();
+        }
+        if !removed {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Returns `true` if every `{` in `content` is closed by a `}`, ignoring escaped braces
