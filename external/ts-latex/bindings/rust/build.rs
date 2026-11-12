@@ -16,6 +16,7 @@ fn main() {
     )
     .expect("Failed to generate parser");
     println!("cargo:rerun-if-changed=grammar.js");
+    println!("cargo:rerun-if-changed=src/scanner.c");
 
     let mut c_config = cc::Build::new();
     c_config.cargo_warnings(false);
