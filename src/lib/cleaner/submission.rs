@@ -433,6 +433,18 @@ impl Submission {
                 }
             }
         }
+
+        if !self.if_trace.is_complete() {
+            return;
+        }
+
+        // Conditionals in definitions depend on where the defined commands are used
+        for parsed in &self.initial_file_list {
+            if let ParsedFile::LatexLike(file) = parsed {
+                self.if_trace
+                    .add_preamble_commands(file.source_file.full(), &file.original_content);
+            }
+        }
     }
 
     /// Compiles the identified LaTeX main files and records the compiler output.

@@ -82,80 +82,82 @@ static bool find_verbatim(TSLexer *lexer, const char *keyword,
   return has_marked;
 }
 
-static bool scan_until_fi(TSLexer *lexer) {
+static bool is_letter(int32_t c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '@';
+}
 
-  lexer->mark_end(lexer);
+// Skips the branch of a conditional like TeX does: up to the `\fi` (or with `stop_at_else`
+// the `\else`) that closes it, not one in a comment, in a longer command name (`\fill`) or of
+// a nested conditional. The token ends in front of the `\` of that `\fi` or `\else`.
+static bool scan_conditional_branch(TSLexer *lexer, bool stop_at_else) {
+  unsigned depth = 0;
 
   while (!lexer->eof(lexer)) {
+    lexer->mark_end(lexer);
 
-    // Peek at lookahead sequence without consuming
-    if (lexer->lookahead == '\\') {
-
-      lexer->advance(lexer, false);
-
-      if (lexer->lookahead == 'f') {
-
+    if (lexer->lookahead == '%') {
+      // A comment, up to the end of the line
+      while (!lexer->eof(lexer) && lexer->lookahead != '\n') {
         lexer->advance(lexer, false);
-
-        if (lexer->lookahead == 'i') {
-
-          // Rewind position (stop BEFORE '\')
-          return true;
-        }
       }
+      continue;
     }
 
-    // Not matching start, move on
-    lexer->mark_end(lexer);
+    if (lexer->lookahead != '\\') {
+      lexer->advance(lexer, false);
+      continue;
+    }
+
     lexer->advance(lexer, false);
+    if (lexer->eof(lexer)) {
+      break;
+    }
+    if (!is_letter(lexer->lookahead)) {
+      // A control symbol, e.g. `\%` or `\\`
+      lexer->advance(lexer, false);
+      continue;
+    }
+
+    // A control word: only its first letters are needed
+    char name[12];
+    unsigned length = 0;
+    while (!lexer->eof(lexer) && is_letter(lexer->lookahead)) {
+      if (length < sizeof(name)) {
+        name[length] = (char)lexer->lookahead;
+      }
+      length++;
+      lexer->advance(lexer, false);
+    }
+
+#define NAME_IS(literal)                                                       \
+  (length == sizeof(literal) - 1 && memcmp(name, literal, length) == 0)
+
+    if (NAME_IS("fi")) {
+      if (depth == 0) {
+        return true;
+      }
+      depth--;
+    } else if (NAME_IS("else")) {
+      if (depth == 0 && stop_at_else) {
+        return true;
+      }
+    } else if (length >= 2 && name[0] == 'i' && name[1] == 'f' && !NAME_IS("iff") &&
+               !NAME_IS("ifthenelse")) {
+      // A nested conditional, e.g. `\if`, `\ifx` or `\ifdraft`; `\iff` and `\ifthenelse` are not
+      depth++;
+    }
+#undef NAME_IS
   }
   return false;
 }
 
+static bool scan_until_fi(TSLexer *lexer) {
+  return scan_conditional_branch(lexer, false);
+}
+
 // scan until else but no further than fi
 static bool scan_until_else(TSLexer *lexer) {
-
-  lexer->mark_end(lexer);
-
-  while (!lexer->eof(lexer)) {
-
-    // Peek at lookahead sequence without consuming
-    if (lexer->lookahead == '\\') {
-
-      lexer->advance(lexer, false);
-      if (lexer->lookahead == 'e') {
-
-        lexer->advance(lexer, false);
-        if (lexer->lookahead == 'l') {
-
-          lexer->advance(lexer, false);
-          if (lexer->lookahead == 's') {
-
-            lexer->advance(lexer, false);
-            if (lexer->lookahead == 'e') {
-
-              // Rewind position (stop BEFORE '\')
-              return true;
-            }
-          }
-        }
-
-      } else if (lexer->lookahead == 'f') {
-
-        lexer->advance(lexer, false);
-        if (lexer->lookahead == 'i') {
-
-          // found \fi, so we are dont have a if else fi
-          return true;
-        }
-      }
-    }
-
-    // Not matching start, move on
-    lexer->advance(lexer, false);
-    lexer->mark_end(lexer);
-  }
-  return false;
+  return scan_conditional_branch(lexer, true);
 }
 
 void *tree_sitter_latex_external_scanner_create() { return NULL; }

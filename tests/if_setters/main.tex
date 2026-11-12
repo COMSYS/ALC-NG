@@ -1,0 +1,34 @@
+\documentclass{article}
+\usepackage{template}
+
+% Set before the definition and never changed
+\newif\ifdraft
+\draftfalse
+\newcommand{\todo}[1]{\ifdraft\textbf{TODO: #1}\fi}
+
+% Set after the definition, but before the document, and only used in the document
+\newif\ifanon
+\anontrue
+\newcommand{\authorline}{\ifanon Anonymous authors\else Jane Doe\fi}
+\anonfalse
+
+% Set by a command of the template
+\finalcopy
+\iffinal\pagestyle{empty}\fi
+
+% Changed in the document whenever the command is used
+\newif\ifprev
+\global\prevfalse
+\def\sep{\ifprev, \fi}
+\def\mark{\global\prevtrue}
+
+% Used in the preamble before it is changed
+\newif\ifearly
+\earlytrue
+\newcommand{\early}{\ifearly early\else late\fi}
+\edef\earlyvalue{\early}
+\earlyfalse
+
+\begin{document}
+\authorline. \todo{a secret note} A\sep B\mark\sep C. \early, \earlyvalue.
+\end{document}

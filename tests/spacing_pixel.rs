@@ -41,6 +41,18 @@ Line with
 invocation.
 
 \LaTeX\note{x} is typeset with its space.
+\begin{equation}
+  e = mc^2
+\end{equation}
+\note{skipped by \ignorespaces
+after the display}
+Text after the display.
+
+J\note{ohn}. Rexford, F\note{lavio}. Bonomi and o\note{x}ff\note{x}ice.
+\relax\note{x}text and \LaTeX\note{x}
+\note{x}
+
+after a paragraph.
 \begin{align}
   a \note{x} - b
 \end{align}

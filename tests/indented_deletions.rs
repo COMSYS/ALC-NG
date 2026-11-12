@@ -39,7 +39,7 @@ mod tests {
 \begin{figure}
   \caption{
   Old text
-  {}
+  \space
   Continued old text
   }
 \end{figure}
@@ -53,7 +53,7 @@ mod tests {
 
         assert_eq!(
             clean(input),
-            "\\newcommand{\\note}[1]{}\nOld text\n    {}   \n    Continued\n"
+            "\\newcommand{\\note}[1]{}\nOld text\n    \\space   \n    Continued\n"
         );
     }
 
@@ -63,7 +63,7 @@ mod tests {
 
         assert_eq!(
             clean(input),
-            "\\newcommand{\\note}[1]{}\nOld text\n\t{}\nContinued\n"
+            "\\newcommand{\\note}[1]{}\nOld text\n\t\\space\nContinued\n"
         );
     }
 
@@ -71,7 +71,10 @@ mod tests {
     fn inline_invocation_is_replaced() {
         let input = b"\\newcommand{\\note}[1]{}\n  Old \\note{gone} text\n";
 
-        assert_eq!(clean(input), "\\newcommand{\\note}[1]{}\n  Old {} text\n");
+        assert_eq!(
+            clean(input),
+            "\\newcommand{\\note}[1]{}\n  Old \\space text\n"
+        );
     }
 
     #[test]
@@ -124,7 +127,7 @@ Second paragraph
 
         assert_eq!(
             clean(input),
-            "\\newcommand{\\note}[1]{}\n$a \\text{if {} b}$\n"
+            "\\newcommand{\\note}[1]{}\n$a \\text{if \\space b}$\n"
         );
     }
 
@@ -168,7 +171,10 @@ Second paragraph
         // Deleting the invocation would let `\LaTeX` swallow the following space
         let input = b"\\newcommand{\\note}[1]{}\n\\LaTeX\\note{x} is\n";
 
-        assert_eq!(clean(input), "\\newcommand{\\note}[1]{}\n\\LaTeX{} is\n");
+        assert_eq!(
+            clean(input),
+            "\\newcommand{\\note}[1]{}\n\\LaTeX\\space is\n"
+        );
     }
 
     #[test]
@@ -186,6 +192,9 @@ Second paragraph
         let input = b"Text\n  \\long\\def\\note#1{}\nMore \\note{x}\n";
 
         // The definition is kept, only the invocation is removed
-        assert_eq!(clean(input), "Text\n  \\long\\def\\note#1{}\nMore {}\n");
+        assert_eq!(
+            clean(input),
+            "Text\n  \\long\\def\\note#1{}\nMore \\space\n"
+        );
     }
 }
