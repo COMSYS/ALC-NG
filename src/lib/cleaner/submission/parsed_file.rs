@@ -767,7 +767,7 @@ enum NodeHandling {
     OutOfBounds,
     /// The node was an invocation of a comment command in math mode that was deleted.
     CommandInvocationDeleted(Vec<u8>, bool),
-    /// The node was an invocation of a comment command that was replaced with `{}`.
+    /// The node was an invocation of a comment command that was replaced, see [`invocation_placeholder`].
     CommandInvocationReplaced(Vec<u8>),
     CommentPackageIncludeDeleted(Vec<u8>, bool),
     BlockCommentDeleted(Vec<u8>, bool),
@@ -893,12 +893,12 @@ pub struct ContentStripper<'a> {
     /// Depth of constructs whose content may not be executed at this point, i.e. conditionals
     /// whose branches are both kept and definitions. Assignments in them make a conditional unknown.
     uncertain_depth: usize,
-    /// Commands whose invocations are removed, see [`CommentCommands`].
-    comment_commands: Arc<CommentCommands>,
-    /// Only collect the definitions of comment commands instead of cleaning.
     /// The definitions around the current node: the line and byte where each starts and the
     /// defined command (with backslash), if known. Their body is executed when they are used.
     definitions: Vec<(usize, usize, Option<&'a [u8]>)>,
+    /// Commands whose invocations are removed, see [`CommentCommands`].
+    comment_commands: Arc<CommentCommands>,
+    /// Only collect the definitions of comment commands instead of cleaning.
     /// Warnings are suppressed as the file is cleaned (and reported) afterwards.
     collecting: bool,
     /// Eligible definitions with an empty body, found while collecting.
@@ -1048,10 +1048,10 @@ impl<'a> ContentStripper<'a> {
             if_state: None,
             next_return: 0,
             uncertain_depth: 0,
+            definitions: Vec::new(),
             comment_commands: Default::default(),
             collecting: false,
             empty_definitions: Vec::new(),
-            definitions: Vec::new(),
             last_byte_of_document_block: None,
             deletion_stats: Default::default(),
             directives: FileDirectives::default(),
@@ -1311,12 +1311,12 @@ impl<'a> ContentStripper<'a> {
                 let is_definition = x == "environment_definition";
 
                 self.uncertain_depth += is_definition as usize;
-                let mut result = Ok(());
-                while let Some(child) = node.child(i) {
-                    let child_result = match self.handle_node(child, prev_node.clone()) {
                 if is_definition {
                     self.enter_definition(node, None);
                 }
+                let mut result = Ok(());
+                while let Some(child) = node.child(i) {
+                    let child_result = match self.handle_node(child, prev_node.clone()) {
                         Ok(r) => r,
                         Err(err) => {
                             result = Err(err);
@@ -1330,12 +1330,12 @@ impl<'a> ContentStripper<'a> {
                     i += 1;
                 }
                 self.uncertain_depth -= is_definition as usize;
-
-                result?;
-
                 if is_definition {
                     self.definitions.pop();
                 }
+
+                result?;
+
                 // The node following this one must skip the whitespace after the closing `\fi`
                 if matches!(prev_node, IfBranchKept(_)) {
                     return Ok(IfBranchKept(new_content));
@@ -1833,10 +1833,6 @@ impl<'a> ContentStripper<'a> {
         }
     }
 
-    /// Sets the value of a custom conditional, unless the assignment may not be executed.
-    fn assign_if(&mut self, name: &[u8], value: bool) {
-        let value = if self.uncertain_depth > 0 {
-            IfValue::Unknown
     /// Enters the body of a definition, which is executed when the defined command is used.
     fn enter_definition(&mut self, node: Node<'a>, defined: Option<&'a [u8]>) {
         self.definitions
@@ -1872,6 +1868,10 @@ impl<'a> ContentStripper<'a> {
         }
     }
 
+    /// Sets the value of a custom conditional, unless the assignment may not be executed.
+    fn assign_if(&mut self, name: &[u8], value: bool) {
+        let value = if self.uncertain_depth > 0 {
+            IfValue::Unknown
         } else {
             IfValue::Known(value)
         };
@@ -2219,19 +2219,19 @@ impl<'a> ContentStripper<'a> {
         previous_node: NodeHandling,
         whitespaces: Vec<u8>,
         signature: Option<Signature<'a>>,
+        defined: Option<&'a [u8]>,
     ) -> Result<NodeHandling> {
         let mut new_content = whitespaces;
         let mut prev_node = previous_node;
         let mut i = 0;
-        defined: Option<&'a [u8]>,
 
         // The body is executed when the command is used, not here
         self.uncertain_depth += 1;
+        self.enter_definition(node, defined);
         let result = (|| {
             while let Some(child) = node.child(i) {
                 let result = self.handle_node(child, prev_node.clone())?;
 
-        self.enter_definition(node, defined);
                 if child == implementation
                     && let Some(signature) = &signature
                 {
@@ -2245,11 +2245,11 @@ impl<'a> ContentStripper<'a> {
             Ok(())
         })();
         self.uncertain_depth -= 1;
+        self.definitions.pop();
 
         result.map(|_| Kept(new_content))
     }
 
-        self.definitions.pop();
     /// Records a definition as comment command candidate while collecting,
     /// and counts the definitions of comment commands while cleaning.
     fn record_definition(
@@ -2350,15 +2350,17 @@ impl<'a> ContentStripper<'a> {
         // In math mode, spaces are ignored but an empty group is an atom that changes
         // the spacing (e.g. turns a unary minus into a binary one), so delete the invocation.
         // In an alignment, an empty group starts the cell, which breaks a following `\hline` or `\multicolumn`.
-        // Otherwise, we replace the command invocation with an empty curly brace to preserve formatting.
-        // Simply deleting it would also delete the space it separates, e.g. the line break of an invocation
-        // on its own line, which changes the spacing in the PDF.
-        let delete = is_in_math_mode(&node, self.content) || is_in_alignment(&node, self.content);
+        // Otherwise, the invocation is replaced where it separates text, see `invocation_placeholder`.
+        let placeholder =
+            if is_in_math_mode(&node, self.content) || is_in_alignment(&node, self.content) {
+                &b""[..]
+            } else {
+                invocation_placeholder(self.content, node.start_byte(), last_argument.end_byte())
+            };
+        let delete = placeholder.is_empty();
 
         let mut new_content = whitespaces;
-        if !delete {
-            new_content.extend_from_slice(b"{}");
-        }
+        new_content.extend_from_slice(placeholder);
 
         let mut prev_node = Kept(Vec::new());
         let mut child = last_argument.next_sibling();
@@ -2384,6 +2386,46 @@ impl<'a> ContentStripper<'a> {
         }
 
         Ok(Kept(new_content))
+    }
+}
+
+/// What replaces the invocation of a comment command at `content[start..end]` outside of math
+/// and alignments, such that TeX reads the same tokens. The invocation expands to nothing.
+///
+/// - Whitespace (or a control word) in front and whitespace after: the whitespace after the
+///   invocation is one space, which a deletion would merge with the whitespace in front or
+///   skip after the control word, e.g. an invocation on its own line between two lines of text.
+///   `\space` expands to that space; TeX skips the whitespace after it instead. Unlike an empty
+///   group, it is expandable, thus skipped by `\ignorespaces` like the invocation, e.g. after
+///   `\end{equation}`.
+/// - A control word in front and a letter after: `\empty ` ends the name of the control word
+///   and expands to nothing.
+/// - Otherwise, the invocation is deleted. A group would break the kerning and ligatures of the
+///   characters around it (`F{}.`), the expansion to nothing does not.
+fn invocation_placeholder(content: &[u8], start: usize, end: usize) -> &'static [u8] {
+    let before = &content[..start];
+    let after = content.get(end);
+    let is_space = |b: Option<&u8>| b.is_none_or(u8::is_ascii_whitespace);
+
+    // A control word: letters after an unescaped backslash
+    let letters = before
+        .iter()
+        .rev()
+        .take_while(|b| b.is_ascii_alphabetic() || **b == b'@')
+        .count();
+    let backslashes = before[..before.len() - letters]
+        .iter()
+        .rev()
+        .take_while(|&&b| b == b'\\')
+        .count();
+    let control_word = letters > 0 && backslashes % 2 == 1;
+
+    if is_space(after) && (control_word || is_space(before.last())) {
+        br"\space"
+    } else if control_word && after.is_some_and(|b| b.is_ascii_alphabetic() || *b == b'@') {
+        br"\empty "
+    } else {
+        b""
     }
 }
 
@@ -2508,6 +2550,35 @@ fn grammar_errors(
 }
 
 /// Returns the `\if` token of a custom conditional (`general_if`) and its name without `\if`.
+/// Whether `content` assigns the conditional `name`: `\nametrue`, `\namefalse` or `\let\ifname`.
+fn is_assigned_after(content: &[u8], name: &[u8]) -> bool {
+    let is_name_end = |rest: &[u8]| {
+        rest.first()
+            .is_none_or(|b| !b.is_ascii_alphabetic() && *b != b'@')
+    };
+    let mut i = 0;
+
+    while let Some(offset) = content[i..].iter().position(|&b| b == b'\\') {
+        let rest = &content[i + offset + 1..];
+        let assigned = rest
+            .strip_prefix(name)
+            .and_then(|r| r.strip_prefix(b"true").or_else(|| r.strip_prefix(b"false")))
+            .is_some_and(is_name_end)
+            || rest
+                .strip_prefix(b"let")
+                .map(<[u8]>::trim_ascii_start)
+                .and_then(|r| r.strip_prefix(b"\\if"))
+                .and_then(|r| r.strip_prefix(name))
+                .is_some_and(is_name_end);
+        if assigned {
+            return true;
+        }
+        i += offset + 1;
+    }
+
+    false
+}
+
 fn custom_if_name<'c>(node: Node, content: &'c [u8]) -> Option<(&'c [u8], &'c [u8])> {
     let first_byte_of_next_node = match node.child(0) {
         Some(c) => c.start_byte(),
@@ -2554,35 +2625,6 @@ fn global_scope(node: Node, content: &[u8]) -> Option<bool> {
             | "part"
             | "chapter"
             | "section"
-/// Whether `content` assigns the conditional `name`: `\nametrue`, `\namefalse` or `\let\ifname`.
-fn is_assigned_after(content: &[u8], name: &[u8]) -> bool {
-    let is_name_end = |rest: &[u8]| {
-        rest.first()
-            .is_none_or(|b| !b.is_ascii_alphabetic() && *b != b'@')
-    };
-    let mut i = 0;
-
-    while let Some(offset) = content[i..].iter().position(|&b| b == b'\\') {
-        let rest = &content[i + offset + 1..];
-        let assigned = rest
-            .strip_prefix(name)
-            .and_then(|r| r.strip_prefix(b"true").or_else(|| r.strip_prefix(b"false")))
-            .is_some_and(is_name_end)
-            || rest
-                .strip_prefix(b"let")
-                .map(<[u8]>::trim_ascii_start)
-                .and_then(|r| r.strip_prefix(b"\\if"))
-                .and_then(|r| r.strip_prefix(name))
-                .is_some_and(is_name_end);
-        if assigned {
-            return true;
-        }
-        i += offset + 1;
-    }
-
-    false
-}
-
             | "subsection"
             | "subsubsection"
             | "paragraph"
@@ -2689,6 +2731,7 @@ fn skip_after_control_word<'c>(content: &'c [u8], before: &[u8]) -> &'c [u8] {
         .iter()
         .take_while(|&&b| is_horizontal_whitespace(b))
         .count();
+    let rest = strip_leading_newline(&content[spaces..]);
 
     let next_line_is_empty = rest
         .iter()
@@ -2727,4 +2770,3 @@ pub fn strip_leading_newline(content: &[u8]) -> &[u8] {
         _ => content,
     }
 }
-    let rest = strip_leading_newline(&content[spaces..]);

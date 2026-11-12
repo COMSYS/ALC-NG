@@ -45,7 +45,7 @@ mod tests {
     fn invocation_payload_is_removed_and_definition_kept() {
         let (cleaned, stats) = clean_with_stats(b"\\newcommand{\\note}[1]{}\nA \\note{secret} B\n");
 
-        assert_eq!(cleaned, "\\newcommand{\\note}[1]{}\nA {} B\n");
+        assert_eq!(cleaned, "\\newcommand{\\note}[1]{}\nA \\space B\n");
         assert_eq!(stats.comment_definitions.len(), 1);
         assert_eq!(stats.comment_invocation_deleted, vec![br"\note{secret}"]);
     }
@@ -54,7 +54,7 @@ mod tests {
     fn def_with_several_parameters() {
         assert_eq!(
             clean(b"\\def\\note#1#2{}\nA \\note{x}{y} B\n"),
-            "\\def\\note#1#2{}\nA {} B\n"
+            "\\def\\note#1#2{}\nA \\space B\n"
         );
     }
 
@@ -63,7 +63,27 @@ mod tests {
         // The second group is not consumed by `\note` and thus typeset
         assert_eq!(
             clean(b"\\newcommand{\\note}[1]{}\nA \\note{secret}{shown} B\n"),
-            "\\newcommand{\\note}[1]{}\nA {}{shown} B\n"
+            "\\newcommand{\\note}[1]{}\nA {shown} B\n"
+        );
+    }
+
+    #[test]
+    fn placeholder_only_where_it_separates() {
+        // Between characters, a group would break their kerning (`F{}.`), the expansion to
+        // nothing does not
+        assert_eq!(
+            clean(b"\\newcommand{\\note}[1]{}\nJ\\note{ohn}. F\\note{rank}.\n"),
+            "\\newcommand{\\note}[1]{}\nJ. F.\n"
+        );
+        // A following letter would continue the name of a control word
+        assert_eq!(
+            clean(b"\\newcommand{\\note}[1]{}\n\\relax\\note{x}text\n"),
+            "\\newcommand{\\note}[1]{}\n\\relax\\empty text\n"
+        );
+        // A control symbol ends without letters
+        assert_eq!(
+            clean(b"\\newcommand{\\note}[1]{}\n\\\\\\note{x}text\n"),
+            "\\newcommand{\\note}[1]{}\n\\\\text\n"
         );
     }
 
@@ -71,7 +91,7 @@ mod tests {
     fn todo_with_optional_argument() {
         assert_eq!(
             clean(b"\\renewcommand{\\todo}[2][]{}\nA \\todo[inline]{x} \\todo{y} B\n"),
-            "\\renewcommand{\\todo}[2][]{}\nA {} {} B\n"
+            "\\renewcommand{\\todo}[2][]{}\nA \\space \\space B\n"
         );
         // Without a default value, the brackets are the (only) argument and the group is typeset
         assert_unchanged(b"\\renewcommand{\\todo}[1]{}\nA \\todo[inline]{x} B\n");
@@ -81,7 +101,7 @@ mod tests {
     fn command_invoking_only_comment_commands() {
         assert_eq!(
             clean(b"\\newcommand{\\a}[1]{}\n\\newcommand{\\b}[1]{\\a{#1}}\nX \\b{secret} Y\n"),
-            "\\newcommand{\\a}[1]{}\n\\newcommand{\\b}[1]{{}}\nX {} Y\n"
+            "\\newcommand{\\a}[1]{}\n\\newcommand{\\b}[1]{}\nX \\space Y\n"
         );
     }
 
@@ -151,7 +171,7 @@ mod tests {
     fn invocation_before_definition_is_kept() {
         assert_eq!(
             clean(b"A \\note{x}\n\\newcommand{\\note}[1]{}\nB \\note{y}\n"),
-            "A \\note{x}\n\\newcommand{\\note}[1]{}\nB {}\n"
+            "A \\note{x}\n\\newcommand{\\note}[1]{}\nB \\space\n"
         );
     }
 
@@ -270,7 +290,7 @@ c & \note{secret} d \\ \hline
         let macros = std::fs::read_to_string(target.join("macros.tex")).unwrap();
         let body = std::fs::read_to_string(target.join("body.tex")).unwrap();
         assert_eq!(macros, "\\newcommand{\\note}[1]{}\n");
-        assert_eq!(body, "Text {} more.\n");
+        assert_eq!(body, "Text \\space more.\n");
         assert!(is_pixel_identical(&submission));
     }
 }
