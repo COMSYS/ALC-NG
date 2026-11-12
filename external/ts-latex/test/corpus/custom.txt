@@ -579,3 +579,34 @@ Double hash (##) in def body (align template)
             (generic_command
               (command_name))
             (placeholder)))))))
+
+================================================================================
+Nested conditionals with uppercase letters and @ in their names
+================================================================================
+
+\ifoldfss
+A
+\ifCUPloaded \else
+B
+\fi
+\if@twocol C\fi
+\fi
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_comment
+    (general_if
+      (if_content
+        (text
+          (word)
+          (block_comment
+            (general_if
+              (else_content
+                (text
+                  (word)))))
+          (block_comment
+            (general_if
+              (if_content
+                (text
+                  (word))))))))))

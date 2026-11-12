@@ -288,7 +288,7 @@
           "name": "begin",
           "content": {
             "type": "PATTERN",
-            "value": "\\\\if[a-z]+"
+            "value": "\\\\if[a-zA-Z@]+"
           }
         },
         {

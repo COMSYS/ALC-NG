@@ -107,7 +107,7 @@ module.exports = grammar({
     ),
 
     _general_if_normal: $ => seq(
-      field('begin', /\\if[a-z]+/),
+      field('begin', /\\if[a-zA-Z@]+/),
       field('then', optional($.if_content)),
       optional($._textual_else_clause),
       field('end', '\\fi')
