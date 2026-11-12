@@ -846,14 +846,8 @@ impl NodeHandling {
                 existing.extend_from_slice(&skipped);
             }
             BlockCommentDeleted(_, false) => {
-                // Drop the newline if it exists as it is consumed by the comment env
-                // This code is complex as Rust does not offer another way to drop a prefix in-place
-                let new_existing = strip_leading_newline(existing);
-                let mut new_existing = new_existing.to_owned();
-
-                new_existing.extend_from_slice(own_text);
-                existing.clear();
-                existing.append(&mut new_existing);
+                // Drop the newline after `\end{comment}` as it is consumed by the comment env
+                existing.extend_from_slice(strip_leading_newline(own_text));
             }
             NoNode
             | Kept(_)
