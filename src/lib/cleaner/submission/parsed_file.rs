@@ -4,6 +4,7 @@ use std::{
     fs::read,
     hash::Hash,
     io::{BufWriter, Write},
+    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -908,6 +909,8 @@ pub struct ContentStripper<'a> {
     directives: FileDirectives,
     /// Renamed project files whose references should be rewritten.
     file_renames: Option<&'a FileRenames>,
+    /// Byte ranges where `%` may not start a comment, see [`other_percent_catcode`].
+    other_percent_catcode: Vec<Range<usize>>,
 }
 
 use NodeHandling::*;
@@ -1056,6 +1059,7 @@ impl<'a> ContentStripper<'a> {
             deletion_stats: Default::default(),
             directives: FileDirectives::default(),
             file_renames: None,
+            other_percent_catcode: other_percent_catcode(content),
         }
     }
 
@@ -1104,6 +1108,17 @@ impl<'a> ContentStripper<'a> {
                 Ok(Kept(whitespaces))
             }
             "line_comment" | "comment" => {
+                // `%` may be an ordinary character, e.g. in `{\catcode`\%=12 \gdef\percent{%}}`
+                if self
+                    .other_percent_catcode
+                    .iter()
+                    .any(|r| r.contains(&node.start_byte()))
+                {
+                    let mut kept = whitespaces;
+                    kept.extend_from_slice(node_content);
+                    return Ok(Kept(kept));
+                }
+
                 // ALC-NG directive lines are always kept, regardless of other settings.
                 if node.grammar_name() == "line_comment"
                     && directive_keywords(node_content).is_some()
@@ -2753,6 +2768,79 @@ fn is_horizontal_whitespace(byte: u8) -> bool {
 }
 
 /// Strips the rest of a line that only consists of spaces or tabs, including its newline.
+/// The byte ranges in which `%` may have another category code than comment (14), e.g. after
+/// `\catcode`\%=12`. Each range starts at such an assignment and ends where it may be undone:
+/// at the end of the enclosing group, at `\catcode`\%=14` or at the end of the file.
+///
+/// Inside a definition the assignment only applies when the definition is used, so the range
+/// may include comments that are not affected. Keeping these comments is always safe.
+fn other_percent_catcode(content: &[u8]) -> Vec<Range<usize>> {
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    let mut search = 0;
+
+    while let Some(offset) = find(&content[search..], b"\\catcode") {
+        let start = search + offset;
+        search = start + b"\\catcode".len();
+        if ranges.last().is_some_and(|r| r.contains(&start)) {
+            continue;
+        }
+        let Some(code) = percent_catcode(&content[search..]) else {
+            continue;
+        };
+        if code == Some(14) {
+            continue;
+        }
+
+        // The range ends with the group around the assignment or when `%` is a comment again
+        let mut end = content.len();
+        let mut depth = 0usize;
+        let mut i = search;
+        while let Some(&b) = content.get(i) {
+            match b {
+                b'\\' if content[i..].starts_with(b"\\catcode")
+                    && percent_catcode(&content[i + b"\\catcode".len()..]) == Some(Some(14)) =>
+                {
+                    end = i;
+                    break;
+                }
+                b'\\' => i += 1,
+                b'{' => depth += 1,
+                b'}' => match depth.checked_sub(1) {
+                    Some(d) => depth = d,
+                    None => {
+                        end = i;
+                        break;
+                    }
+                },
+                _ => (),
+            }
+            i += 1;
+        }
+        ranges.push(start..end);
+    }
+
+    ranges
+}
+
+/// Parses the rest of `\catcode` if it assigns the category code of `%`: `Some(Some(code))` for
+/// a literal code, `Some(None)` if the code is not literal, e.g. `\catcode`\%=\active`.
+fn percent_catcode(rest: &[u8]) -> Option<Option<u32>> {
+    let rest = rest.trim_ascii_start();
+    let rest = if let Some(r) = rest.strip_prefix(b"`") {
+        r.strip_prefix(b"\\%").or_else(|| r.strip_prefix(b"%"))?
+    } else {
+        rest.strip_prefix(b"37")?
+    };
+    let rest = rest.trim_ascii_start();
+    let rest = rest.strip_prefix(b"=").unwrap_or(rest).trim_ascii_start();
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    Some(std::str::from_utf8(&rest[..digits]).ok().and_then(|d| d.parse().ok()))
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
 fn strip_rest_of_blank_line(content: &[u8]) -> &[u8] {
     let indentation = content
         .iter()
