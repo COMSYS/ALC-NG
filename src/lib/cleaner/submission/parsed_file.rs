@@ -1369,10 +1369,11 @@ impl<'a> ContentStripper<'a> {
             "block_comment" => self.handle_block_comment(node, whitespaces, previous_node),
             "new_if" => {
                 // New if definition with default value of false
-                let name = node_content
-                    .strip_prefix(b"\\newif\\if")
-                    .unwrap()
-                    .trim_ascii();
+                // Spaces or comments may separate `\newif` and the conditional, e.g. `\newif \iffoo`
+                let name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| self.content[n.byte_range()].strip_prefix(b"\\if"))
+                    .unwrap_or_default();
                 self.assign_if(name, false);
 
                 // We keep the definition even though it will be evaluated for every instance
