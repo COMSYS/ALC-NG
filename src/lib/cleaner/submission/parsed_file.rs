@@ -893,6 +893,9 @@ pub struct ContentStripper<'a> {
     /// Commands whose invocations are removed, see [`CommentCommands`].
     comment_commands: Arc<CommentCommands>,
     /// Only collect the definitions of comment commands instead of cleaning.
+    /// The definitions around the current node: the line and byte where each starts and the
+    /// defined command (with backslash), if known. Their body is executed when they are used.
+    definitions: Vec<(usize, usize, Option<&'a [u8]>)>,
     /// Warnings are suppressed as the file is cleaned (and reported) afterwards.
     collecting: bool,
     /// Eligible definitions with an empty body, found while collecting.
@@ -1045,6 +1048,7 @@ impl<'a> ContentStripper<'a> {
             comment_commands: Default::default(),
             collecting: false,
             empty_definitions: Vec::new(),
+            definitions: Vec::new(),
             last_byte_of_document_block: None,
             deletion_stats: Default::default(),
             directives: FileDirectives::default(),
@@ -1307,6 +1311,9 @@ impl<'a> ContentStripper<'a> {
                 let mut result = Ok(());
                 while let Some(child) = node.child(i) {
                     let child_result = match self.handle_node(child, prev_node.clone()) {
+                if is_definition {
+                    self.enter_definition(node, None);
+                }
                         Ok(r) => r,
                         Err(err) => {
                             result = Err(err);
@@ -1323,6 +1330,9 @@ impl<'a> ContentStripper<'a> {
 
                 result?;
 
+                if is_definition {
+                    self.definitions.pop();
+                }
                 // The node following this one must skip the whitespace after the closing `\fi`
                 if matches!(prev_node, IfBranchKept(_)) {
                     return Ok(IfBranchKept(new_content));
@@ -1823,6 +1833,41 @@ impl<'a> ContentStripper<'a> {
     fn assign_if(&mut self, name: &[u8], value: bool) {
         let value = if self.uncertain_depth > 0 {
             IfValue::Unknown
+    /// Enters the body of a definition, which is executed when the defined command is used.
+    fn enter_definition(&mut self, node: Node<'a>, defined: Option<&'a [u8]>) {
+        self.definitions
+            .push((node.start_position().row + 1, node.start_byte(), defined));
+    }
+
+    /// The value of a custom conditional in the body of a definition, i.e. its value whenever
+    /// the defined command may be used.
+    ///
+    /// With a trace, see [`FileIfState::value_in_definition`]. The outermost definition counts,
+    /// as it is the first point where a nested definition may be made. Without a trace, only
+    /// this file is known: the value at the definition is used unless the file assigns the
+    /// conditional after it.
+    fn if_value_in_definition(&self, name: &[u8]) -> Option<IfValue> {
+        let &(line, start_byte, _) = self.definitions.first()?;
+
+        if let Some(state) = &self.if_state {
+            let used_in_preamble = self
+                .definitions
+                .iter()
+                .any(|(_, _, defined)| defined.is_none_or(|d| state.is_used_in_preamble(d)));
+
+            return state
+                .value_in_definition(name, line, used_in_preamble)
+                .or_else(|| self.if_values.get(name).map(|_| IfValue::Unknown));
+        }
+
+        let current = self.if_values.get(name).copied()?;
+        if is_assigned_after(&self.content[start_byte..], name) {
+            Some(IfValue::Unknown)
+        } else {
+            Some(current)
+        }
+    }
+
         } else {
             IfValue::Known(value)
         };
@@ -1904,7 +1949,12 @@ impl<'a> ContentStripper<'a> {
             );
         };
 
-        let is_true = match self.if_value(name, node.start_position().row + 1) {
+        let value = if self.definitions.is_empty() {
+            self.if_value(name, node.start_position().row + 1)
+        } else {
+            self.if_value_in_definition(name)
+        };
+        let is_true = match value {
             Some(IfValue::Known(b)) => b,
             // The value depends on where the file is loaded: preserve the if but clean both branches.
             Some(IfValue::Unknown) => {
@@ -2081,8 +2131,16 @@ impl<'a> ContentStripper<'a> {
             arity,
             optional: false,
         });
+        let defined = (decl.kind() == "command_name").then(|| &self.content[decl.byte_range()]);
 
-        self.handle_command_definition(node, implementation, previous_node, whitespaces, signature)
+        self.handle_command_definition(
+            node,
+            implementation,
+            previous_node,
+            whitespaces,
+            signature,
+            defined,
+        )
     }
 
     fn handle_new_command_definition(
@@ -2132,8 +2190,16 @@ impl<'a> ContentStripper<'a> {
             }
             _ => None,
         };
+        let defined = name.map(|name| &self.content[name.byte_range()]);
 
-        self.handle_command_definition(node, implementation, previous_node, whitespaces, signature)
+        self.handle_command_definition(
+            node,
+            implementation,
+            previous_node,
+            whitespaces,
+            signature,
+            defined,
+        )
     }
 
     /// Cleans a command definition.
@@ -2153,6 +2219,7 @@ impl<'a> ContentStripper<'a> {
         let mut new_content = whitespaces;
         let mut prev_node = previous_node;
         let mut i = 0;
+        defined: Option<&'a [u8]>,
 
         // The body is executed when the command is used, not here
         self.uncertain_depth += 1;
@@ -2160,6 +2227,7 @@ impl<'a> ContentStripper<'a> {
             while let Some(child) = node.child(i) {
                 let result = self.handle_node(child, prev_node.clone())?;
 
+        self.enter_definition(node, defined);
                 if child == implementation
                     && let Some(signature) = &signature
                 {
@@ -2177,6 +2245,7 @@ impl<'a> ContentStripper<'a> {
         result.map(|_| Kept(new_content))
     }
 
+        self.definitions.pop();
     /// Records a definition as comment command candidate while collecting,
     /// and counts the definitions of comment commands while cleaning.
     fn record_definition(
@@ -2481,6 +2550,35 @@ fn global_scope(node: Node, content: &[u8]) -> Option<bool> {
             | "part"
             | "chapter"
             | "section"
+/// Whether `content` assigns the conditional `name`: `\nametrue`, `\namefalse` or `\let\ifname`.
+fn is_assigned_after(content: &[u8], name: &[u8]) -> bool {
+    let is_name_end = |rest: &[u8]| {
+        rest.first()
+            .is_none_or(|b| !b.is_ascii_alphabetic() && *b != b'@')
+    };
+    let mut i = 0;
+
+    while let Some(offset) = content[i..].iter().position(|&b| b == b'\\') {
+        let rest = &content[i + offset + 1..];
+        let assigned = rest
+            .strip_prefix(name)
+            .and_then(|r| r.strip_prefix(b"true").or_else(|| r.strip_prefix(b"false")))
+            .is_some_and(is_name_end)
+            || rest
+                .strip_prefix(b"let")
+                .map(<[u8]>::trim_ascii_start)
+                .and_then(|r| r.strip_prefix(b"\\if"))
+                .and_then(|r| r.strip_prefix(name))
+                .is_some_and(is_name_end);
+        if assigned {
+            return true;
+        }
+        i += offset + 1;
+    }
+
+    false
+}
+
             | "subsection"
             | "subsubsection"
             | "paragraph"
