@@ -74,9 +74,11 @@ module.exports = grammar({
           optional($._textual_else_clause),
           field('end', '\\fi'),
         ),
+        // Without `\fi`, e.g. in `\def\bco{\iffalse}`: the comment ends at the `}`
+        prec(-1, field('begin', choice('\\iffalse', '\\if0'))),
         seq(
           field('begin', choice('\\iftrue', '\\if1')),
-          repeat($._root_content),
+          optional(field('then', $.if_content)),
           optional($._commental_else_clause),
           field('end', '\\fi'),
         ),
@@ -107,7 +109,7 @@ module.exports = grammar({
     ),
 
     _general_if_normal: $ => seq(
-      field('begin', /\\if[a-z]+/),
+      field('begin', /\\if[a-zA-Z@]+/),
       field('then', optional($.if_content)),
       optional($._textual_else_clause),
       field('end', '\\fi')

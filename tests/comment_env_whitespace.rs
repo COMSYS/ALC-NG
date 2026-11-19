@@ -21,7 +21,8 @@ after"#;
         )
         .unwrap();
 
-        assert_eq!(stripped, Some(Vec::from(b"Textafter")));
+        // The newline in front of `Text` is kept, the one after `\end{comment}` is consumed
+        assert_eq!(stripped, Some(Vec::from(b"\nTextafter")));
         assert!(_deletion_stats.grammar_errors.is_empty());
     }
 

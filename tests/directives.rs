@@ -182,4 +182,74 @@ Hello
         assert!(out.contains("% !ALC-NG keep-all")); // preserved as listing body
         assert!(!out.contains("real secret comment")); // real comment is stripped
     }
+
+    #[test]
+    fn tex_magic_comments_are_kept() {
+        let input = br#"% !TEX program = xelatex
+%!TEX root = main.tex
+% !TeX spellcheck = en_US
+% !BIB program = biber
+% a regular secret
+\documentclass{article}
+\begin{document}
+Hello % !TEX encoding = UTF-8
+World % suffix secret
+\end{document}"#;
+        let out = clean(input).unwrap();
+        assert!(out.contains("% !TEX program = xelatex\n"));
+        assert!(out.contains("%!TEX root = main.tex\n"));
+        assert!(out.contains("% !TeX spellcheck = en_US\n"));
+        assert!(out.contains("% !BIB program = biber\n"));
+        assert!(out.contains("Hello % !TEX encoding = UTF-8\n"));
+        assert!(!out.contains("a regular secret"));
+        assert!(!out.contains("suffix secret"));
+    }
+
+    #[test]
+    fn tex_magic_comment_lookalikes_are_removed() {
+        let input = br#"% see !TEX root for details
+% !TEXT root = main.tex
+\documentclass{article}
+\begin{document}
+Hello
+\end{document}"#;
+        let out = clean(input).unwrap();
+        assert!(!out.contains("!TEX"));
+    }
+
+    #[test]
+    fn directive_after_end_document_is_not_applied() {
+        // The tail is removed, including the directive. Applying it anyway would make
+        // cleaning the cleaned file behave differently.
+        let input = br#"\documentclass{article}
+\begin{document}
+\iffalse
+hidden if content
+\fi
+Visible
+\end{document}
+% !ALC-NG keep-ifs"#;
+        let out = clean(input).unwrap();
+        assert!(!out.contains("hidden if content"));
+        assert!(!out.contains("!ALC-NG"));
+        assert!(out.contains("Visible"));
+    }
+
+    #[test]
+    fn keep_tail_after_end_document_is_applied() {
+        // keep-tail keeps the tail and with it the directive itself.
+        let input = br#"\documentclass{article}
+\begin{document}
+\iffalse
+hidden if content
+\fi
+Visible
+\end{document}
+% !ALC-NG keep-tail keep-ifs
+trailing note"#;
+        let out = clean(input).unwrap();
+        assert!(out.contains("hidden if content"));
+        assert!(out.contains("% !ALC-NG keep-tail keep-ifs"));
+        assert!(out.contains("trailing note"));
+    }
 }

@@ -170,7 +170,7 @@ You can disable specific cleaning steps for an individual file by adding a speci
 % !ALC-NG <directive> [<directive> …]
 ```
 
-Several directives can be listed on one line (space‑separated) and across multiple lines. The directive may appear on **any** comment line in the file — it does not have to be the first comment. Directive‑looking text inside `verbatim` or `lstlisting` environments is ignored.
+Several directives can be listed on one line (space‑separated) and across multiple lines. The directive may appear on **any** comment line in the file — it does not have to be the first comment. The tag and the directives are case‑insensitive, e.g. `% !alc-ng Keep-Comments` works as well. Directive‑looking text inside `verbatim` or `lstlisting` environments is ignored, and so are directives after `\end{document}`, since that content is removed, unless the file keeps it with `keep-tail` or `keep-all`.
 
 | Directive | Effect |
 |---|---|
@@ -179,7 +179,7 @@ Several directives can be listed on one line (space‑separated) and across mult
 | `keep-tail` | Keep content that appears after `\end{document}`. *Alias: `keep-oob`.* |
 | `keep-all` | Do not clean the file at all; copy it byte‑for‑byte. *Aliases: `skip`, `noclean`.* |
 
-Unknown directives are reported and ignored. The directive line itself is always kept in the output.
+Unknown directives are reported and ignored. The directive line itself is always kept in the output, except after `\end{document}` without `keep-tail` or `keep-all`.
 
 > [!NOTE]
 > Directives only apply to tex files (`.tex`, `.sty`, `.cls`, …). They cannot be placed in binary files such as images.
@@ -236,6 +236,9 @@ We try to remove as much (unneeded) information as possible. We also evaluate if
 
 > [!TIP]
 > To preserve comments, conditionals, or trailing content in a specific file, opt out per file using a [`% !ALC-NG …` directive](#per-file-directives).
+
+> [!NOTE]
+> Magic comments that editors and build tools read are kept: `% !TEX …` (e.g. `% !TEX root = main.tex`, `% !TEX program = xelatex`), `% !BIB …`, and the cleaner's own [`% !ALC-NG …` directives](#per-file-directives). The tag must directly follow the `%` and is case‑insensitive (`%!TeX` works as well).
 
 > [!NOTE]
 > We cannot replicate every custom control flow logic. If you use custom control flows, make sure that the cleaner has picked it up or that you evaluate it before passing the source code to the cleaner.
