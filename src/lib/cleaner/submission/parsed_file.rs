@@ -16,7 +16,7 @@ use crate::{
         submission::{
             comment_commands::{AnalyzedFile, CommentCommand, CommentCommands, EmptyDefinition},
             deletion_stats::DeletionStats,
-            directives::{FileDirectives, directive_keywords, parse_directives},
+            directives::{FileDirectives, is_magic_comment, parse_directives},
             if_trace::{FileIfState, IfTrace, IfValue, IfValues},
         },
     },
@@ -981,7 +981,7 @@ impl<'a> ContentStripper<'a> {
         let mut stripper = Self::new(content, filename, cleaner_config);
         stripper.file_renames = file_renames;
         stripper.comment_commands = comment_commands;
-        stripper.directives = parse_directives(root, content);
+        stripper.directives = stripper.parse_directives(root);
         stripper.set_if_state(if_state);
 
         if !stripper.directives.is_empty() {
@@ -1033,7 +1033,7 @@ impl<'a> ContentStripper<'a> {
         let mut stripper = Self::new(content, filename, cleaner_config);
         stripper.comment_commands = comment_commands;
         stripper.collecting = true;
-        stripper.directives = parse_directives(root, content);
+        stripper.directives = stripper.parse_directives(root);
         stripper.set_if_state(if_state.cloned());
 
         if stripper.directives.keep_all {
@@ -1126,10 +1126,9 @@ impl<'a> ContentStripper<'a> {
                     return Ok(Kept(kept));
                 }
 
-                // ALC-NG directive lines are always kept, regardless of other settings.
-                if node.grammar_name() == "line_comment"
-                    && directive_keywords(node_content).is_some()
-                {
+                // Magic comments (ALC-NG directives and editor magic comments such as
+                // `% !TEX root = main.tex`) are always kept, regardless of other settings.
+                if node.grammar_name() == "line_comment" && is_magic_comment(node_content) {
                     let mut kept = whitespaces;
                     kept.extend_from_slice(node_content);
                     return Ok(Kept(kept));
@@ -1540,6 +1539,22 @@ impl<'a> ContentStripper<'a> {
         self.deletion_stats.grammar_errors.extend(errors);
 
         self.exception(message, ())
+    }
+
+    /// Parses the ALC-NG directives of the file.
+    ///
+    /// Content after `\end{document}` is removed unless the file keeps it (`keep-tail` or
+    /// `keep-all`). A directive there would be removed as well, so cleaning the cleaned file
+    /// again would not apply it. Thus, the other directives only count before the tail.
+    fn parse_directives(&self, root: Node<'a>) -> FileDirectives {
+        let directives = parse_directives(root, self.content, None);
+        if directives.keep_tail || directives.keep_all {
+            return directives;
+        }
+        match self.document_end(root) {
+            Some(end) => parse_directives(root, self.content, Some(end)),
+            None => directives,
+        }
     }
 
     /// Returns the end of the top-level document environment, after which content is removed.
