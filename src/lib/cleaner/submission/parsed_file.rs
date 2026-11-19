@@ -490,6 +490,7 @@ impl LatexLikeFile {
             if let Some(name) = name
                 && !PRIMITIVE_CONDITIONALS.contains(&name)
                 && !IF_TEX_CONDITIONALS.contains(&name)
+                && !is_internal_conditional(name)
             {
                 names.push(name.to_vec());
             }
@@ -1001,6 +1002,7 @@ impl<'a> ContentStripper<'a> {
         }
 
         stripper.check_grammar_errors(root)?;
+        stripper.set_flattened_document_end(root);
 
         let result = stripper
             .handle_node(root, NoNode)
@@ -1037,6 +1039,7 @@ impl<'a> ContentStripper<'a> {
         if stripper.directives.keep_all {
             return Ok(Vec::new());
         }
+        stripper.set_flattened_document_end(root);
 
         stripper.handle_node(root, NoNode)?;
 
@@ -1099,9 +1102,12 @@ impl<'a> ContentStripper<'a> {
                     return self.handle_source_file(node, previous_node, whitespaces);
                 }
 
-                whitespaces.extend_from_slice(node_content);
-
-                Ok(Kept(whitespaces))
+                // A nested ERROR node is cleaned like the root one: its children that were
+                // parsed are cleaned and the tokens the parser could not match are kept as
+                // they are, see [`ContentStripper::whitespace_to_previous_node`]. Otherwise,
+                // whether a comment is removed would depend on where the parser recovers,
+                // e.g. a whole document body after an unbalanced `\left` (arXiv 1209.0897).
+                self.handle_error_children(node, previous_node, whitespaces)
             }
             // Keep class include statements as is.
             "class_include" => {
@@ -1550,6 +1556,77 @@ impl<'a> ContentStripper<'a> {
                         .is_some_and(|end| self.is_document_environment_name(end))
             })
             .map(|document| document.end_byte())
+            .or_else(|| self.flattened_document_end(root))
+    }
+
+    /// Removes the content after a `\end{document}` that the parser did not pair with its
+    /// `\begin{document}`, see [`ContentStripper::flattened_document_end`]. A parsed document
+    /// environment before it sets an earlier end while cleaning.
+    fn set_flattened_document_end(&mut self, root: Node<'a>) {
+        if !self.directives.keep_tail {
+            self.last_byte_of_document_block = self.flattened_document_end(root);
+        }
+    }
+
+    /// Returns the end of a top-level `\end{document}` that the parser did not pair with its
+    /// `\begin{document}`.
+    ///
+    /// To recover from a parse error, the parser may turn the root, or a part of it, into an
+    /// `ERROR` node whose children are the `\begin` and `\end` of the environments (arXiv
+    /// 2110.07300), or commands with an argument. The document then still ends at the first
+    /// `\end{document}` at the top level, after a `\begin{document}`, if the braces before it
+    /// are balanced, i.e. it is not part of an unparsed definition or argument.
+    fn flattened_document_end(&self, root: Node<'a>) -> Option<usize> {
+        if !root.has_error() {
+            return None;
+        }
+
+        // `\begin{document}` or `\end{document}`, which the parser may also read as a command
+        // with an argument while recovering
+        let names_document = |node: Node<'a>, command: &[u8]| match node.grammar_name() {
+            "begin" | "end" => {
+                node.grammar_name().as_bytes() == &command[1..]
+                    && self.is_document_environment_name(node)
+            }
+            "generic_command" => {
+                node.child_by_field_name("command")
+                    .is_some_and(|c| &self.content[c.byte_range()] == command)
+                    && node.child_by_field_name("arg").is_some_and(|arg| {
+                        arg.grammar_name() == "curly_group"
+                            && self.content[arg.byte_range()] == *b"{document}"
+                    })
+            }
+            _ => false,
+        };
+
+        // The nodes at the top level, in the order of the file
+        let mut begun = false;
+        let mut cursor = root.walk();
+        if !cursor.goto_first_child() {
+            return None;
+        }
+        loop {
+            let node = cursor.node();
+            if !begun && names_document(node, b"\\begin") {
+                begun = true;
+            } else if begun && names_document(node, b"\\end") {
+                return braces_balanced(&self.content[..node.start_byte()])
+                    .then_some(node.end_byte());
+            }
+
+            // Only the tokens of ERROR nodes and their text are searched, not e.g. the body of
+            // a definition or a block comment
+            let searched = node.is_error()
+                || (node.grammar_name() == "text" && node.parent().is_some_and(|p| p.is_error()));
+            if searched && cursor.goto_first_child() {
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() || cursor.node() == root {
+                    return None;
+                }
+            }
+        }
     }
 
     /// Reports an error that is ignored if the cleaning is forced, see [`exception`].
@@ -1618,8 +1695,10 @@ impl<'a> ContentStripper<'a> {
         let has_fi = node
             .child((node.child_count() as u32).saturating_sub(1))
             .is_some_and(|c| c.grammar_name() == r"\fi");
-        if matches!(begin.grammar_name(), r"\iffalse" | r"\if0" | r"\iftrue" | r"\if1")
-            && (!has_fi || !braces_balanced(content))
+        if matches!(
+            begin.grammar_name(),
+            r"\iffalse" | r"\if0" | r"\iftrue" | r"\if1"
+        ) && (!has_fi || !braces_balanced(content))
         {
             return false;
         }
@@ -2027,6 +2106,21 @@ impl<'a> ContentStripper<'a> {
             );
         };
 
+        // Internal conditionals of LaTeX and packages (e.g. `\if@filesw`): preserve the if but
+        // clean both branches, see [`is_internal_conditional`].
+        if is_internal_conditional(name) {
+            if !self.collecting {
+                debug!(
+                    "Preserving internal conditional '\\if{}' at {}:{}:{} but cleaning both branches.",
+                    String::from_utf8_lossy(name),
+                    self.filename,
+                    node.start_position().row + 1,
+                    node.start_position().column
+                );
+            }
+            return self.keep_both_branches(node, previous_node, name_with_prefix, new_content);
+        }
+
         let value = if !self.definitions.is_empty() {
             self.if_value_in_definition(name)
         } else if let Some(command) = self.stored_argument(node) {
@@ -2127,6 +2221,42 @@ impl<'a> ContentStripper<'a> {
             .if_evaluated_empty
             .push(node_content.to_owned());
         Ok(IfEvaluatedEmpty(new_content, fullline))
+    }
+
+    /// Cleans the children of a nested ERROR node, see the `"ERROR"` case of
+    /// [`ContentStripper::handle_node`].
+    fn handle_error_children(
+        &mut self,
+        node: Node<'a>,
+        previous_node: NodeHandling,
+        whitespaces: Vec<u8>,
+    ) -> Result<NodeHandling> {
+        let mut new_content = whitespaces;
+        let mut prev_node = previous_node;
+        let mut end = node.start_byte();
+        let mut i = 0;
+
+        while let Some(child) = node.child(i) {
+            if i == 0 {
+                new_content.extend_from_slice(&self.content[node.start_byte()..child.start_byte()]);
+            }
+            let result = self.handle_node(child, prev_node.clone())?;
+            result.append_to(&mut new_content, &prev_node);
+            prev_node = result;
+            end = child.end_byte();
+            i += 1;
+        }
+        // Text after the last child, which is not part of any node
+        new_content.extend_from_slice(&self.content[end..node.end_byte()]);
+
+        // As for other nodes with children, see `GRAMMAR_NESTING`
+        if matches!(prev_node, IfBranchKept(_)) {
+            return Ok(IfBranchKept(new_content));
+        }
+        if prev_node.is_fullline_deletion() || matches!(prev_node, EndsWithDeletedLine(_)) {
+            return Ok(EndsWithDeletedLine(new_content));
+        }
+        Ok(Kept(new_content))
     }
 
     fn handle_source_file(
@@ -2681,6 +2811,17 @@ fn is_assigned_after(content: &[u8], name: &[u8]) -> bool {
     false
 }
 
+/// Whether the conditional `name` (without `\if`) contains `@`, e.g. `\if@filesw` of the
+/// LaTeX kernel. Such conditionals are never evaluated:
+/// - They are internals of LaTeX, classes and packages, whose value may change in ways that
+///   are not traced, e.g. `\if@filesw` with `\nofiles` or `\if@noskipsec` after a heading.
+/// - `@` is only a letter after `\makeatletter`. Otherwise `\if@filesw` is the primitive
+///   `\if`, which compares `@` with `f` and is false, thus a value traced for `\if@filesw`
+///   is wrong there (arXiv 2107.03513).
+fn is_internal_conditional(name: &[u8]) -> bool {
+    name.contains(&b'@')
+}
+
 fn custom_if_name<'c>(node: Node, content: &'c [u8]) -> Option<(&'c [u8], &'c [u8])> {
     let first_byte_of_next_node = match node.child(0) {
         Some(c) => c.start_byte(),
@@ -2839,8 +2980,10 @@ fn other_percent_catcode(content: &[u8]) -> Vec<Range<usize>> {
         let mut i = search;
         while let Some(&b) = content.get(i) {
             match b {
-                b'\\' if content[i..].starts_with(b"\\catcode")
-                    && percent_catcode(&content[i + b"\\catcode".len()..]) == Some(Some(14)) =>
+                b'\\'
+                    if content[i..].starts_with(b"\\catcode")
+                        && percent_catcode(&content[i + b"\\catcode".len()..])
+                            == Some(Some(14)) =>
                 {
                     end = i;
                     break;
@@ -2876,7 +3019,11 @@ fn percent_catcode(rest: &[u8]) -> Option<Option<u32>> {
     let rest = rest.trim_ascii_start();
     let rest = rest.strip_prefix(b"=").unwrap_or(rest).trim_ascii_start();
     let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
-    Some(std::str::from_utf8(&rest[..digits]).ok().and_then(|d| d.parse().ok()))
+    Some(
+        std::str::from_utf8(&rest[..digits])
+            .ok()
+            .and_then(|d| d.parse().ok()),
+    )
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
