@@ -36,6 +36,7 @@ mod tests {
         let state = |value| FileIfState {
             entry: values(&[("draft", IfValue::Known(value))]),
             returns: Vec::new(),
+            ..Default::default()
         };
 
         assert!(clean(input, None).is_err());
@@ -52,6 +53,7 @@ mod tests {
         let state = FileIfState {
             entry: values(&[("draft", IfValue::Known(false))]),
             returns: vec![(2, values(&[("draft", IfValue::Known(true))]))],
+            ..Default::default()
         };
 
         let cleaned = clean(input, Some(state)).unwrap();
@@ -64,6 +66,7 @@ mod tests {
         let state = FileIfState {
             entry: values(&[("draft", IfValue::Known(false))]),
             returns: vec![(1, values(&[("draft", IfValue::Known(true))]))],
+            ..Default::default()
         };
 
         assert_eq!(
@@ -78,6 +81,7 @@ mod tests {
         let state = FileIfState {
             entry: values(&[("draft", IfValue::Unknown)]),
             returns: Vec::new(),
+            ..Default::default()
         };
 
         assert_eq!(
@@ -92,6 +96,7 @@ mod tests {
         let state = FileIfState {
             entry: values(&[("draft", IfValue::Unknown)]),
             returns: Vec::new(),
+            ..Default::default()
         };
 
         assert_eq!(clean(input, Some(state)).unwrap(), "\\drafttrue\nA\n");

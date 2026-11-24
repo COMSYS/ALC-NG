@@ -55,11 +55,16 @@ impl FileDirectives {
 /// given comment text is not a directive.
 ///
 /// The comment must start with `%`, followed by the [`DIRECTIVE_TAG`] as a
-/// whole word. Any remaining whitespace‑separated tokens are the keywords.
+/// whole word, in any case (e.g. `% !alc-ng`). Any remaining whitespace‑separated
+/// tokens are the keywords.
 pub fn directive_keywords(text: &[u8]) -> Option<Vec<&str>> {
     let line = std::str::from_utf8(text).ok()?;
     let rest = line.trim_start().strip_prefix('%')?.trim_start();
-    let rest = rest.strip_prefix(DIRECTIVE_TAG)?;
+    let tag = rest.get(..DIRECTIVE_TAG.len())?;
+    if !tag.eq_ignore_ascii_case(DIRECTIVE_TAG) {
+        return None;
+    }
+    let rest = &rest[DIRECTIVE_TAG.len()..];
 
     // The tag must be a whole word: followed by whitespace or end of line.
     // This rejects look‑alikes such as `% !ALC-NGX`.
@@ -70,18 +75,53 @@ pub fn directive_keywords(text: &[u8]) -> Option<Vec<&str>> {
     Some(rest.split_whitespace().collect())
 }
 
+/// Tags of the magic comments that the cleaner keeps: its own [`DIRECTIVE_TAG`] and
+/// the tags that editors and build tools read from a `.tex` file, e.g.
+/// `% !TEX root = main.tex` (TeXShop, TeXstudio, LaTeX Workshop) or
+/// `% !BIB program = biber` (TeXstudio). Matched case-insensitively.
+const MAGIC_COMMENT_TAGS: [&str; 3] = [DIRECTIVE_TAG, "!TEX", "!BIB"];
+
+/// Returns `true` if the comment is a magic comment that the cleaner keeps, such as
+/// `% !ALC-NG keep-ifs` or `% !TEX root = main.tex`.
+///
+/// Like a directive, the tag must directly follow the `%` (and optional
+/// whitespace) and be a whole word.
+pub fn is_magic_comment(text: &[u8]) -> bool {
+    let Some(rest) = text.trim_ascii_start().strip_prefix(b"%") else {
+        return false;
+    };
+    let rest = rest.trim_ascii_start();
+    MAGIC_COMMENT_TAGS.iter().any(|tag| {
+        rest.len() >= tag.len()
+            && rest[..tag.len()].eq_ignore_ascii_case(tag.as_bytes())
+            && rest.get(tag.len()).is_none_or(|c| c.is_ascii_whitespace())
+    })
+}
+
 /// Parses all ALC‑NG directives from a file's syntax tree.
 ///
 /// Only real `line_comment` nodes are inspected, so directive‑looking text
 /// inside verbatim/lstlisting environments (which parse as `verbatim` /
 /// `source_code` nodes) is ignored.
-pub fn parse_directives(root: Node, content: &[u8]) -> FileDirectives {
+///
+/// Directives that start at or after `until` are ignored. The cleaner passes the end
+/// of the document environment, since it removes the content after it, including any
+/// directive there.
+pub fn parse_directives(root: Node, content: &[u8], until: Option<usize>) -> FileDirectives {
     let mut directives = FileDirectives::default();
-    collect_directives(root, content, &mut directives);
+    collect_directives(root, content, until, &mut directives);
     directives
 }
 
-fn collect_directives(node: Node, content: &[u8], directives: &mut FileDirectives) {
+fn collect_directives(
+    node: Node,
+    content: &[u8],
+    until: Option<usize>,
+    directives: &mut FileDirectives,
+) {
+    if until.is_some_and(|until| node.start_byte() >= until) {
+        return;
+    }
     if node.grammar_name() == "line_comment"
         && let Some(keywords) = directive_keywords(&content[node.byte_range()])
     {
@@ -92,13 +132,14 @@ fn collect_directives(node: Node, content: &[u8], directives: &mut FileDirective
 
     let mut i: u32 = 0;
     while let Some(child) = node.child(i) {
-        collect_directives(child, content, directives);
+        collect_directives(child, content, until, directives);
         i += 1;
     }
 }
 
+/// Applies a directive keyword, ignoring its case.
 fn apply_keyword(keyword: &str, directives: &mut FileDirectives) {
-    match keyword {
+    match keyword.to_ascii_lowercase().as_str() {
         "keep-comments" => directives.keep_comments = true,
         "keep-ifs" | "keep-conditionals" => directives.keep_ifs = true,
         "keep-tail" | "keep-oob" => directives.keep_tail = true,
@@ -114,7 +155,35 @@ mod tests {
 
     fn directives_for(input: &str) -> FileDirectives {
         let tree = parse(input.as_bytes()).unwrap();
-        parse_directives(tree.root_node(), input.as_bytes())
+        parse_directives(tree.root_node(), input.as_bytes(), None)
+    }
+
+    #[test]
+    fn magic_comment_matching() {
+        assert!(is_magic_comment(b"% !TEX root = main.tex"));
+        assert!(is_magic_comment(b"%!TEX program = xelatex"));
+        assert!(is_magic_comment(b"% !TeX spellcheck = en_US"));
+        assert!(is_magic_comment(b"% !BIB program = biber"));
+        assert!(is_magic_comment(b"%  !ALC-NG keep-ifs"));
+        assert!(is_magic_comment(b"% !TEX"));
+        assert!(is_magic_comment(b"%!ALC-NG"));
+        assert!(!is_magic_comment(b"% !ALC-NGX keep-all"));
+        // Not magic comments
+        assert!(!is_magic_comment(b"% a normal comment"));
+        assert!(!is_magic_comment(b"% see !TEX root"));
+        assert!(!is_magic_comment(b"% !TEXT root = main.tex"));
+        assert!(!is_magic_comment(b"%% !TEX root = main.tex"));
+        assert!(!is_magic_comment(b"\\% !TEX root = main.tex"));
+    }
+
+    #[test]
+    fn directives_after_until_are_ignored() {
+        let input =
+            "\\documentclass{article}\n\\begin{document}\n\\end{document}\n% !ALC-NG keep-ifs\n";
+        let tree = parse(input.as_bytes()).unwrap();
+        let end = input.find("\n% !ALC").unwrap();
+        assert!(parse_directives(tree.root_node(), input.as_bytes(), Some(end)).is_empty());
+        assert!(parse_directives(tree.root_node(), input.as_bytes(), None).keep_ifs);
     }
 
     #[test]
@@ -132,6 +201,15 @@ mod tests {
             directive_keywords(b"%!ALC-NG keep-all"),
             Some(vec!["keep-all"])
         );
+        // The tag ignores case
+        assert_eq!(
+            directive_keywords(b"% !alc-ng keep-ifs"),
+            Some(vec!["keep-ifs"])
+        );
+        assert_eq!(directive_keywords(b"%!Alc-Ng"), Some(vec![]));
+        assert_eq!(directive_keywords(b"% !alc-ngx keep-all"), None);
+        // Non-ASCII after `%` does not panic
+        assert_eq!(directive_keywords(b"% !\xc3\xa4"), None);
         // Not a directive
         assert_eq!(directive_keywords(b"% a normal comment"), None);
         // Tag must be a whole word
@@ -149,6 +227,13 @@ mod tests {
         assert!(d.keep_ifs);
         assert!(!d.keep_tail);
         assert!(!d.keep_all);
+    }
+
+    #[test]
+    fn directive_tag_and_keywords_ignore_case() {
+        let d = directives_for("% !alc-ng Keep-Comments KEEP-IFS\n\\documentclass{article}\n");
+        assert!(d.keep_comments);
+        assert!(d.keep_ifs);
     }
 
     #[test]
