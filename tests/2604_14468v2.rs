@@ -30,7 +30,7 @@ mod tests {
         let test_files = root.join("tests/2604_14468v2");
         let target_path = test_output_dir().join("2604_14468v2_cleaned");
         let mut submission =
-            Submission::new(config.clone(), test_files, target_path, "latexmk", &vec![]).unwrap();
+            Submission::new(config.clone(), test_files, target_path, "latexmk", &[]).unwrap();
 
         submission.run().unwrap();
 

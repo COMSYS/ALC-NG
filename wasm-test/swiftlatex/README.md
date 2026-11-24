@@ -1,0 +1,147 @@
+# Vendored SwiftLaTeX engines (pdfTeX, XeTeX, dvipdfmx)
+
+These files are **not committed** (see `.gitignore`). Download them from the
+[SwiftLaTeX releases](https://github.com/SwiftLaTeX/SwiftLaTeX/releases) (v20022022)
+and extract here, keeping only:
+
+- `swiftlatexpdftex.js` — the pdfTeX worker glue (**patched**, see below)
+- `swiftlatexpdftex.wasm` — the pdfTeX WebAssembly engine (EPL-2.0 OR GPL-2.0 w/ Classpath-exception)
+- `swiftlatexxetex.js` / `swiftlatexxetex.wasm` — the XeTeX engine (glue **patched**)
+- `swiftlatexdvipdfm.js` / `swiftlatexdvipdfm.wasm` — dvipdfmx (glue **patched**)
+
+`alc-wasi.js` is the exception: it is alc-ng's own code and **is tracked**. Both
+TeX glues start with `importScripts("alc-wasi.js")`, so a checkout that has the
+workers but not the shim fails on every `alcng_*` command (and the worker on
+`ImportWorkerError`).
+
+`python3 -I wasm-test/patch-swiftlatex.py <extracted release> wasm-test/swiftlatex`
+writes **all three** patched workers from the extracted glue: patches 1–7 on
+pdfTeX, patches 1–5 and 7 on XeTeX, and on dvipdfmx only the console forwarding and
+the idempotent `mkdir`. Nothing is patched by hand anymore — the workers here
+are `release + script`, byte for byte. Together with the `-cd` patch on all
+three workers: `setmainfile` takes an optional `dir`
+(relative to `/work`), and the compile runs and reads its output there, like
+`latexmk -cd` — a nested main file such as `report/report.tex` that inputs
+`../figs/…` compiles as it does natively.
+
+`compilelatex` is one TeX pass followed by BibTeX. The page reruns it until
+the `.aux` and `.bbl` stop changing (at most 5 passes, latexmk's
+`max_repeat`), so citations and references resolve and the `.bbl` is read
+back — native alc-ng keeps a `.bbl` the final pass reads.
+
+**XeTeX** speaks the same worker protocol, but `compilelatex` hands back an
+**XDV** in the reply's `pdf` field. The page then stages the submission plus
+the XDV in a separate dvipdfmx worker (`compilepdf`) to get the PDF. XeTeX
+writes the cache path of every OpenType font it loaded (`/tex/<fileid>`) into
+the XDV; dvipdfmx asks for `xetex/<format>/<fileid>.otf`, which the dev
+server decodes back into the original request (the fileid encodes it, so the
+server stores nothing). Fonts are found by kpathsea only
+(no fontconfig): `\setmainfont{texgyreheros-regular.otf}` works, system font
+names do not. The page picks the engine per run (the `engine` flag; `auto`
+reads a top-level `00README` and looks for fontspec, unicode-math,
+polyglossia, xeCJK, …).
+
+`PdfTeXEngine.js` is no longer used by the test page; the page drives the
+worker protocol directly (see the protocol notes in `web/shared/lib/engine.ts`, and the
+`texlive` wire protocol documented in `wasm-test/server/src/main.rs`).
+
+**The patches** — invented on `swiftlatexpdftex.js`, which is why they are
+numbered from there; `patch-swiftlatex.py` applies them by anchor, so it fails
+loudly if a future release moves the code it patches:
+
+1. `seedfiles` command — the host can inject files (`{name: Uint8Array}`) that
+   the engine's kpathsea hook serves before anything is fetched remotely.
+2. `listdir` / `readfile` commands — the host can inspect `/work` after a run
+   (used to recover the format dump, see below).
+3. kpathsea hook consults seeded files first.
+4. **File access log** — every `open` syscall (`___syscall_open`) records the
+   path and access mode into `self.openLog`; the `openlog` command drains
+   it to the host. The test page builds its used-file list from this log
+   (read opens = inputs, write-only opens = outputs) instead of
+   synthesizing a `.fls` from the compile log.
+5. **alc-ng sidecar (WASI shim)** — `importScripts("alc-wasi.js")` at the top
+   of the file loads a WASI preview1 shim that runs the **alc_ng wasm cdylib**
+   (wasm32-wasip1) inside this worker against its Emscripten filesystem, so
+   the real Rust pipeline (compile artifacts in, cleaned submission out)
+   shares the engine's memfs. One dispatch branch routes `alcng_*` commands
+   (`alcng_load` / `alcng_run` / `alcng_list` / `alcng_read` / `alcng_rm`) to
+   it. The shim maps preopens (fd 3 = `/`, fd 4 = the cwd, reported with its
+   absolute path), paths, fds, dirents, stat data and errnos onto `FS.*`
+   calls; stderr/stdout are line-buffered and forwarded to the worker console
+   and show up in the page log. See `alc-wasi.js`.
+
+   Pitfalls the shim handles (each one broke a run before it was fixed):
+   preview1 errnos and filetypes use their own numbering (e.g. `ENOENT` 44,
+   `EINVAL` 28, directory 3, symlink 7); `__wasi_fdstat_t` puts rights at
+   @8/@16 and wasi-libc masks every `openat` with the dirfd's inheriting
+   rights; dirents start with `d_next`, have no length prefix, and a full
+   buffer means "more entries"; `clock_time_get` writes one u64 of
+   nanoseconds; this Emscripten build's `FS.analyzePath` has no `isDirectory`,
+   `FS.cwd` is a function, and MEMFS nodes have no `length` (size comes from
+   `getattr`). Add `?wasitrace=1` to the page URL to trace every WASI call.
+6. **Format dump name** (pdfTeX only) — `compileformat` reads back
+   `WORKROOT/pdflatex.fmt`, but the dump it just wrote is named after the
+   kpathsea cache id of `pdflatex.ini`; the patch asks for the name the page
+   seeds the dump back under. See “The format dump” below.
+7. **Pathed lookups in the kpathsea hook** — TeX does not append
+   `.tex` to a name that already contains a dot, so `\input{contents/4.2_datasets}`
+   is searched as typed; native Web2C then retries with `.tex` appended, but
+   this engine's kpathsea does not, and the stock JS hook refuses any name
+   containing a slash. Every dotted-stem input in a subdirectory
+   (`4.2_datasets.tex`, `5.1_affordances.tex`, …) came back
+   ``File `contents/4.2_datasets' not found``, and macOS case in sources
+   (`DV3_plot_1.png` on disk as `dv3_plot_1.png`) has no forgiveness either —
+   real arXiv sources are full of both (2303.12712 hits each). The patch
+   makes the hook answer pathed names itself: verbatim first (exact path
+   under the compile's cwd, then the path with `.tex`), and only if that
+   misses, the same two candidates walked case-insensitively per path
+   segment — each case-insensitive landing logs
+   `[alc-ng] case-insensitive match: DV3_plot_1.png -> /work/figures/dv3_plot_1.png`
+   so the mismatch stays on the page log instead of being silently papered
+   over. Unresolvable pathed names keep the old give-up.
+
+**TeX distribution files.** The SwiftLaTeX mirror (`texlive2.swiftlatex.com`)
+is offline (Cloudflare 522) and sends no CORS headers anyway. Run the dev
+server `wasm-test/server` (Rust/axum; from the repository root:
+`cargo run --release --manifest-path wasm-test/server/Cargo.toml`): it
+proxies the engines' `<engine>/<fmt>/<file>` requests through (a) an
+on-disk cache and (b) the **local TeX Live** resolved with `kpsewhich`
+(font base names get `.tfm`/`.pfb`/… appended); unknown files answer with
+the protocol's 301. `Dockerfile.wasm` runs the same server inside the TeX
+Live full image, where `kpsewhich` answers the whole distribution.
+
+**The format dump.** SwiftLaTeX stubs out pdfTeX's recorder, and its
+`compileformat` routine reads back the wrong file name (the dump is named
+after the kpathsea cache id of `pdflatex.ini` / `xelatex.ini`). The test page
+builds the LaTeX format dump with the engine itself once, grabs the fresh
+`*.fmt` from the worker's `/work`, seeds it as `swiftlatexpdftex.fmt` /
+`swiftlatexxetex.fmt`, and caches it in IndexedDB (database
+`alc-ng-wasm-test`, keys `alc_ng_swiftlatex{pdftex,xetex}_fmt_v1`) so later
+runs skip the ~3 minute build. The XeLaTeX dump is ~27 MB.
+
+**Baking the dumps into the image.** A `.fmt` is valid only for the engine
+build that wrote it, so TeX Live's native `pdflatex.fmt` cannot be used.
+`wasm-test/build-fmt.cjs` runs the *wasm* engine headlessly instead: it
+drives the worker glue under node (worker-scope and synchronous-XHR shims)
+with the dev server answering kpathsea from `kpsewhich`, then writes the
+dump. `Dockerfile.wasm` runs it for both engines in its `fmt-build` stage and
+copies the result into `wasm-test/fmt-cache/`; the page asks
+`GET /fmt/<fmtKey>/<fmtName>` and seeds a hit without building.
+
+That route is **read-only by design**: there is no upload endpoint. Users are
+untrusted, and a browser-supplied dump would be handed to everyone else. The
+URL carries the versioned `fmtKey` rather than a bare name, so an engine
+update gets a fresh cache entry. If a served dump nevertheless fails to load
+(`format file` error), the page drops the IndexedDB copy, distrusts the
+server copy for that session, and rebuilds locally. A built dump looks to the
+engine like any other seeded file.
+
+Locally, without Docker, the same script builds a dump for the running
+server:
+
+    node wasm-test/build-fmt.cjs wasm-test/swiftlatex swiftlatexpdftex.js \
+        http://127.0.0.1:8000/texlive/ \
+        wasm-test/fmt-cache/alc_ng_swiftlatexpdftex_fmt_v1__swiftlatexpdftex.fmt
+
+The dev server never writes to disk: it remembers resolved TeX Live paths in
+memory only.

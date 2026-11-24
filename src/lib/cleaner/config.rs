@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 
+// Wasm builds drive the cleaner through a JSON configuration handed to the
+// `alc_ng_run` FFI entry point, which deserializes directly into this struct.
 #[derive(Debug)]
+#[cfg_attr(target_family = "wasm", derive(serde::Deserialize))]
+#[cfg_attr(target_family = "wasm", serde(default))]
 pub struct CleanerConfig {
     pub strip_exif: bool,
     /// Preserve .bib files
@@ -16,6 +20,8 @@ pub struct CleanerConfig {
     pub no_zzrm: bool,
     /// Create a tar archive that is ready to be uploaded.
     /// If the value is '-' then the archive is piped to stdout.
+    /// Spaces in file names are replaced with underscores (as arXiv does on upload)
+    /// and references to the renamed files are updated.
     pub tar: Option<String>,
     /// Rename files in the cleaned project: spaces in file names are replaced
     /// with underscores (as arXiv does on upload) and references to the
@@ -35,13 +41,17 @@ pub struct CleanerConfig {
     pub verbose: bool,
 }
 
+/// Longest side of a resized image, in pixels. Shared by the CLI default
+/// and `CleanerConfig::default`, so the two cannot drift apart.
+pub const DEFAULT_IM_SIZE: u32 = 512;
+
 impl Default for CleanerConfig {
     fn default() -> Self {
         Self {
             strip_exif: false,
             keep_bib: false,
             resize_images: false,
-            im_size: 1024,
+            im_size: DEFAULT_IM_SIZE,
             clean_classes: false,
             no_zzrm: false,
             tar: None,

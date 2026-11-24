@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use std::{
-    collections::{HashMap, HashSet},
     ffi::OsStr,
     hash::Hash,
     io::Error,
@@ -85,38 +84,6 @@ impl Hash for SourceFile {
     /// Hash is computed from the relative path of the source file.
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.inner_relative.hash(state);
-    }
-}
-
-/// Trait for grouping source files by a string key.
-pub trait GroupSourceFiles {
-    fn group_source_files(&self) -> HashMap<String, usize>;
-}
-
-impl GroupSourceFiles for HashSet<SourceFile> {
-    /// Groups source files by their extension or file name,
-    /// excluding certain readme files, and counts occurrences.
-    fn group_source_files(&self) -> HashMap<String, usize> {
-        use itertools::Itertools;
-
-        self.iter()
-            .filter(|v| {
-                v.file_name()
-                    .map(|name| {
-                        name != "00README.json"
-                            && name != "00readme.json"
-                            && name != "00readme.yaml"
-                            && name != "00readme.yml"
-                    })
-                    .unwrap_or(false)
-            })
-            .filter_map(|v| v.extension().or(v.file_name()))
-            .filter_map(|v| v.to_str())
-            .map(|v| v.to_string())
-            .chunk_by(|v| v.clone())
-            .into_iter()
-            .map(|(k, g)| (k, g.count()))
-            .collect()
     }
 }
 

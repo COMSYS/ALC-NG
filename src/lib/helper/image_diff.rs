@@ -50,31 +50,33 @@ pub fn image_diff(
     for y in 0..height {
         for x in 0..width {
             let new_color: [u8; 4];
-            
-            let pixel: Rgba<u8> = if x >= before_width || y >= before_height || x >= after_width || y >= after_height {
-                new_color = [changed_color[0], changed_color[1], changed_color[2], 255];
-                Rgba(new_color)
-            } else {
-                let before_pixel: Rgba<u8> = before.get_pixel(x, y);
-                let after_pixel: Rgba<u8> = after.get_pixel(x, y);
-                let alpha = before_pixel[3];
 
-                let is_diff = before_pixel[0] != after_pixel[0]
-                    || before_pixel[1] != after_pixel[1]
-                    || before_pixel[2] != after_pixel[2];
+            let pixel: Rgba<u8> =
+                if x >= before_width || y >= before_height || x >= after_width || y >= after_height
+                {
+                    new_color = [changed_color[0], changed_color[1], changed_color[2], 255];
+                    Rgba(new_color)
+                } else {
+                    let before_pixel: Rgba<u8> = before.get_pixel(x, y);
+                    let after_pixel: Rgba<u8> = after.get_pixel(x, y);
+                    let alpha = before_pixel[3];
 
-                let mut new_red = after_pixel[0];
-                let mut new_green = after_pixel[1];
-                let mut new_blue = after_pixel[2];
-                if is_diff {
-                    new_red = changed_color[0];
-                    new_green = changed_color[1];
-                    new_blue = changed_color[2];
-                }
+                    let is_diff = before_pixel[0] != after_pixel[0]
+                        || before_pixel[1] != after_pixel[1]
+                        || before_pixel[2] != after_pixel[2];
 
-                new_color = [new_red, new_green, new_blue, alpha];
-                Rgba(new_color)
-            };
+                    let mut new_red = after_pixel[0];
+                    let mut new_green = after_pixel[1];
+                    let mut new_blue = after_pixel[2];
+                    if is_diff {
+                        new_red = changed_color[0];
+                        new_green = changed_color[1];
+                        new_blue = changed_color[2];
+                    }
+
+                    new_color = [new_red, new_green, new_blue, alpha];
+                    Rgba(new_color)
+                };
             result.put_pixel(x, y, pixel);
         }
     }

@@ -1,0 +1,32 @@
+[package]
+name = "wasm-serve"
+version = "0.1.0"
+edition = "2024"
+description = "Dev/test server for the wasm bench page: static files, /tree/ listings, and the engine workers' on-demand TeX Live endpoint, backed by the local TeX Live through kpsewhich."
+authors = ["David Schütte <david.schuette@rwth-aachen.de>"]
+license = "MIT"
+
+# Standalone crate on purpose: the page's server builds without the alc-ng
+# crate and its tree-sitter/wasm machinery, and Dockerfile.wasm builds it
+# against the TeX Live image without pulling any of that in.
+[workspace]
+
+[dependencies]
+anyhow = "1.0.102"
+axum = "0.8"
+percent-encoding = "2"
+serde_json = "1.0.149"
+sha1 = "0.10"
+tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros", "net", "process", "time"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "set-header"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = "z"
+strip = true
